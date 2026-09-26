@@ -1,0 +1,81 @@
+# ── 全局：手动触发 & 标签发布 ────────────────────────────────────────
+# 项目: bgin (Go Gin RESTful Web API)
+# Go 版本: 1.27.1 | 入口: ./cmd/api | 二进制: bgin
+# Dockerfile 位于仓库根，基于 Alpine 极简镜像构建与运行
+$:
+  # 手动触发：构建并推送 Alpine 多架构镜像 (amd64, arm64)
+  web_trigger:
+    - services:
+        - docker
+      stages:
+        - name: Docker build and push (Alpine)
+          script: |
+            set -euo pipefail
+            REGISTRY="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}"
+            docker buildx build \
+              --tag "${REGISTRY}:latest" \
+              --tag "${REGISTRY}:alpine" \
+              --platform linux/amd64,linux/arm64 \
+              --file ./Dockerfile \
+              --cache-from type=registry,ref=${REGISTRY}:alpine-multi-cache \
+              --cache-to type=registry,ref=${REGISTRY}:alpine-multi-cache,mode=max,image-manifest=true,oci-mediatypes=true \
+              --push \
+              .
+
+  # 手动触发：构建并推送 Alpine (仅 linux/amd64) 镜像
+  web_trigger_amd64:
+    - services:
+        - docker
+      stages:
+        - name: Docker build and push (Alpine amd64)
+          script: |
+            set -euo pipefail
+            REGISTRY="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}"
+            docker buildx build \
+              --tag "${REGISTRY}:latest-amd64" \
+              --tag "${REGISTRY}:alpine-amd64" \
+              --platform linux/amd64 \
+              --file ./Dockerfile \
+              --cache-from type=registry,ref=${REGISTRY}:alpine-amd64-cache \
+              --cache-to type=registry,ref=${REGISTRY}:alpine-amd64-cache,mode=max,image-manifest=true,oci-mediatypes=true \
+              --push \
+              .
+
+  # 推送 v* 标签：构建并推送版本化 Alpine 镜像
+  tag_push:
+    - services:
+        - docker
+      stages:
+        - name: Build and push Alpine release image
+          script: |
+            set -euo pipefail
+            REGISTRY="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}"
+            VERSION="${CNB_BRANCH##*/}"
+            docker buildx build \
+              --tag "${REGISTRY}:${VERSION}" \
+              --tag "${REGISTRY}:${VERSION}-alpine" \
+              --tag "${REGISTRY}:latest" \
+              --tag "${REGISTRY}:alpine" \
+              --platform linux/amd64,linux/arm64 \
+              --file ./Dockerfile \
+              --cache-from type=registry,ref=${REGISTRY}:alpine-release-cache \
+              --cache-to type=registry,ref=${REGISTRY}:alpine-release-cache,mode=max,image-manifest=true,oci-mediatypes=true \
+              --push \
+              .
+
+  # 标签部署流水线：运行单元测试与数据库迁移
+  tag_deploy:
+    - services:
+        - docker
+      stages:
+        - name: Go test
+          image: golang:1.27-alpine
+          script: |
+            set -euo pipefail
+            go test -v -count=1 ./tests/...
+
+        - name: Database migration
+          image: golang:1.27-alpine
+          script: |
+            set -euo pipefail
+            go run ./cmd/api db:migrate

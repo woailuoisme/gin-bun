@@ -1,0 +1,48 @@
+# bgin - Git Hooks 配置 (Lefthook)
+# 参考文档: https://lefthook.dev/configuration/
+
+# 提交前检查 (Pre-commit)
+pre-commit:
+  piped: true
+  jobs:
+    - name: fmt
+      glob: "*.go"
+      run: golangci-lint fmt
+      stage_fixed: true
+
+    - name: lint
+      glob: "*.go"
+      run: golangci-lint run
+
+    - name: test
+      glob: "*.go"
+      run: go test ./...
+
+    - name: migrate-hash
+      glob: "migrations/*.sql"
+      run: atlas migrate hash --dir file://migrations
+      stage_fixed: true
+
+    - name: docs
+      glob: "internal/features/**/*.go"
+      run: swag init -g cmd/api/main.go -o apidocs --parseInternal --parseDependency --outputTypes json
+      stage_fixed: true
+
+# 提交信息规范校验 (Commit-msg)
+commit-msg:
+  jobs:
+    - name: conventional-commits
+      run: |
+        head -1 "{1}" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_\-\.\/]+\))?!?: .+$' || {
+          echo "❌ 提交信息不符合 Conventional Commits 规范！"
+          echo "   规范格式: <type>(<scope>): <subject>"
+          echo "   支持类型: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+          echo "   参考示例: feat(auth): add email verification"
+          exit 1
+        }
+
+# 推送前完整验证 (Pre-push)
+pre-push:
+  jobs:
+    - name: quality-gate
+      run: just check

@@ -1,86 +1,93 @@
 # yaml-language-server: $schema=https://golangci-lint.run/jsonschema/golangci.jsonschema.json
 version: "2"
 
-# 运行基础配置
 run:
   go: "1.27.1"
   timeout: 5m
   build-tags:
     - integration
 
-# 输出排序配置
 output:
   sort-order:
     - file
     - linter
 
-# 静态代码分析检查器配置 (基于 Uber & Google Go 生产规范精简集)
 linters:
   default: none
   enable:
-    # ── 核心正确性与防错 (Correctness & Bugs) ─────────────────────────────
-    - govet # Go 官方静态分析工具集 (Uber & Google 核心基线)
-    - staticcheck # 全面严格的代码缺陷与潜在 Bug 分析
-    - errcheck # 检查未被处理的 error，杜绝隐式忽略
+    # ── 核心正确性与防错 ─────────────────────────────────────────────────────
+    - govet # Go 官方基础静态分析
+    - staticcheck # 代码缺陷与潜在 Bug 分析
+    - errcheck # 检查未处理的 error
     - ineffassign # 检测无用赋值与死代码
-    - unused # 检查未引用的常量、变量、函数与类型
-    - errorlint # 规范 Go 1.13+ errors.Is/As 与 %w 错误包裹机制
-    - nilerr # 防止 err != nil 时误返回 nil 的逻辑错误
-    - nilnil # 禁止同时返回 nil, nil 消除函数调用返回值二义性
-    - forcetypeassert # 强制类型断言使用 comma-ok 模式，防止运行时 panic
-    - reassign # 防止包级变量被意外重新赋值
+    - unused # 检查未使用的常量、变量、函数与类型
+    - errorlint # 规范 errors.Is/As 与 %w 错误包裹
+    - nilerr # 防止 err != nil 时误返回 nil
+    - nilnil # 禁止同时返回 (nil, nil)
+    - forcetypeassert # 强制类型断言使用 comma-ok 模式
+    - reassign # 防止包级变量被意外重赋值
 
-    # ── 安全防护与资源泄露防御 (Security & Leak Defense) ─────────────────
-    - gosec # 工业级安全审计 (SQL 注入、硬编码凭证、弱随机数等)
-    - bodyclose # 确保 HTTP 响应体 resp.Body 得到妥善关闭
-    - noctx # 强制外部 HTTP 请求与关键操作绑定 context.Context
-    - containedctx # 提倡 context.Context 作为函数首参传递，禁止嵌入结构体
-    - sqlclosecheck # 确保 sql.Rows 与 sql.Stmt 正确关闭，防止数据库连接池耗尽
-    - rowserrcheck # 确保 sql.Rows 遍历完成后严谨检查 Err()
+    # ── 安全防护与资源泄露防御 ───────────────────────────────────────────────
+    - gosec # 代码安全审计 (注入、弱随机数等)
+    - bodyclose # 确保 HTTP 响应体 resp.Body 正确关闭
+    - noctx # 强制 HTTP 请求与关键操作绑定 Context
+    - containedctx # 规范 Context 作为首参传递，禁止嵌入结构体
+    - sqlclosecheck # 确保 sql.Rows 与 sql.Stmt 正确关闭
+    - rowserrcheck # 确保 sql.Rows 遍历后检查 Err()
 
-    # ── 现代代码风格与惯用语法 (Idiomatic Style & Modern Go) ──────────────
-    - revive # 命名规范与地道 Go 风格检查 (替代过时的 golint)
-    - gocritic # 详尽的代码风格、隐患与微优化建议
-    - modernize # 提示利用 Go 1.22+ 现代标准库与语法简化代码
-    - intrange # 提倡使用 Go 1.22+ for range 整数迭代语法
-    - copyloopvar # 检测 Go 1.22+ 语义下多余的手动循环变量深拷贝
-    - usestdlibvars # 提倡使用标准库预定义常量 (如 http.MethodGet, http.StatusOK)
-    - unconvert # 自动清理冗余不必要的类型转换
-    - perfsprint # 提示将低效的 fmt.Sprintf 替换为高性能原生类型转换
-    - goconst # 检测重复出现的硬编码字符串，提倡常量化
+    # ── 现代 Go 与代码风格 ─────────────────────────────────────────────────
+    - revive # 命名与代码风格检查
+    - gocritic # 代码坏味道与风格优化建议
+    - modernize # 提示使用现代 Go 语法与标准库简化代码
+    - intrange # 提倡使用 for range 整数迭代
+    - copyloopvar # 检测循环变量冗余拷贝
+    - usestdlibvars # 提倡使用标准库预定义常量 (如 http.MethodGet)
+    - unconvert # 清理冗余类型转换
+    - perfsprint # 提示将低效 fmt.Sprintf 替换为高性能转换
+    - goconst # 检测重复硬编码字符串并建议常量化
 
-    # ── 结构化日志与测试规范 (Logging & Testing) ───────────────────────────
-    - sloglint # 确保标准库 log/slog 键值对调用严谨与风格统一
-    - testifylint # testify 测试断言的最佳实践规范检查
-    - thelper # 规范测试辅助函数必须声明 t.Helper()
-    - usetesting # 提倡在测试中使用 t.Setenv/t.TempDir 替代全局环境污染
+    # ── 日志与测试规范 ─────────────────────────────────────────────────────
+    - forbidigo # 静态阻断未授权的特定函数调用 (如禁止运行时使用 fmt.Print*)
+    - sloglint # 规范 slog 结构化键值对调用
+    - testifylint # testify 断言规范检查
+    - thelper # 规范测试辅助函数声明 t.Helper()
+    - usetesting # 提倡使用 t.Setenv/t.TempDir 隔离测试环境
 
-    # ── 控制流与复杂度 (Control Flow & Complexity) ─────────────────────────
-    - nestif # 限制 if/else 嵌套深度 (阈值 4)，强制 Guard Clauses / Early Return
-    - gocyclo # 圈复杂度监控 (阈值 18)，控制业务函数复杂度上限
-    - nolintlint # 强制 //nolint 必须写明具体 linter 与忽略理由
+    # ── 控制流与复杂度 ─────────────────────────────────────────────────────
+    - nestif # 限制 if/else 嵌套深度 (阈值 4)
+    - gocyclo # 圈复杂度检查 (阈值 18)
+    - nolintlint # 强制 //nolint 标注具体 linter 与忽略原因
+
   exclusions:
     paths:
       - vendor$
       - tmp$
       - build$
-      - storage$
-      - oapi/
+      - apidocs/ # swag 自动生成物
     rules:
+      # 测试代码放宽硬编码、安全检查与 Context 约束
       - linters:
           - goconst
           - gosec
           - noctx
         path: ^tests/
+      # 命令行 CLI 交互与测试允许使用终端输出
+      - linters:
+          - forbidigo
+        path: ^(cmd/|internal/console/|tests/)
 
   settings:
+    forbidigo:
+      forbid:
+        - pattern: '^(fmt\.Print(|f|ln)|print|println)$'
+          msg: '核心业务与运行时严禁使用 fmt.Print*，请使用 internal/platform/logger 结构化日志'
+      exclude-godoc-examples: true
     gosec:
-      # 全局排除低风险/非 Web 攻击面的已知规则，收敛零散碎片化路径正则
       excludes:
-        - G204 # 子进程执行 (CLI 控制台命令已受白名单参数隔离)
-        - G304 # 基于安全相对路径读取系统文件 (如国际化语言包、Excel 导出)
+        - G204 # 子进程执行 (CLI 命令受参数隔离)
+        - G304 # 读取本地受控文件 (语言包等)
         - G703 # 弱类型配置加载映射警告
-        - G101 # 硬编码凭证误报 (errs 包中的业务错误码常量形如 AUTH_INVALID_CREDENTIALS，非真实密钥)
+        - G101 # 排除形如 AUTH_INVALID_CREDENTIALS 的错误码误报
     revive:
       rules:
         - name: package-comments
@@ -88,9 +95,9 @@ linters:
         - name: exported
           disabled: true
     nestif:
-      min-complexity: 4 # if/else 嵌套最大深度（Uber 推荐值 <= 4）
+      min-complexity: 4 # if/else 嵌套最大深度
     gocyclo:
-      min-complexity: 18 # 圈复杂度阈值 (API 业务层工业级推荐值 18)
+      min-complexity: 18 # 圈复杂度阈值
     errcheck:
       check-type-assertions: true
     goconst:
@@ -105,18 +112,17 @@ linters:
 
 formatters:
   enable:
-    - gci # 确定性 Import 三段式分组与排序格式化器
+    - gci # Import 分组与排序
   settings:
     gci:
       sections:
-        - standard # 1. Go 官方标准库 (如 context, fmt, strings)
-        - default # 2. 第三方开源依赖包 (如 github.com/...)
-        - localmodule # 3. 本地业务模块 (自动读取 go.mod 中的 module 名)
+        - standard # 标准库
+        - default # 第三方依赖包
+        - localmodule # 本地业务模块
   exclusions:
     generated: lax
     paths:
       - vendor$
       - tmp$
       - build$
-      - storage$
-      - oapi/
+      - apidocs/

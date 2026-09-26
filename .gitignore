@@ -1,5 +1,5 @@
 # ==========================================
-# Go lfiber Project - .gitignore
+# Go bgin Project - .gitignore
 # ==========================================
 
 # ------------------------------------------
@@ -16,9 +16,8 @@ debug
 debug.test
 __debug_bin
 /bin/
-/lfiber
-/lfiber-cli
-/main
+/bgin
+/bgin-cli
 
 # ------------------------------------------
 # OS Generated Files
@@ -50,6 +49,7 @@ Desktop.ini
 .env.*
 .env*
 !.env.example
+
 secrets.ini
 *.pem
 *.key
@@ -75,7 +75,6 @@ go.work.sum
 *.sqlite
 *.sqlite3
 *.sqlite3-journal
-*.xdb
 
 # ------------------------------------------
 # Caches & Temporary Files
@@ -87,7 +86,6 @@ go.work.sum
 .gopath/
 .go/
 .golangci-lint-cache/
-.playwright-cli/
 
 # ------------------------------------------
 # Build & Distribution Outputs
@@ -103,16 +101,18 @@ coverage.html
 coverage.out
 coverage.xml
 /coverage/
-/tests/coverage/
 /test-results/
 /.test-results/
-/test_exports/
-/test_imports/
 *.prof
 *.pprof
 *.cpu
 *.mem
-/tests/unit/providers/storage/
+
+# ------------------------------------------
+# Merge & Patch Leftovers
+# ------------------------------------------
+*.orig
+*.rej
 
 # ------------------------------------------
 # Infrastructure & Deployment
@@ -121,20 +121,6 @@ coverage.xml
 *.tfstate.*
 .terraform/
 *.kubeconfig
-
-# ------------------------------------------
-# Framework Storage (Laravel Style)
-# ------------------------------------------
-/storage/app/public/*
-!/storage/app/public/.gitkeep
-/storage/framework/cache/*
-!/storage/framework/cache/.gitkeep
-/storage/framework/sessions/*
-!/storage/framework/sessions/.gitkeep
-/storage/framework/views/*
-!/storage/framework/views/.gitkeep
-/storage/framework/testing/*
-!/storage/framework/testing/.gitkeep
 
 # ------------------------------------------
 # Local Development
@@ -161,13 +147,13 @@ specs/
 .rtk/
 .rumdl_cache/
 skills-lock.json
-/docs/*
-!/docs/adr/
-/apidocs/asyncapi/dist/
-/public/docs/asyncapi/*
-!/public/docs/asyncapi/index.html
-!/public/docs/asyncapi/embed.go
-!/public/docs/asyncapi/.gitkeep
 .codebuddy
 .workbuddy
 .workbuddy-ai
+
+# ------------------------------------------
+# Docs: 只跟踪 ADR，其余不入库
+# 注意：这里不能再出现 `docs/adr` 之类的规则，否则会把上面的例外重新忽略掉。
+# ------------------------------------------
+/docs/*
+!/docs/adr/
