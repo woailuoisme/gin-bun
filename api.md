@@ -1,0 +1,395 @@
+# RESTful API 接入指南
+
+本文档面向所有接口调用方（Web、移动端、第三方系统与服务间集成），描述接入本 API 所需的地址、认证、请求头、响应结构、错误模型、分页查询、速率限制与版本演进策略。
+
+所有接口遵循 REST 语义：请求与响应均为 `application/json`（编码 `UTF-8`），接口通过 URI 路径进行版本控制。
+
+---
+
+## 1. 快速开始与服务地址 (Quick Start & Endpoints)
+
+### 1.1 快速开始 (Quick Start)
+
+**第 1 步**：调用认证接口获取访问令牌。
+
+```bash
+curl -X POST https://api.example.com/v1/auth/sign-in/email \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{"email":"user@example.com","password":"<your_password>"}'
+```
+
+**第 2 步**：携带令牌调用受保护资源。
+
+```bash
+curl https://api.example.com/v1/users/me \
+  -H "Accept: application/json" \
+  -H "Authorization: Bearer <your_access_token>"
+```
+
+各端点的完整参数、请求示例与响应结构，请在本参考文档中按标签（Tag）浏览；每个端点均提供可直接运行的示例。
+
+### 1.2 服务地址 (Base URL)
+
+| 环境                         | API Base URL                           | 说明                   |
+| :--------------------------- | :------------------------------------- | :--------------------- |
+| **开发环境 (Dev)**     | `http://localhost:{port}/v1`         | 本地开发与联调         |
+| **测试环境 (Staging)** | `https://staging-api.example.com/v1` | 集成测试与验收         |
+| **生产环境 (Prod)**    | `https://api.example.com/v1`         | 线上环境（强制 HTTPS） |
+
+- 版本号位于路径首段：`/{version}/{resources}`，当前稳定版本为 `v1`。
+- 生产环境仅接受 **HTTPS** 请求，请勿在生产环境使用明文 HTTP。
+- 请求与响应统一使用 `application/json`，字符集固定为 `UTF-8`。
+
+---
+
+## 2. 数据格式与交互约定 (Data Conventions)
+
+### 2.1 命名约定 (Naming)
+
+- **资源路径**：复数名词、全小写短横线，不使用动词（如 `/{version}/{resources}`）。
+- **Query 参数与 JSON 键名**：小驼峰（`camelCase`），例如 `createdAt`、`sortBy`。
+- **布尔字段**：统一使用 `is` / `has` / `can` 前缀，例如 `isActive`、`hasAttachments`。
+- **枚举值**：全大写下划线（`UPPER_SNAKE`），例如 `"ACTIVE"`、`"IN_PROGRESS"`。
+
+### 2.2 时间与数值精度 (Timestamp & Precision)
+
+- **时间**：统一采用 ISO 8601 / RFC 3339 格式，**UTC 时区并以 `Z` 结尾**，例如 `"2026-08-25T14:28:10Z"`。不会返回无时区标记或裸数值形式的时间。
+- **大整数**：超出 JavaScript 安全整数范围（大于 2^53 - 1）的数值，例如 64 位整型标识、雪花 ID，在 JSON 中**以字符串（`string`）形式传输**。请按字符串解析并存储，避免精度丢失。
+- **金额**：以货币最小整数单位（如分 `cents`）表示，或采用定点字符串（如 `"199.99"`）；请勿使用浮点数参与金额计算。
+
+### 2.3 空值与更新语义 (Nullability & Update Semantics)
+
+- **空集合**：无数据或空列表时，字段一律返回 `[]`（空数组），不会返回 `null`，可直接安全遍历。
+- **PATCH 局部更新三态语义**：
+  - **字段缺省（不传该字段）**：保持原值不变；
+  - **显式传递 `null`（`"field": null`）**：明确置空或解绑该字段；
+  - **传递非空具体值**：覆盖更新为该值。
+
+### 2.4 输入校验与失败反馈 (Validation)
+
+所有输入在服务边界完成校验。校验失败时统一返回 `422 Unprocessable Entity`，并在响应的 `errors` 字段中按字段名归集失败原因，调用方可直接映射到表单控件（详见 [5.2 错误响应](#52-错误响应-error-response)）。
+
+---
+
+## 3. 认证、请求头与并发控制 (Authentication, Headers & Concurrency)
+
+### 3.1 认证方式 (Authentication)
+
+除公开端点外，所有受保护请求必须携带 Bearer Token：
+
+```http
+Authorization: Bearer <your_access_token>
+```
+
+| 状态码               | 含义                                   | 调用方处理                                         |
+| :------------------- | :------------------------------------- | :------------------------------------------------- |
+| `401 Unauthorized` | 未携带凭证，或令牌已过期、失效、被撤销 | 使用刷新令牌换取新令牌后重试；刷新失败引导重新登录 |
+| `403 Forbidden`    | 凭证有效，但无权访问该资源或执行该操作 | 不要重试；提示用户权限不足或联系管理员             |
+
+**安全提示**：请仅在请求头中传递令牌，不要将令牌拼接到 URL、写入日志或落盘到客户端明文存储。
+
+**令牌载荷说明**：访问令牌除标准声明外还携带 `role`（系统角色）与 `guard`（认证域）两项声明，授权判定直接依据 `role`，因此**角色变更需重新签发令牌才会生效**；如需立即失效，请使用登出/撤销接口将令牌写入黑名单。`role` 属于服务端内部声明，客户端不得据此做任何权限判断，一切以接口返回的 `403 Forbidden` 为准。
+
+**多实例部署说明**：令牌撤销与限流配额由服务端共享存储承载，任一副本上的登出/撤销对所有副本立即生效，无需会话粘性。
+
+### 3.2 标准请求头 (Request Headers)
+
+| 请求头                        | 必需 | 描述                                                     | 示例                                     |
+| :---------------------------- | :--: | :------------------------------------------------------- | :--------------------------------------- |
+| **`Content-Type`**    |  ✅  | 请求体媒体类型                                           | `application/json`                     |
+| **`Accept`**          |  ✅  | 客户端期望的响应格式                                     | `application/json`                     |
+| **`Authorization`**   | 条件 | 访问受保护资源的 Bearer Token                            | `Bearer eyJhbGci...`                   |
+| **`x-request-id`**    |  ❌  | 全链路追踪 ID；未提供时由服务端生成，并在响应头回写      | `req_019572d4a6c878b18cf0`             |
+| **`Idempotency-Key`** | 条件 | 非幂等写操作的去重键，确保重试不产生重复副作用           | `019572d4-a6c8-78b1-8cf0-281b94c032a1` |
+| **`If-None-Match`**   |  ❌  | 条件读取：资源未变化时返回`304 Not Modified`，节省带宽 | `W/"019572d4a6c878b1"`                 |
+
+### 3.3 幂等请求 (Idempotency)
+
+对创建类、支付类等非幂等写操作，建议携带 `Idempotency-Key`：
+
+- **Key 取值**：推荐使用 UUIDv7 或 ULID 等全局唯一、单调递增的字符串。
+- **重试保持稳定**：同一业务意图的多次重试必须复用同一个 Key；每次重试生成新 Key 将失去去重保护。
+- **服务端行为**：
+  - 相同 Key、相同请求载荷：返回首次请求的结果，不会重复执行；
+  - 相同 Key、不同请求载荷：拒绝执行并返回 `422 Unprocessable Entity`；
+  - 相同 Key 的首次请求仍在处理中：返回 `409 Conflict`，请退避后重试；
+  - Key 在约定的保留期内有效，覆盖常规重试与异步补偿周期。
+
+### 3.4 条件读取与缓存协商 (Conditional Reads)
+
+- `GET /{version}/{resources}/{id}` 的响应头携带实体标签：`ETag: W/"<hash>"`。
+- 后续请求可携带 `If-None-Match: W/"<hash>"`；资源未变化时服务端返回 **`304 Not Modified`**（无响应体），调用方可直接复用本地缓存以节省带宽。
+
+> **关于并发更新**
+>
+> 本版本**不提供** `If-Match` / `412 Precondition Failed` 的条件更新能力。并发写同一资源时为
+> **后写覆盖（last-write-wins）**，服务端不会返回冲突信号。
+>
+> 调用方如需避免并发覆盖，需在应用层自行处理：读取时记录 `updatedAt`，提交前比对服务端最新值，
+> 不一致时由业务侧决定合并或提示用户。请勿依赖 `If-Match` —— 该请求头当前被忽略。
+
+---
+
+## 4. HTTP 方法与状态码 (HTTP Methods & Status Codes)
+
+### 4.1 HTTP 动词语义
+
+|         方法         | 语义                         |     幂等性     |                    成功返回                    | 典型场景                       |
+| :------------------: | :--------------------------- | :------------: | :---------------------------------------------: | :----------------------------- |
+|  **`GET`**  | 获取单个资源或列表           |    ✅ 幂等    |                   `200 OK`                   | 读取详情、分页查询             |
+|  **`POST`**  | 创建新资源或执行非 CRUD 操作 |   ❌ 非幂等   | `201 Created` / `202 Accepted` / `200 OK` | 创建实体、提交认证、异步长任务 |
+|  **`PUT`**  | 全量覆盖替换目标资源         |    ✅ 幂等    |                   `200 OK`                   | 完整替换目标配置               |
+| **`PATCH`** | 局部修改目标资源属性         | 视具体端点而定 |                   `200 OK`                   | 局部更新字段、变更状态         |
+| **`DELETE`** | 销毁或注销目标资源           |    ✅ 幂等    |         `204 No Content` / `200 OK`         | 删除资源、解绑关联             |
+
+### 4.2 响应状态码速查
+
+|      状态码      | 对应枚举 Code             | 说明                                         |
+| :---------------: | :------------------------ | :------------------------------------------- |
+| **`200`** | `OK`                    | 请求处理成功                                 |
+| **`201`** | `CREATED`               | 资源创建成功                                 |
+| **`202`** | `ACCEPTED`              | 异步长任务已受理排队，后台处理中             |
+| **`204`** | `NO_CONTENT`            | 请求成功，无返回数据体（0 字节）             |
+| **`304`** | `NOT_MODIFIED`          | 资源未变更（配合`If-None-Match` 缓存）     |
+| **`400`** | `BAD_REQUEST`           | 请求格式无效、缺少必填参数或语法错误         |
+| **`401`** | `UNAUTHORIZED`          | 未提供身份凭证或 Token 已过期失效            |
+| **`403`** | `FORBIDDEN`             | 凭证有效但无权执行该操作（权限不足）         |
+| **`404`** | `NOT_FOUND`             | 请求的资源或 URI 不存在                      |
+| **`409`** | `CONFLICT`              | 资源状态冲突（如唯一键重复、幂等请求处理中） |
+| **`422`** | `UNPROCESSABLE_ENTITY`  | 请求体字段语义或参数验证规则校验失败         |
+| **`429`** | `TOO_MANY_REQUESTS`     | 请求频率超出速率配额限制                     |
+| **`500`** | `INTERNAL_SERVER_ERROR` | 服务器内部异常，未捕获错误统一转为通用提示   |
+
+---
+
+## 5. 响应格式与错误处理 (Response Structure & Error Handling)
+
+接口响应遵循简洁一致的契约：**仅分页列表**使用 `{"items": [...], "meta": {...}}` 信封，其余成功响应一律直接返回业务对象本身，不含 `success`、`code`、`message` 等外层包装。
+
+### 5.1 成功响应 (Success Response)
+
+#### 1. 分页列表响应
+
+所有分页列表统一包裹在 `items` 与 `meta` 中：
+
+```json
+{
+  "items": [
+    {
+      "id": "<resource_id>",
+      "<attribute>": "<value>"
+    }
+  ],
+  "meta": {
+    "page": 1,
+    "pageSize": 20,
+    "total": 100,
+    "totalPages": 5
+  }
+}
+```
+
+空列表同样保持信封结构，`items` 固定为 `[]`：
+
+```json
+{
+  "items": [],
+  "meta": {
+    "page": 1,
+    "pageSize": 20,
+    "total": 0,
+    "totalPages": 0
+  }
+}
+```
+
+#### 2. 单资源与操作结果
+
+查询、创建、更新等非分页响应直接返回业务对象：
+
+```json
+{
+  "id": "<resource_id>",
+  "<attribute>": "<value>"
+}
+```
+
+#### 3. 异步任务受理 (`202 Accepted`)
+
+长耗时操作受理后返回 `202 Accepted`，并在 `Location` 响应头给出任务查询地址：
+
+```http
+HTTP/1.1 202 Accepted
+Location: /{version}/tasks/<task_id>
+```
+
+```json
+{
+  "taskId": "<task_id>",
+  "status": "PENDING"
+}
+```
+
+#### 4. 无返回数据体 (`204 No Content`)
+
+删除、登出、修改密码等无返回内容的操作统一返回 `204 No Content`，响应体为空（0 字节），请勿解析响应体。
+
+### 5.2 错误响应 (Error Response)
+
+所有错误响应统一采用扁平根级结构，包含机器可读的 `code` 与人类可读的 `message` 描述信息。
+
+#### 1. 通用业务与客户端错误 (`400` / `401` / `403` / `404` / `409`)
+
+```json
+{
+  "code": "<MACHINE_READABLE_ERROR_CODE>",
+  "message": "<human_readable_error_description>"
+}
+```
+
+#### 2. 字段级校验失败 (`422 Unprocessable Entity`)
+
+按字段键归集错误文案数组，可直接用于表单控件报错：
+
+```json
+{
+  "code": "VALIDATION_FAILED",
+  "message": "Validation failed",
+  "errors": {
+    "team_name": [
+      "The team name must be a string.",
+      "The team name must be at least 1 characters."
+    ],
+    "authorization.role": [
+      "The selected authorization.role is invalid."
+    ],
+    "users.0.email": [
+      "The users.0.email field is required."
+    ],
+    "users.2.email": [
+      "The users.2.email must be a valid email address."
+    ]
+  }
+}
+```
+
+#### 3. 服务器内部异常 (`500 Internal Server Error`)
+
+```json
+{
+    "code": "INTERNAL_SERVER_ERROR",
+    "message": "An unexpected error occurred"
+}
+```
+
+#### 4. 追踪与重试
+
+- 每次响应的 `x-request-id` 响应头唯一标识该次请求，请在反馈问题时一并提供；
+- 生产环境不会返回堆栈信息、源码路径或数据库错误细节；
+- `429` 与 `5xx` 可重试，请遵循 [7. 速率限制与重试策略](#7-速率限制与重试策略-rate-limiting--retries) 中的退避建议；
+- `4xx` 中的参数、权限与状态冲突类错误，请在修正请求后重试。
+
+---
+
+## 6. 分页、过滤与排序 (Pagination, Filtering & Sorting)
+
+分页列表统一采用 **Offset 偏移分页**：通过 `page` 与 `pageSize` 指定位置与页大小，响应中的 `meta.total` 与 `meta.totalPages` 可用于渲染分页器。
+
+### 6.1 请求与响应
+
+- **请求参数**：`page`（默认 `1`）、`pageSize`（默认 `20`，最大 `100`）。
+- **响应结构**：
+
+```json
+{
+  "items": [
+    { "id": "<resource_id>", "<attribute>": "<value>" }
+  ],
+  "meta": {
+    "page": 1,
+    "pageSize": 20,
+    "total": 100,
+    "totalPages": 5
+  }
+}
+```
+
+### 6.2 过滤、排序与检索
+
+- **字段过滤**：
+  - 精确匹配：`?filter[<field>]=<value>`
+  - 多值匹配（IN 查询）：`?filter[<field>]=<val1>,<val2>`
+  - 区间过滤：`?filter[<field>After]=<date>` 或 `?filter[<field>Min]=<num>`
+- **链式排序**：
+  - 升序：`?sort=<field>`；降序：`?sort=-<field>`；复合排序：`?sort=-<field1>,<field2>`
+  - 服务端始终提供确定性的默认排序（如按创建时间倒序），分页遍历不会出现数据漂移。
+- **全局搜索**：`?search=<keyword>`（在核心可检索列执行模糊匹配）。
+- **关联加载与字段投影**：
+  - 关联预加载：`?include=<relation1>,<relation2>`
+  - 稀疏字段集：`?fields[<resource>]=<field1>,<field2>`（精简响应体积）
+- **综合请求示例**：
+
+```http
+GET /{version}/{resources}?page=1&pageSize=20&search=<keyword>&filter[<field>]=<value>&sort=-<field>&include=<relation>
+```
+
+---
+
+## 7. 速率限制与重试策略 (Rate Limiting & Retries)
+
+接口在网关与中间件层实施多级配额控制：
+
+- **未认证客户端**：低频防刷配额；
+- **已认证用户**：标准业务并发配额；
+- **敏感认证端点**：防暴力破解的严格限制。
+
+超出配额时返回 `429 Too Many Requests`，并通过标准响应头给出配额状态：
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 30
+X-RateLimit-Limit: 120
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1756137600
+```
+
+**调用方建议**：
+
+- 优先遵循 `Retry-After` 指定的等待秒数；
+- 采用指数退避并加入随机抖动，避免同一时刻集中重试形成二次冲击；
+- 写操作重试务必复用同一个 `Idempotency-Key`；
+- 对 `429`、`5xx` 与网络超时进行退避重试；`4xx` 业务错误不应重试。
+
+---
+
+## 8. 版本演进、废弃策略与支持 (Versioning, Deprecation & Support)
+
+### 8.1 版本演进
+
+接口通过向前兼容的方式演进，同一大版本内不会引入破坏性变更：
+
+- **非破坏性扩展**：新增可选入参、在响应中新增只读字段、新增专用端点；
+- **破坏性变更**：修改字段类型、将可选参数改为必填、删除或改名既有字段、变更既有成功状态码——此类变更仅通过新版本（如 `/v2`）提供。
+
+请调用方对响应中的新增字段保持宽容（忽略未知字段），以平滑获取新能力。
+
+### 8.2 废弃通告
+
+端点或字段确需下线时，会提前通过 RFC 8594 标准响应头通告：
+
+```http
+Deprecation: @1756137600
+Sunset: Wed, 11 Nov 2026 00:00:00 GMT
+Link: <https://api.example.com/v2/{resources}>; rel="successor-version"
+```
+
+- `Deprecation`：废弃生效时间（Unix 秒）；
+- `Sunset`：该能力停止服务的时间，请在此之前完成迁移；
+- `Link`：替代版本或端点地址。
+
+### 8.3 支持与反馈
+
+- **联系人**：Developer Support（`dev@example.com`）；
+- **问题反馈**：请提供请求端点、时间点与响应头中的 `x-request-id`，以便快速定位链路。
+

@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "ast-grep": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/ast-grep/ast-grep-mcp",
+        "ast-grep-server"
+      ]
+    },
+    "codegraph": {
+      "command": "codegraph",
+      "args": [
+        "serve",
+        "--mcp"
+      ]
+    },
+    "pkg-go-dev": {
+      "command": "godig",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

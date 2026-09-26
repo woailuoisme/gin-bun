@@ -1,0 +1,33 @@
+[tools]
+# Go Toolchain & Ecosystem (Go 运行时与工具链)
+go = "latest"                                     # Go 语言环境
+air = "latest"                                    # Go 热重载工具
+golangci-lint = "2"                               # Go 静态分析与统一格式化器
+"go:golang.org/x/tools/cmd/goimports" = "latest"  # Go 官方 Import 组织与管理工具
+"go:golang.org/x/tools/cmd/gonew" = "latest"      # Go 官方脚手架项目克隆与实例化工具
+"go:golang.org/x/vuln/cmd/govulncheck" = "latest" # Go 官方依赖漏洞扫描工具
+"go:golang.org/x/tools/cmd/deadcode" = "latest"   # Go 官方不可达死代码分析检测工具
+"go:github.com/oligot/go-mod-upgrade" = "latest"  # 交互式 Go 模块依赖升级工具
+"go:github.com/oasdiff/oasdiff" = "latest"        # OpenAPI 规范差异对比与破坏性变更检测工具
+gotestsum = "latest"                              # Go 单元测试结果彩显摘要工具
+mockery = "latest"                                # Go 接口 Mock 代码生成工具
+swag = "2.0.0-rc6"                                # Go Swagger 注释生成 API 文档工具 (v2 版本)
+
+# Container & Packaging (容器镜像构建与打包)
+ko = "latest"                                     # Go 容器镜像极速构建工具 (无需 Dockerfile)
+
+# Database & Schema Migration (数据库变更与迁移)
+atlas = "latest" # 现代化声明式数据库 schema 迁移管理工具
+
+# Observability & HTTP Testing (可观测性与接口测试)
+vector = "latest" # 高性能日志与指标收集分发管道
+hurl = "latest"   # 基于文本的 HTTP 冒烟测试与健康探测工具
+
+# CI & Orchestration (CI 校验与任务并发)
+actionlint = "latest"         # GitHub Actions 配置文件校验工具
+"npm:concurrently" = "latest" # 并发执行多个命令的 npm 工具
+[settings]
+npm.package_manager = "bun" # 默认使用 bun 作为 node 包管理器
+
+[env]
+_.file = ".env" # 自动加载项目根目录下的 .env 环境变量文件

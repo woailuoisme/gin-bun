@@ -1,0 +1,173 @@
+# ==========================================
+# Go lfiber Project - .gitignore
+# ==========================================
+
+# ------------------------------------------
+# Binaries & Execution
+# ------------------------------------------
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+debug
+debug.test
+__debug_bin
+/bin/
+/lfiber
+/lfiber-cli
+/main
+
+# ------------------------------------------
+# OS Generated Files
+# ------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ------------------------------------------
+# IDEs, Editors & Tooling
+# ------------------------------------------
+.idea/
+*.swp
+*.swo
+*~
+*.iml
+.project
+.settings/
+
+# ------------------------------------------
+# Environment & Secrets (SECURITY)
+# ------------------------------------------
+.env
+.env.*
+.env*
+!.env.example
+secrets.ini
+*.pem
+*.key
+*.cert
+*.crt
+
+# ------------------------------------------
+# Dependencies & Workspaces
+# ------------------------------------------
+/vendor/
+go.work
+go.work.sum
+
+# ------------------------------------------
+# Logs
+# ------------------------------------------
+*.log
+
+# ------------------------------------------
+# Databases
+# ------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+*.xdb
+
+# ------------------------------------------
+# Caches & Temporary Files
+# ------------------------------------------
+/tmp/
+.temp/
+.cache/
+.gocache/
+.gopath/
+.go/
+.golangci-lint-cache/
+.playwright-cli/
+
+# ------------------------------------------
+# Build & Distribution Outputs
+# ------------------------------------------
+/dist/
+/build/
+
+# ------------------------------------------
+# Testing & Coverage
+# ------------------------------------------
+coverage.txt
+coverage.html
+coverage.out
+coverage.xml
+/coverage/
+/tests/coverage/
+/test-results/
+/.test-results/
+/test_exports/
+/test_imports/
+*.prof
+*.pprof
+*.cpu
+*.mem
+/tests/unit/providers/storage/
+
+# ------------------------------------------
+# Infrastructure & Deployment
+# ------------------------------------------
+*.tfstate
+*.tfstate.*
+.terraform/
+*.kubeconfig
+
+# ------------------------------------------
+# Framework Storage (Laravel Style)
+# ------------------------------------------
+/storage/app/public/*
+!/storage/app/public/.gitkeep
+/storage/framework/cache/*
+!/storage/framework/cache/.gitkeep
+/storage/framework/sessions/*
+!/storage/framework/sessions/.gitkeep
+/storage/framework/views/*
+!/storage/framework/views/.gitkeep
+/storage/framework/testing/*
+!/storage/framework/testing/.gitkeep
+
+# ------------------------------------------
+# Local Development
+# ------------------------------------------
+.local/
+/scratch/
+.mise.local.toml
+
+# ------------------------------------------
+# AI & Agent Tools
+# ------------------------------------------
+.claude/
+.gemini/
+.trae/
+.kiro/
+.cursor/
+.antigravitycli/
+.specify/
+.agent/
+.agents/skills/
+specs/
+.code-review-graph/
+.codegraph/
+.rtk/
+.rumdl_cache/
+skills-lock.json
+/docs/*
+!/docs/adr/
+/apidocs/asyncapi/dist/
+/public/docs/asyncapi/*
+!/public/docs/asyncapi/index.html
+!/public/docs/asyncapi/embed.go
+!/public/docs/asyncapi/.gitkeep
+.codebuddy
+.workbuddy
+.workbuddy-ai
