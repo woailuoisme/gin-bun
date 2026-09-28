@@ -3,8 +3,6 @@ package enums
 
 import (
 	"fmt"
-
-	platformenums "bgin/internal/platform/enums"
 )
 
 // PaymentChannel 代表支付渠道领域枚举。
@@ -170,17 +168,27 @@ const (
 	PaymentStatusUnknown PaymentStatus = "unknown"
 )
 
+// 通用展示元数据常量（用于支付状态与退款状态徽标展示）。
+const (
+	colorSecondary = "secondary"
+	colorSuccess   = "success"
+	colorDanger    = "danger"
+	colorWarning   = "warning"
+	colorGray      = "gray"
+	labelPending   = "Pending"
+)
+
 // paymentStatusMeta 存储支付状态的展示元数据。
 var paymentStatusMeta = map[PaymentStatus]struct {
 	Label    string
 	Color    string
 	Priority int
 }{
-	PaymentStatusPending:   {Label: platformenums.LabelPending, Color: platformenums.ColorWarning, Priority: 1},
-	PaymentStatusSucceeded: {Label: "Succeeded", Color: platformenums.ColorSuccess, Priority: 2},
-	PaymentStatusFailed:    {Label: "Failed", Color: platformenums.ColorDanger, Priority: 3},
-	PaymentStatusClosed:    {Label: "Closed", Color: platformenums.ColorSecondary, Priority: 4},
-	PaymentStatusUnknown:   {Label: "Unknown", Color: platformenums.ColorGray, Priority: 99},
+	PaymentStatusPending:   {Label: labelPending, Color: colorWarning, Priority: 1},
+	PaymentStatusSucceeded: {Label: "Succeeded", Color: colorSuccess, Priority: 2},
+	PaymentStatusFailed:    {Label: "Failed", Color: colorDanger, Priority: 3},
+	PaymentStatusClosed:    {Label: "Closed", Color: colorSecondary, Priority: 4},
+	PaymentStatusUnknown:   {Label: "Unknown", Color: colorGray, Priority: 99},
 }
 
 // String 返回支付状态的字符串表现形式。
@@ -201,7 +209,7 @@ func (s PaymentStatus) Color() string {
 		return meta.Color
 	}
 
-	return platformenums.ColorGray
+	return colorGray
 }
 
 // Priority 获取支付状态排序优先级。
@@ -259,11 +267,11 @@ var paymentRefundStatusMeta = map[PaymentRefundStatus]struct {
 	Color    string
 	Priority int
 }{
-	PaymentRefundStatusPending:   {Label: platformenums.LabelPending, Color: platformenums.ColorWarning, Priority: 1},
-	PaymentRefundStatusSucceeded: {Label: "Succeeded", Color: platformenums.ColorSuccess, Priority: 2},
-	PaymentRefundStatusFailed:    {Label: "Failed", Color: platformenums.ColorDanger, Priority: 3},
-	PaymentRefundStatusCanceled:  {Label: "Canceled", Color: platformenums.ColorSecondary, Priority: 4},
-	PaymentRefundStatusUnknown:   {Label: "Unknown", Color: platformenums.ColorGray, Priority: 99},
+	PaymentRefundStatusPending:   {Label: labelPending, Color: colorWarning, Priority: 1},
+	PaymentRefundStatusSucceeded: {Label: "Succeeded", Color: colorSuccess, Priority: 2},
+	PaymentRefundStatusFailed:    {Label: "Failed", Color: colorDanger, Priority: 3},
+	PaymentRefundStatusCanceled:  {Label: "Canceled", Color: colorSecondary, Priority: 4},
+	PaymentRefundStatusUnknown:   {Label: "Unknown", Color: colorGray, Priority: 99},
 }
 
 // String 返回退款状态的字符串表现形式。
@@ -284,7 +292,7 @@ func (s PaymentRefundStatus) Color() string {
 		return meta.Color
 	}
 
-	return platformenums.ColorGray
+	return colorGray
 }
 
 // Priority 获取退款状态排序优先级。

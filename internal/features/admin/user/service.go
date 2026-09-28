@@ -9,13 +9,13 @@ import (
 
 	"github.com/samber/lo"
 
-	"bgin/internal/models"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/optional"
 	"bgin/internal/platform/response"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
+	"bgin/internal/shared/models"
 	"bgin/internal/shared/user"
 )
 

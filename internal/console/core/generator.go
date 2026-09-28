@@ -142,7 +142,7 @@ func Plan(opts GeneratorOptions, data TemplateData) []FilePlan {
 	}
 
 	plans := []FilePlan{
-		{RelPath: filepath.Join("internal", "models", data.SnakeName+".go"), Template: "model.tmpl"},
+		{RelPath: filepath.Join("internal", "shared", "models", data.SnakeName+".go"), Template: "model.tmpl"},
 		{RelPath: filepath.Join(featureDir, "request.go"), Template: "request.tmpl"},
 		{RelPath: filepath.Join(featureDir, "response.go"), Template: "response.tmpl"},
 		{RelPath: filepath.Join(featureDir, "repository.go"), Template: "repository.tmpl"},

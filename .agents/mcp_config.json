@@ -20,6 +20,21 @@
       "args": [
         "mcp"
       ]
+    },
+    "gopls-mcp-server": {
+      "command": "go",
+      "args": [
+        "run",
+        "golang.org/x/tools/gopls@latest",
+        "mcp"
+      ]
+    },
+    "dbx": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@dbx-app/mcp-server"
+      ]
     }
   }
 }

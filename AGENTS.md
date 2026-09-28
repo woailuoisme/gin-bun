@@ -18,6 +18,7 @@
 - **对象存储与邮件**：S3/MinIO (`minio/minio-go/v7`) 与本地存储抽象；Mailpit 邮件测试系统 (`wneessen/go-mail`)。
 - **结构化日志与错误处理**：`rs/zerolog` 结构化上下文日志；`samber/oops` 业务错误堆栈与语义化错误码。
 - **时间推导与数据格式化**：[Carbon v2](https://github.com/golang-module/carbon) (`golang-module/carbon/v2`) 链式时间计算与多语言相对时间 + [go-humanize](https://github.com/dustin/go-humanize) (`dustin/go-humanize`) 字节容量与大数字千分位格式化。
+- **高精度金融与货币体系**：基于 [`shopspring/decimal`](https://github.com/shopspring/decimal) 与 [internal/platform/money](file:///Users/seaside/Projects/go/gin-bun/internal/platform/money/money.go) 的不可变 Money 值对象体系，原生映射 Postgres `NUMERIC`，提供 ISO-4217 元数据、金融舍入、Fowler 无损均摊及收单网关适配。
 - **接口契约与文档**：基于 [api.md](file:///Users/seaside/Projects/go/gin-bun/api.md) 契约，使用 `swag` 自动化生成 OpenAPI 规范并嵌入二进制。
 
 ---
@@ -51,7 +52,7 @@
 | | `just migrate-hash` | 重算 `migrations/` 目录的哈希完整性校验链。 |
 | | `just seed` | 幂等注入首个管理员数据。 |
 | | `just fresh` | 破坏性重建数据库并重新播种（需确认；自动化脚本可用 `just fresh-force`）。 |
-| **API 文档生成** | `just docs` | 使用 `swag` 解析生成客户端规范（`internal/apidocs/swagger.json`）与管理端规范（`internal/apidocs/admin_swagger.json`）。 |
+| **API 文档生成** | `just docs` | 使用 `swag` 解析生成客户端规范（`internal/shared/apidocs/swagger.json`）与管理端规范（`internal/shared/apidocs/admin_swagger.json`）。 |
 
 ---
 
@@ -67,10 +68,10 @@ internal/
 ├── console/                    # Artisan 风格 CLI 命令（serve, db:seed, db:fresh）
 ├── database/                   # Bun ORM 客户端初始化与目标 DDL
 │   └── schemas/                # 声明式目标 DDL（Atlas 迁移计算的事实源）
-├── models/                     # 数据库表实体模型（Account, User, Verification 等）
 ├── features/                   # 垂直领域切片（核心业务逻辑）
+│   ├── admin/auth/             # 管理端认证
 │   ├── admin/user/             # 管理端用户管理（routes, handler, service, request, response）
-│   ├── auth/                   # 认证中心（登录/注册/密码重置/会话撤销）
+│   ├── client/auth/            # 客户端认证中心（登录/注册/密码重置/会话撤销）
 │   ├── client/profile/         # 客户端个人资料
 │   └── system/                 # 系统探针与元信息（livez, readyz）
 ├── middleware/                 # 全局与路由级 HTTP 中间件（认证、限流、CORS、监控）
@@ -83,12 +84,20 @@ internal/
 │   ├── identity/               # 上下文用户身份抽取
 │   ├── logger/                 # Zerolog 结构化日志包装
 │   ├── mailer/                 # SMTP 邮件发送抽象
+│   ├── money/                  # 不可变高精度货币值对象 (Money)、ISO-4217 元数据、金融舍入与无损分摊
 │   ├── optional/               # PATCH 局部更新三态值包装（Unset, Null, Value）
 │   ├── response/               # HTTP 成功响应封装（扁平对象与分页信封）
 │   ├── storage/                # 本地与 S3/MinIO 对象存储适配
 │   ├── token/                  # JWT 颁发、验签与撤销
 │   └── validator/              # Go-Playground 校验器与国际化翻译集成
 ├── shared/                     # 跨领域共享内核
+│   ├── apidocs/                # 嵌入式 OpenAPI 规范与文档契约
+│   ├── enums/                  # 全局业务枚举与常量定义
+│   ├── events/                 # 跨切片领域事件模型
+│   ├── indexes/                # 全文检索索引器定义与集中装配
+│   ├── media/                  # 媒体处理、验证、签名与多态附件管理（基于 storage 与 models）
+│   ├── models/                 # 数据库表实体模型（Account, User, Verification 等）
+│   ├── notification/           # 跨切片通知类型与数据载荷
 │   └── user/                   # 共享 User View、字段约束与基础查询契约
 tests/                          # 外部测试包（测试代码与业务逻辑彻底解耦）
 └── integration/                # 真实外部依赖的集成测试（声明 //go:build integration）
@@ -96,12 +105,15 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 
 ### 🚨 架构分层绝对红线
 
-1. **Feature 间严禁横向依赖**：`internal/features/` 下各领域切片（如 `auth` 与 `admin/user`）**绝对禁止相互直接 import**，彻底杜绝隐式耦合与循环依赖。
+1. **Feature 间严禁横向依赖**：`internal/features/` 下各领域切片（如 `client/auth` 与 `admin/user`）**绝对禁止相互直接 import**，彻底杜绝隐式耦合与循环依赖。
 2. **跨 Feature 数据共享统一沉淀至 `internal/shared/`**：当多个 Feature 需要复用相同的数据投影、基础 Repository 或参数定义时，必须提炼并移交至 [internal/shared/](file:///Users/seaside/Projects/go/gin-bun/internal/shared/) 共享内核。
 3. **分层职责绝对隔离**：
    - **Handler**：只负责 HTTP 参数解析绑定、入参校验调度、调用 Service、组装 `response.OK`。**严禁在 Handler 中编写核心业务逻辑或直接操作 ORM/SQL**。
    - **Service**：承载纯业务规则与事务协调，输入输出均为强类型 DTO/Model。通过返回 `samber/oops` 结构化错误传递失败原因。
    - **Platform**：基础设施层必须保持纯粹独立，**严禁 Platform 反向依赖任何 Feature 或 Shared 业务包**。
+4. **Middleware 传输层协议隔离与就地内聚**：
+   - `internal/middleware/` 是专属于 HTTP Delivery/Transport 传输层的通用横切逻辑（认证、鉴权、限流、CORS、监控、全局错误转换），与 Web 协议强绑定。**严禁将 `middleware` 迁入协议无关的 `internal/shared/`**，避免污染纯净的领域共享内核。
+   - 通用传输层中间件集中于 `internal/middleware/`；若未来存在仅限单一 Feature 使用的特定业务拦截器，**直接就地内聚于对应的 `internal/features/<feature>/` 内部**。
 
 ---
 
@@ -150,7 +162,7 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 | **终端用户错误提示** | 统一 i18n 资源 | `lang/zh-CN/*.toml`, `lang/en/*.toml` | 在业务代码中直接硬编码中文提示 |
 
 ### 4.6 时间、容量与数据格式化红线规范 (Time, Capacity & Formatting Discipline)
-- **Model 与 DTO 原生时间红线（绝对红线）**：数据库实体 Model（`internal/models/`）与对外传输对象 DTO（`request.go` / `response.go`）**必须严格使用 Go 原生 `time.Time`**。严禁在数据库映射模型或对外契约中引入 `carbon.Carbon` / `carbon.DateTime` 等第三方包装类型，彻底确保 Bun ORM、PostgreSQL `timestamptz` 原生驱动与 OpenAPI RFC 3339 序列化的极致性能、类型安全与契约稳定。
+- **Model 与 DTO 原生时间红线（绝对红线）**：数据库实体 Model（`internal/shared/models/`）与对外传输对象 DTO（`request.go` / `response.go`）**必须严格使用 Go 原生 `time.Time`**。严禁在数据库映射模型或对外契约中引入 `carbon.Carbon` / `carbon.DateTime` 等第三方包装类型，彻底确保 Bun ORM、PostgreSQL `timestamptz` 原生驱动与 OpenAPI RFC 3339 序列化的极致性能、类型安全与契约稳定。
 - **业务时间推导统一 Carbon**：在业务逻辑层（Service）、计划任务（Worker）、CLI 命令与报表导出（Excel）中，凡涉及复杂时间计算（如有效期加减、封禁时间推导、自然日跨度）、相对时间展示（`DiffForHumans`）以及非标日期字符串解析时，**统一使用 `github.com/golang-module/carbon/v2`**（全局时区与 Locale 自动与 `.env` 中 `APP_TIMEZONE` 和 `APP_LOCALE` 同步）。
 - **容量与数字人性化统一 Humanize**：在 CLI 报表输出、运维日志、存储元数据与监控统计中，文件/对象字节容量展示（`humanize.Bytes` / `humanize.IBytes`）、大数字千分位分割（`humanize.Comma`）**统一使用 `github.com/dustin/go-humanize`**，严禁手动编写冗余的除法换算或格式化逻辑。
 
@@ -172,13 +184,13 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 
 系统采用前后台严格隔离的双 OpenAPI / Scalar 文档架构：
 1. **客户端文档 (`/docs`)**：
-   - 宿主页挂载在 `/docs`，规范接口为 `/docs/openapi.json`（对应静态文件 `internal/apidocs/swagger.json`）。
+   - 宿主页挂载在 `/docs`，规范接口为 `/docs/openapi.json`（对应静态文件 `internal/shared/apidocs/swagger.json`）。
    - 根信息在 `cmd/api/main.go` 中声明（Title 为 `bgin API`）。
-   - **严格收录范围**：仅包含客户端自助与认证端点（`auth`、`profile`、`realtime`），构建时严格排除后台管理端点（`internal/features/admin`）。
+   - **严格收录范围**：仅包含客户端自助与认证端点（`client/auth`、`client/profile`、`realtime`），构建时严格排除后台管理端点（`internal/features/admin`）。
 2. **管理端文档 (`/docs/admin`)**：
-   - 宿主页挂载在 `/docs/admin`，规范接口为 `/docs/admin/openapi.json`（对应静态文件 `internal/apidocs/admin_swagger.json`）。
+   - 宿主页挂载在 `/docs/admin`，规范接口为 `/docs/admin/openapi.json`（对应静态文件 `internal/shared/apidocs/admin_swagger.json`）。
    - 根信息在 `cmd/api/admin_doc.go` 中声明（Title 为 `bgin Admin API`）。
-   - **严格收录范围**：仅收录管理端 API（如 `internal/features/admin/user`），构建时严格排除客户端专属端点。
+   - **严格收录范围**：仅收录管理端 API（如 `internal/features/admin/user`），构建时严格排除客户端专属端点（`internal/features/client`）。
    - **解除旧约束**：取消原 ADR-0005 中“管理端不添加 swag 注解”的旧约束，管理端 Handler 与 DTO 必须全量规范书写 Swag 注解。
 3. **环境与访问控制**：
    - 两份文档统一受 `ENABLE_DOCS` 配置项控制，生产环境未开启时均返回 404。
@@ -250,7 +262,7 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 [migrations/YYYYMMDD_name.sql] ──(版本化记录)──> 真实执行的增量迁移脚本
              │
              ▼ (同步映射)
-[internal/models/*.go] ──(ORM 实体定义)──> Bun ORM 强类型 Go Struct
+[internal/shared/models/*.go] ──(ORM 实体定义)──> Bun ORM 强类型 Go Struct
 ```
 
 ### 数据库操作硬性准则：

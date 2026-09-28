@@ -10,7 +10,7 @@ import (
 	"bgin/internal/config"
 	adminauth "bgin/internal/features/admin/auth"
 	admin "bgin/internal/features/admin/user"
-	"bgin/internal/features/auth"
+	"bgin/internal/features/client/auth"
 	"bgin/internal/features/client/profile"
 	paymentFeature "bgin/internal/features/payment"
 	realtimeFeature "bgin/internal/features/realtime"

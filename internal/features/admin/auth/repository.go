@@ -5,7 +5,7 @@ import (
 
 	"github.com/uptrace/bun"
 
-	"bgin/internal/models"
+	"bgin/internal/shared/models"
 	shareduser "bgin/internal/shared/user"
 )
 

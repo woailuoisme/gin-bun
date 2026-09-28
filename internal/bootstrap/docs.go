@@ -5,7 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"bgin/internal/apidocs"
+	"bgin/internal/shared/apidocs"
 )
 
 // 文档页面与 OpenAPI 规范路由路径常量。

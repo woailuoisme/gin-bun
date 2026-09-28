@@ -137,10 +137,10 @@ redis:
 
 alias cache-shell := redis
 
-# 生成前台与管理端两套 OpenAPI 接口文档到 internal/apidocs/
+# 生成前台与管理端两套 OpenAPI 接口文档到 internal/shared/apidocs/
 docs:
-    swag init -d "$(find cmd internal -type f -name '*.go' ! -path '*/admin/*' ! -path '*/admin' -exec dirname {} + | sort -u | paste -sd, -)" -g main.go -o internal/apidocs --parseInternal --outputTypes json
-    swag init -d "$(find cmd internal -type f -name '*.go' ! -path '*/features/client*' ! -path '*/features/auth*' ! -path '*/features/realtime*' -exec dirname {} + | sort -u | paste -sd, -)" -g admin_doc.go -o internal/apidocs/admin_tmp --parseInternal --outputTypes json
-    mv internal/apidocs/admin_tmp/swagger.json internal/apidocs/admin_swagger.json
-    rm -rf internal/apidocs/admin_tmp
+    swag init -d "$(find cmd internal -type f -name '*.go' ! -path '*/admin/*' ! -path '*/admin' -exec dirname {} + | sort -u | paste -sd, -)" -g main.go -o internal/shared/apidocs --parseInternal --outputTypes json
+    swag init -d "$(find cmd internal -type f -name '*.go' ! -path '*/features/client*' ! -path '*/features/realtime*' -exec dirname {} + | sort -u | paste -sd, -)" -g admin_doc.go -o internal/shared/apidocs/admin_tmp --parseInternal --outputTypes json
+    mv internal/shared/apidocs/admin_tmp/swagger.json internal/shared/apidocs/admin_swagger.json
+    rm -rf internal/shared/apidocs/admin_tmp
 

@@ -126,7 +126,7 @@ func TestGenerateCRUD_Execution(t *testing.T) {
 	assert.Contains(t, string(routesContent), "RegisterAdminRoutes")
 	assert.Contains(t, string(routesContent), `mw.RequirePermission(authz.Resource("articles")`)
 
-	modelPath := filepath.Join(tempDir, "internal", "models", "article.go")
+	modelPath := filepath.Join(tempDir, "internal", "shared", "models", "article.go")
 	modelContent, err := os.ReadFile(modelPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(modelContent), `bun:"table:articles,alias:a"`)

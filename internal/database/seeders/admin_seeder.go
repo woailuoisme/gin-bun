@@ -10,10 +10,10 @@ import (
 	"github.com/uptrace/bun"
 
 	"bgin/internal/config"
-	"bgin/internal/models"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/logger"
 	"bgin/internal/platform/validator"
+	"bgin/internal/shared/models"
 	"bgin/internal/shared/user"
 )
 

@@ -14,10 +14,10 @@ import (
 	"github.com/samber/lo"
 	"github.com/uptrace/bun"
 
-	"bgin/internal/models"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
+	"bgin/internal/shared/models"
 )
 
 func init() {

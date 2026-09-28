@@ -11,8 +11,8 @@ import (
 	"github.com/uptrace/bun"
 
 	"bgin/internal/config"
-	"bgin/internal/models"
 	"bgin/internal/platform/search"
+	"bgin/internal/shared/models"
 )
 
 func TestNoopClientContract(t *testing.T) {

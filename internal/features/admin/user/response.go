@@ -3,8 +3,8 @@ package admin
 import (
 	"time"
 
-	"bgin/internal/models"
 	"bgin/internal/platform/response"
+	"bgin/internal/shared/models"
 	"bgin/internal/shared/user"
 )
 

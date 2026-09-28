@@ -13,8 +13,8 @@ import (
 	"bgin/internal/config"
 	"bgin/internal/console/core"
 	"bgin/internal/database"
-	_ "bgin/internal/indexes"
 	"bgin/internal/platform/search"
+	_ "bgin/internal/shared/indexes"
 )
 
 // newScoutImportCmd 将指定模型或全部可搜索模型的数据批量导入搜索引擎。

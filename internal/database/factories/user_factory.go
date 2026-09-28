@@ -10,8 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"bgin/internal/models"
 	"bgin/internal/platform/hasher"
+	"bgin/internal/shared/models"
 )
 
 // UserFactory 是面向 models.User 的领域工厂，提供开箱即用的假数据定义与状态链。

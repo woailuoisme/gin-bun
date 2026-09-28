@@ -13,9 +13,15 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/spf13/cobra"
 
+	"bgin/internal/bootstrap"
 	"bgin/internal/config"
 	"bgin/internal/console/core"
+	"bgin/internal/features/client/auth"
+	"bgin/internal/features/system"
+	"bgin/internal/platform/logger"
+	"bgin/internal/platform/mailer"
 	"bgin/internal/platform/queue"
+	"bgin/internal/platform/storage"
 )
 
 // newQueueWorkCmd 启动 Asynq 统一工作协程与计划任务调度器。
@@ -36,11 +42,37 @@ func newQueueWorkCmd() *cobra.Command {
 				return err
 			}
 
+			log := logger.New(cfg)
+
+			mailerClient, err := mailer.New(cfg.Mail, *log)
+			if err != nil {
+				return fmt.Errorf("failed to initialize mailer: %w", err)
+			}
+			defer func() { _ = mailerClient.Close() }()
+
+			storageClient, err := storage.Open(cmd.Context(), cfg.Storage)
+			if err != nil {
+				return fmt.Errorf("failed to initialize storage: %w", err)
+			}
+
+			// 注册各 Feature 切片的后台任务工厂与显式依赖
+			reg := queue.DefaultRegistry()
+			auth.RegisterJobs(reg, mailerClient)
+			system.RegisterJobs(reg, storageClient)
+
+			// 编排并挂载周期性定时任务总时刻表
+			if !withoutScheduler {
+				sched := queue.NewSchedule(reg)
+				bootstrap.RegisterSchedules(sched)
+				sched.Register()
+			}
+
 			client, cleanup, err := queue.NewClient(cfg.Queue)
 			if err != nil {
 				return fmt.Errorf("failed to initialize queue client: %w", err)
 			}
 			defer cleanup()
+			client.SetLogger(log)
 
 			if concurrency > 0 {
 				client.SetConcurrency(concurrency)

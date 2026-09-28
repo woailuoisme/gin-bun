@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/database/factories"
-	"bgin/internal/models"
+	"bgin/internal/shared/models"
 )
 
 func TestFactory_InMemoryMake(t *testing.T) {

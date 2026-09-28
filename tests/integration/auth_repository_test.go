@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
 
-	"bgin/internal/features/auth"
-	"bgin/internal/models"
+	"bgin/internal/features/client/auth"
+	"bgin/internal/shared/models"
 )
 
 // testHash 是占位口令哈希，仓储层不校验 argon2id 本身。

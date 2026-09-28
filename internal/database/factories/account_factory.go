@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"bgin/internal/models"
 	"bgin/internal/platform/hasher"
+	"bgin/internal/shared/models"
 )
 
 // AccountFactory 是面向 models.Account 凭据实体的领域工厂。

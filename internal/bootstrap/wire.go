@@ -12,7 +12,7 @@ import (
 	"bgin/internal/database"
 	adminauth "bgin/internal/features/admin/auth"
 	admin "bgin/internal/features/admin/user"
-	"bgin/internal/features/auth"
+	"bgin/internal/features/client/auth"
 	"bgin/internal/features/client/profile"
 	paymentFeature "bgin/internal/features/payment"
 	realtimeFeature "bgin/internal/features/realtime"
@@ -24,7 +24,6 @@ import (
 	"bgin/internal/platform/i18n"
 	"bgin/internal/platform/logger"
 	"bgin/internal/platform/mailer"
-	"bgin/internal/platform/media"
 	"bgin/internal/platform/notification"
 	"bgin/internal/platform/payment"
 	"bgin/internal/platform/pdf"
@@ -33,6 +32,7 @@ import (
 	"bgin/internal/platform/storage"
 	"bgin/internal/platform/token"
 	"bgin/internal/platform/wechat"
+	"bgin/internal/shared/media"
 	"bgin/internal/shared/user"
 )
 
@@ -131,7 +131,10 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		return nil, td.fail(err)
 	}
 
-	realtimeGateway, err := realtime.RegisterRealtimeGateway(cfg, nil)
+	realtimeReg := realtime.NewRegistry()
+	realtimeFeature.RegisterChannels(realtimeReg, userRepo)
+
+	realtimeGateway, err := realtime.RegisterRealtimeGateway(cfg, realtimeReg)
 	if err != nil {
 		return nil, td.fail(err)
 	}

@@ -9,7 +9,6 @@ import (
 	"bgin/internal/config"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/mailer"
-	"bgin/internal/platform/media"
 	"bgin/internal/platform/notification"
 	"bgin/internal/platform/payment"
 	"bgin/internal/platform/pdf"
@@ -17,6 +16,7 @@ import (
 	"bgin/internal/platform/search"
 	"bgin/internal/platform/storage"
 	"bgin/internal/platform/wechat"
+	"bgin/internal/shared/media"
 )
 
 // Application 聚合装配完成的系统依赖与 HTTP 引擎。

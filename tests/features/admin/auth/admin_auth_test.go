@@ -13,12 +13,12 @@ import (
 
 	"bgin/internal/config"
 	adminauth "bgin/internal/features/admin/auth"
-	"bgin/internal/models"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/token"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
+	"bgin/internal/shared/models"
 )
 
 func init() {

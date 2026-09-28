@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"bgin/internal/models"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/identity"
@@ -15,6 +14,7 @@ import (
 	"bgin/internal/platform/token"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
+	"bgin/internal/shared/models"
 	shareduser "bgin/internal/shared/user"
 )
 

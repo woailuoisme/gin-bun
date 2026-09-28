@@ -39,7 +39,7 @@ Generates / Removes:
   - internal/features/[admin|client]/<name>/service.go
   - internal/features/[admin|client]/<name>/request.go
   - internal/features/[admin|client]/<name>/response.go
-  - internal/models/<name>.go
+  - internal/shared/models/<name>.go
   - internal/features/[admin|client]/<name>/ (if directory is empty on delete)
 
 Examples:

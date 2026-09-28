@@ -10,6 +10,8 @@ const (
 	OTPTypeSignup OTPType = "signup"
 	// OTPTypePasswordReset 密码重置验证码。
 	OTPTypePasswordReset OTPType = "password_reset"
+	// OTPTypeEmailVerification 邮箱验证验证码。
+	OTPTypeEmailVerification OTPType = "email_verification"
 )
 
 // String 返回验证码用途的字符串表现形式。
@@ -19,5 +21,14 @@ func (t OTPType) String() string {
 
 // IsValid 检查验证码用途是否合法。
 func (t OTPType) IsValid() bool {
-	return t == OTPTypeSignup || t == OTPTypePasswordReset
+	return t == OTPTypeSignup || t == OTPTypePasswordReset || t == OTPTypeEmailVerification
+}
+
+// OTPTypeValues 获取全部验证码用途枚举值。
+func OTPTypeValues() []OTPType {
+	return []OTPType{
+		OTPTypeSignup,
+		OTPTypePasswordReset,
+		OTPTypeEmailVerification,
+	}
 }

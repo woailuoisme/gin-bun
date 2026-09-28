@@ -4,30 +4,6 @@ package enums
 import (
 	"fmt"
 	"strings"
-
-	platformenums "bgin/internal/platform/enums"
-)
-
-// 通用颜色常量定义，用于枚举元数据展示与徽标渲染。
-//
-// 定义已下沉到平台层的 platform/enums：支付枚举同样需要这套词汇，
-// 放在平台层可让 platform/payment 直接复用而不必反向依赖 shared。
-// 这里保留同名别名，维持本包既有调用点与对外常量的稳定性。
-const (
-	ColorPrimary   = platformenums.ColorPrimary
-	ColorSecondary = platformenums.ColorSecondary
-	ColorSuccess   = platformenums.ColorSuccess
-	ColorDanger    = platformenums.ColorDanger
-	ColorWarning   = platformenums.ColorWarning
-	ColorInfo      = platformenums.ColorInfo
-	ColorGray      = platformenums.ColorGray
-	ColorPurple    = platformenums.ColorPurple
-	ColorOrange    = platformenums.ColorOrange
-)
-
-// 通用状态与操作标签常量，定义见 platform/enums。
-const (
-	LabelPending = platformenums.LabelPending
 )
 
 // EnumInfo 定义枚举项的通用元数据，包括取值、显示标签、徽标颜色与排序优先级。
