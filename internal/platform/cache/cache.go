@@ -135,6 +135,9 @@ func (c *Client) Ping(ctx context.Context) error {
 	return c.do(ctx, c.rdb.B().Ping().Build()).Error()
 }
 
+// Driver 返回底层驱动标识。
+func (c *Client) Driver() string { return "valkey" }
+
 // Get 读取键的值；键不存在时返回 ErrNotFound。
 func (c *Client) Get(ctx context.Context, key string) (string, error) {
 	value, err := c.do(ctx, c.rdb.B().Get().Key(key).Build()).ToString()

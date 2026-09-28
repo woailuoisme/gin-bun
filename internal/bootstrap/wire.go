@@ -29,6 +29,7 @@ import (
 	"bgin/internal/platform/payment"
 	"bgin/internal/platform/pdf"
 	"bgin/internal/platform/realtime"
+	"bgin/internal/platform/search"
 	"bgin/internal/platform/storage"
 	"bgin/internal/platform/token"
 	"bgin/internal/platform/wechat"
@@ -125,16 +126,31 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		Hasher: hasherClient,
 	})
 
-	// 初始化健康就绪探针 Handler
-	systemHandler := system.NewHandler(
-		system.NewService(system.Deps{Database: databasePinger{db: db}, Cache: cacheClient}),
-		log,
-	)
+	searchClient, err := search.New(cfg.Search)
+	if err != nil {
+		return nil, td.fail(err)
+	}
 
 	realtimeGateway, err := realtime.RegisterRealtimeGateway(cfg, nil)
 	if err != nil {
 		return nil, td.fail(err)
 	}
+
+	mediaManager := media.New(cfg.Media, cfg.Storage, disk, db)
+
+	// 初始化健康就绪探针 Handler
+	systemHandler := system.NewHandler(
+		system.NewService(system.Deps{
+			Database: databasePinger{db: db},
+			Cache:    cacheClient,
+			Storage:  disk,
+			Search:   searchClient,
+			Realtime: realtimeGateway,
+			Imgproxy: mediaManager.Image(),
+		}),
+		log,
+	)
+
 	realtimeService := realtimeFeature.NewService(realtimeFeature.Deps{
 		Gateway: realtimeGateway,
 		Cfg:     cfg,
@@ -174,8 +190,6 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		return nil, td.fail(err)
 	}
 
-	mediaManager := media.New(cfg.Media, cfg.Storage, disk, db)
-
 	pdfService, err := pdf.RegisterPDF(cfg, disk, log)
 	if err != nil {
 		return nil, td.fail(err)
@@ -193,6 +207,8 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		pdf:          pdfService,
 		wechat:       wechatClient,
 		payment:      paymentManager,
+		realtime:     realtimeGateway,
+		search:       searchClient,
 		engine:       engine,
 	}, nil
 }
@@ -208,6 +224,9 @@ type databasePinger struct{ db *bun.DB }
 
 // Ping 实现 system.Pinger。
 func (p databasePinger) Ping(ctx context.Context) error { return p.db.PingContext(ctx) }
+
+// Driver 返回底层驱动标识。
+func (databasePinger) Driver() string { return "postgres" }
 
 // logDatabaseReady 打印数据库连接池就绪日志并进行连接池配额诊断。
 func logDatabaseReady(ctx context.Context, log *zerolog.Logger, db *bun.DB, cfg config.DatabaseConfig) {

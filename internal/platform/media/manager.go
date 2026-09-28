@@ -143,6 +143,30 @@ func (m *Manager) Image() Client {
 	return m.image
 }
 
+// Ping 执行底层 imgproxy 连通性探测（满足 ready.Pinger 契约）。
+func (m *Manager) Ping(ctx context.Context) error {
+	if m.image == nil {
+		return nil
+	}
+	return m.image.Ping(ctx)
+}
+
+// Driver 返回图像处理驱动标识。
+func (m *Manager) Driver() string {
+	if m.image == nil {
+		return "imgproxy"
+	}
+	return m.image.Driver()
+}
+
+// Enabled 报告多态媒体管理器中的 imgproxy 是否已启用。
+func (m *Manager) Enabled() bool {
+	if m.image == nil {
+		return false
+	}
+	return m.image.Enabled()
+}
+
 // Disk 返回底层的存储磁盘驱动句柄。
 func (m *Manager) Disk() storage.Disk {
 	return m.disk

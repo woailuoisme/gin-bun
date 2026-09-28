@@ -191,6 +191,9 @@ type Client interface {
 	ResolveSourceURI(path string) string
 	CheckHealth(ctx context.Context) error
 	HealthCheck() error
+	Ping(ctx context.Context) error
+	Driver() string
+	Enabled() bool
 	Close() error
 	Shutdown() error
 }
@@ -363,6 +366,21 @@ func (s *client) CheckHealth(ctx context.Context) error {
 // HealthCheck 提供无 context 入参的健康检查适配入口。
 func (s *client) HealthCheck() error {
 	return s.CheckHealth(context.Background())
+}
+
+// Ping 执行 imgproxy 连通性探测（满足 ready.Pinger 契约）。
+func (s *client) Ping(ctx context.Context) error {
+	return s.CheckHealth(ctx)
+}
+
+// Driver 返回当前图像服务驱动名称。
+func (s *client) Driver() string {
+	return "imgproxy"
+}
+
+// Enabled 报告当前图像服务是否启用。
+func (s *client) Enabled() bool {
+	return s.config.IsEnabled()
 }
 
 // Close 优雅释放资源。

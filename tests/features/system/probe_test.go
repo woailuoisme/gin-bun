@@ -1,4 +1,4 @@
-// 本文件验证两个探针的分工与边界：存活探针不碰依赖；就绪探针逐个探测、失败给 503；
+// 本文件验证两个探针的分工与边界：存活探针不碰依赖；就绪探针并发探测、关键依赖失败给 503、非关键依赖失败给 200 degraded；
 // 探测失败的细节只进日志，绝不进响应体。
 package system_test
 
@@ -104,10 +104,14 @@ func TestReadinessAllHealthy(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(body), &got))
 	assert.Equal(t, system.StatusReady, got.Status)
 	assert.Equal(t, system.CheckHealthy, got.Checks[system.ComponentDatabase].Status)
+	assert.Equal(t, "postgres", got.Checks[system.ComponentDatabase].Driver)
+	assert.True(t, got.Checks[system.ComponentDatabase].Critical)
 	assert.Equal(t, system.CheckHealthy, got.Checks[system.ComponentCache].Status)
+	assert.Equal(t, "valkey", got.Checks[system.ComponentCache].Driver)
+	assert.False(t, got.Checks[system.ComponentCache].Critical)
 }
 
-// TestReadinessReportsUnreachableDependency 覆盖 503 路径：状态码、状态词与逐组件明细。
+// TestReadinessReportsUnreachableDependency 覆盖关键项失败 503 路径：状态码、状态词与逐组件明细。
 func TestReadinessReportsUnreachableDependency(t *testing.T) {
 	engine, _ := newProbe(t, stubPinger{err: errInternal}, stubPinger{})
 
@@ -119,6 +123,23 @@ func TestReadinessReportsUnreachableDependency(t *testing.T) {
 	assert.Equal(t, system.StatusNotReady, got.Status)
 	assert.Equal(t, system.CheckUnreachable, got.Checks[system.ComponentDatabase].Status)
 	assert.Equal(t, system.CheckHealthy, got.Checks[system.ComponentCache].Status)
+}
+
+// TestReadinessDegradedWhenNonCriticalFails 验证非关键项（如缓存）失败时降级返回 200 与 degraded 状态。
+func TestReadinessDegradedWhenNonCriticalFails(t *testing.T) {
+	engine, logs := newProbe(t, stubPinger{}, stubPinger{err: errors.New("valkey cluster partition")})
+
+	status, body := get(t, engine, "/readyz")
+	require.Equal(t, http.StatusOK, status)
+
+	var got system.ReadinessResponse
+	require.NoError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, system.StatusDegraded, got.Status)
+	assert.Equal(t, system.CheckHealthy, got.Checks[system.ComponentDatabase].Status)
+	assert.Equal(t, system.CheckDegraded, got.Checks[system.ComponentCache].Status)
+
+	assert.Contains(t, logs.String(), "valkey cluster partition")
+	assert.Contains(t, logs.String(), system.ComponentCache)
 }
 
 // TestReadinessKeepsErrorDetailOutOfResponse 是本组里最要紧的一条：底层错误常含目标地址与
@@ -163,4 +184,104 @@ func TestReadinessUnconfiguredDependency(t *testing.T) {
 	status, body := get(t, engine, "/readyz")
 	assert.Equal(t, http.StatusServiceUnavailable, status)
 	assert.Contains(t, body, system.CheckUnreachable)
+}
+
+// stubComponent 模拟实现 Driver 和 Enabled 契约的基础设施组件。
+type stubComponent struct {
+	driver  string
+	enabled bool
+	err     error
+}
+
+func (s stubComponent) Ping(ctx context.Context) error {
+	return s.err
+}
+
+func (s stubComponent) Driver() string {
+	return s.driver
+}
+
+func (s stubComponent) Enabled() bool {
+	return s.enabled
+}
+
+// TestReadinessWithExtendedComponents 验证 storage(garage), search(meilisearch), realtime(centrifugo), imgproxy 接入。
+func TestReadinessWithExtendedComponents(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logs := &bytes.Buffer{}
+	logger := zerolog.New(logs)
+
+	engine := gin.New()
+	svc := system.NewService(system.Deps{
+		Database: stubPinger{},
+		Cache:    stubPinger{},
+		Storage:  stubComponent{driver: "garage", enabled: true},
+		Search:   stubComponent{driver: "meilisearch", enabled: true},
+		Realtime: stubComponent{driver: "centrifugo", enabled: false},
+		Imgproxy: stubComponent{driver: "imgproxy", enabled: false},
+	})
+	system.RegisterRoutes(engine, system.NewHandler(svc, &logger))
+
+	status, body := get(t, engine, "/readyz")
+	require.Equal(t, http.StatusOK, status)
+
+	var got system.ReadinessResponse
+	require.NoError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, system.StatusReady, got.Status)
+
+	// storage (garage)
+	storageCheck, ok := got.Checks[system.ComponentStorage]
+	require.True(t, ok)
+	assert.Equal(t, system.CheckHealthy, storageCheck.Status)
+	assert.Equal(t, "garage", storageCheck.Driver)
+	assert.False(t, storageCheck.Critical)
+
+	// search (meilisearch)
+	searchCheck, ok := got.Checks[system.ComponentSearch]
+	require.True(t, ok)
+	assert.Equal(t, system.CheckHealthy, searchCheck.Status)
+	assert.Equal(t, "meilisearch", searchCheck.Driver)
+	assert.False(t, searchCheck.Critical)
+
+	// realtime (centrifugo, disabled)
+	realtimeCheck, ok := got.Checks[system.ComponentRealtime]
+	require.True(t, ok)
+	assert.Equal(t, system.CheckDisabled, realtimeCheck.Status)
+	assert.Equal(t, "centrifugo", realtimeCheck.Driver)
+	assert.False(t, realtimeCheck.Critical)
+
+	// imgproxy (disabled)
+	imgproxyCheck, ok := got.Checks[system.ComponentImgproxy]
+	require.True(t, ok)
+	assert.Equal(t, system.CheckDisabled, imgproxyCheck.Status)
+	assert.Equal(t, "imgproxy", imgproxyCheck.Driver)
+	assert.False(t, imgproxyCheck.Critical)
+}
+
+// TestReadinessDegradedWhenExtendedComponentFails 验证启用的扩展组件故障时优雅降级为 degraded。
+func TestReadinessDegradedWhenExtendedComponentFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logs := &bytes.Buffer{}
+	logger := zerolog.New(logs)
+
+	engine := gin.New()
+	svc := system.NewService(system.Deps{
+		Database: stubPinger{},
+		Cache:    stubPinger{},
+		Storage:  stubComponent{driver: "garage", enabled: true},
+		Imgproxy: stubComponent{driver: "imgproxy", enabled: true, err: errors.New("imgproxy connection refused")},
+	})
+	system.RegisterRoutes(engine, system.NewHandler(svc, &logger))
+
+	status, body := get(t, engine, "/readyz")
+	require.Equal(t, http.StatusOK, status)
+
+	var got system.ReadinessResponse
+	require.NoError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, system.StatusDegraded, got.Status)
+
+	imgCheck := got.Checks[system.ComponentImgproxy]
+	assert.Equal(t, system.CheckDegraded, imgCheck.Status)
+	assert.Equal(t, "imgproxy", imgCheck.Driver)
+	assert.Contains(t, logs.String(), "imgproxy connection refused")
 }

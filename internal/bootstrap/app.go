@@ -13,6 +13,8 @@ import (
 	"bgin/internal/platform/notification"
 	"bgin/internal/platform/payment"
 	"bgin/internal/platform/pdf"
+	"bgin/internal/platform/realtime"
+	"bgin/internal/platform/search"
 	"bgin/internal/platform/storage"
 	"bgin/internal/platform/wechat"
 )
@@ -30,6 +32,8 @@ type Application struct {
 	pdf          *pdf.Service
 	wechat       *wechat.Client
 	payment      *payment.Manager
+	realtime     realtime.Manager
+	search       search.Client
 	engine       *gin.Engine
 }
 

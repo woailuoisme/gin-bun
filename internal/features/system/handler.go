@@ -2,12 +2,12 @@ package system
 
 import (
 	"context"
-	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 
+	"bgin/internal/platform/ready"
 	"bgin/internal/platform/response"
 )
 
@@ -35,29 +35,19 @@ func (h *Handler) Liveness(c *gin.Context) {
 	response.OK(c, HealthResponse{Status: StatusOK})
 }
 
-// Readiness 处理 GET /readyz 就绪探针请求：逐个探测依赖，任一不可达即返回 503。
+// Readiness 处理 GET /readyz 就绪探针请求：并发探测各依赖，关键项失败返回 503，非关键项失败返回 200 degraded。
 func (h *Handler) Readiness(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), probeTimeout)
 	defer cancel()
 
-	outcomes := h.service.Check(ctx)
-	ready := true
-	checks := make(map[string]ComponentCheck, len(outcomes))
-	for _, outcome := range outcomes {
-		if outcome.Err != nil {
-			ready = false
-			checks[outcome.Name] = ComponentCheck{Status: CheckUnreachable}
-			h.logger.Warn().Err(outcome.Err).Str("component", outcome.Name).Msg("readiness probe failed")
-			continue
-		}
-		checks[outcome.Name] = ComponentCheck{Status: CheckHealthy}
+	result, errs := h.service.Check(ctx)
+	for name, err := range errs {
+		h.logger.Warn().Err(err).Str("component", name).Msg("readiness probe failed")
 	}
 
-	body := ReadinessResponse{Status: StatusReady, Checks: checks}
-	if !ready {
-		body.Status = StatusNotReady
-		c.JSON(http.StatusServiceUnavailable, body)
+	if result.Status == ready.StatusNotReady {
+		c.JSON(result.StatusCode(), result)
 		return
 	}
-	response.OK(c, body)
+	response.OK(c, result)
 }

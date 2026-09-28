@@ -21,6 +21,8 @@ type MediaConfig struct {
 
 // ImgproxyConfig 描述 Imgproxy 图像防篡改签名与服务端连接配置。
 type ImgproxyConfig struct {
+	// Enabled 控制是否启用 Imgproxy 图像处理服务 (默认 false)
+	Enabled bool `env:"IMGPROXY_ENABLED" envDefault:"false"`
 	// BaseURL Imgproxy 服务基础访问地址（如 http://localhost:8088）
 	BaseURL string `env:"IMGPROXY_URL" envDefault:"http://localhost:8088"`
 	// Key 十六进制编码的防篡改签名密钥
@@ -33,6 +35,11 @@ type ImgproxyConfig struct {
 	DefaultFormat string `env:"IMGPROXY_DEFAULT_FORMAT" envDefault:"webp"`
 	// DefaultQuality 默认压缩质量 (1-100，默认 85)
 	DefaultQuality int `env:"IMGPROXY_DEFAULT_QUALITY" envDefault:"85"`
+}
+
+// IsEnabled 报告是否启用了 Imgproxy 服务。
+func (c *ImgproxyConfig) IsEnabled() bool {
+	return c.Enabled && strings.TrimSpace(c.BaseURL) != ""
 }
 
 // ResolveCredentials 解析获取 Imgproxy BaseURL、Key 与 Salt。

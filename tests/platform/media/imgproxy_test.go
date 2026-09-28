@@ -83,3 +83,25 @@ func TestImgproxyClient_Signature(t *testing.T) {
 		assert.Contains(t, urlStr, "https://img.example.com/insecure/")
 	})
 }
+
+func TestImgproxyClient_ReadyContract(t *testing.T) {
+	t.Run("默认配置下报告未启用且驱动为 imgproxy", func(t *testing.T) {
+		cfg := config.ImgproxyConfig{
+			BaseURL: "http://localhost:8088",
+			Enabled: false,
+		}
+		c := media.NewImageClient(cfg)
+		assert.Equal(t, "imgproxy", c.Driver())
+		assert.False(t, c.Enabled())
+	})
+
+	t.Run("显式启用后报告已启用", func(t *testing.T) {
+		cfg := config.ImgproxyConfig{
+			BaseURL: "http://localhost:8088",
+			Enabled: true,
+		}
+		c := media.NewImageClient(cfg)
+		assert.Equal(t, "imgproxy", c.Driver())
+		assert.True(t, c.Enabled())
+	})
+}

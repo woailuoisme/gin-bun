@@ -338,3 +338,16 @@ func (d *s3Disk) HealthCheck(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Driver 返回当前存储驱动名称。若服务地址包含 garage 则自动识别为 garage，缺省为 s3。
+func (d *s3Disk) Driver() string {
+	if strings.Contains(strings.ToLower(d.endpoint), "garage") {
+		return "garage"
+	}
+	return "s3"
+}
+
+// Ping 实现 ready.Pinger 接口。
+func (d *s3Disk) Ping(ctx context.Context) error {
+	return d.HealthCheck(ctx)
+}

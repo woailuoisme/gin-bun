@@ -39,6 +39,9 @@ type Manager interface {
 	GetNodeID() string
 	Client() *gocent.Client
 	Config() *Config
+	Enabled() bool
+	Ping(ctx context.Context) error
+	Driver() string
 }
 
 // AfterCommit 注册在事务提交后执行的钩子；若上下文中未注入事务钩子机制，则立即执行。
@@ -149,9 +152,31 @@ func (m *ManagerImpl) GetNodeID() string {
 	return "centrifugo"
 }
 
+// Driver 返回当前实时通信驱动名称。
+func (m *ManagerImpl) Driver() string {
+	return "centrifugo"
+}
+
 // disabled 判断实时网关是否不可用（未配置、未启用或客户端未建立）。
 func (m *ManagerImpl) disabled() bool {
 	return m.cfg == nil || !m.cfg.Enabled || m.client == nil
+}
+
+// Enabled 报告 Centrifugo 实时服务是否已配置并启用。
+func (m *ManagerImpl) Enabled() bool {
+	return !m.disabled()
+}
+
+// Ping 探测 Centrifugo 服务节点的连通性与可用性（满足 ready.Pinger 契约）。
+func (m *ManagerImpl) Ping(ctx context.Context) error {
+	if m.disabled() {
+		return errors.New("realtime: centrifugo client is disabled or not configured")
+	}
+	_, err := m.client.Info(ctx)
+	if err != nil {
+		return oops.Code("INTERNAL_SERVER_ERROR").In("ManagerImpl.Ping").Wrap(err)
+	}
+	return nil
 }
 
 // retryCall 以统一重试策略（3 次、50ms 起指数退避）执行 Centrifugo 出站调用。

@@ -57,6 +57,10 @@ type Disk interface {
 	PresignPut(ctx context.Context, path string, ttl time.Duration) (string, error)
 	// HealthCheck 探测存储是否可用，供启动期与就绪探针使用。
 	HealthCheck(ctx context.Context) error
+	// Ping 探测存储可用性（满足 ready.Pinger 契约）。
+	Ping(ctx context.Context) error
+	// Driver 返回当前存储驱动名称（如 local、s3、garage）。
+	Driver() string
 }
 
 // Open 根据配置构造存储驱动并执行可用性健康探测。

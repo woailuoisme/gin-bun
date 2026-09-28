@@ -302,3 +302,13 @@ func (d *localDisk) HealthCheck(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Driver 返回当前存储驱动名称。
+func (d *localDisk) Driver() string {
+	return "local"
+}
+
+// Ping 实现 ready.Pinger 接口。
+func (d *localDisk) Ping(ctx context.Context) error {
+	return d.HealthCheck(ctx)
+}
