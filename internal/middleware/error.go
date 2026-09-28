@@ -36,6 +36,12 @@ func (m *Middleware) extractValidationFields(c *gin.Context, err error) (map[str
 		lang = m.translator.Language(lang)
 	}
 
+	// 以语言包键表达的字段级校验错误：在渲染边界按请求语言翻译，
+	// 使业务代码不必硬编码面向用户的提示。
+	if fields, ok := m.translateFieldKeys(lang, err); ok {
+		return fields, true
+	}
+
 	if valErr, ok := errors.AsType[govalidator.ValidationErrors](err); ok {
 		return validator.Translate(m.translator, lang, valErr), true
 	}
@@ -56,4 +62,36 @@ func (m *Middleware) extractValidationFields(c *gin.Context, err error) (map[str
 		}
 	}
 	return fields, len(fields) > 0
+}
+
+// translateFieldKeys 把以语言包键表达的字段级校验错误渲染为指定语言的文案。
+// 语言包不可用或没有待翻译明细时返回 false，交由调用方继续其他分支。
+func (m *Middleware) translateFieldKeys(lang string, err error) (map[string][]string, bool) {
+	if m.translator == nil {
+		return nil, false
+	}
+
+	bizErr, ok := errs.As(err)
+	if !ok {
+		return nil, false
+	}
+
+	keys := bizErr.FieldKeys()
+	if len(keys) == 0 {
+		return nil, false
+	}
+
+	fields := make(map[string][]string, len(keys))
+	for field, messages := range keys {
+		for _, message := range messages {
+			rendered := m.translator.ValidationMessage(lang, message.Key, field, message.Param)
+			if rendered != "" {
+				fields[field] = append(fields[field], rendered)
+			}
+		}
+	}
+	if len(fields) == 0 {
+		return nil, false
+	}
+	return fields, true
 }

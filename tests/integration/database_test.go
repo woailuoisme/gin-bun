@@ -91,7 +91,7 @@ func TestDatabaseConnectTimeoutIsEnforced(t *testing.T) {
 	require.NoError(t, err, "加载配置失败")
 
 	// 10.255.255.1 是私网保留地址：包会被丢弃而不是立刻拒绝，正好用来观察超时。
-	cfg.Database.URL = "postgres://postgres:secret@10.255.255.1:5432/bgin?sslmode=disable"
+	cfg.Database.URL = "postgres://user:pass@10.255.255.1:5432/bgin?sslmode=disable"
 	cfg.Database.ConnectTimeout = time.Second
 
 	start := time.Now()

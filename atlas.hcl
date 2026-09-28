@@ -1,8 +1,8 @@
-// Atlas 声明式迁移配置 (事实源: internal/database/schema.sql)
+// Atlas 声明式迁移配置 (事实源: internal/database/schemas/)
 
-// 开发期比对环境：比对 schema.sql 与 migrations/ 生成版本迁移 (对应 just migrate-diff)
+// 开发期比对环境：比对 schemas/ 与 migrations/ 生成版本迁移 (对应 just migrate-diff)
 env "local" {
-  src = "file://internal/database/schema.sql"
+  src = "file://internal/database/schemas"
   dev = getenv("ATLAS_DEV_URL")
 
   migration {

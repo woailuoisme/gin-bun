@@ -5,37 +5,42 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"bgin/apidocs"
+	"bgin/internal/apidocs"
 )
 
 // 文档页与规范的路径。定义在一处：路由、页面内的引用、启动日志共用同一份，避免漂移。
 const (
-	// docsPagePath 是 Scalar 文档页的路径。
+	// docsPagePath 是客户端 Scalar 文档页的路径。
 	docsPagePath = "/docs"
-	// referenceSpecPath 是浏览器拉取规范的路径。
+	// referenceSpecPath 是浏览器拉取客户端规范的路径。
 	referenceSpecPath = docsPagePath + "/openapi.json"
+
+	// adminDocsPagePath 是管理端 Scalar 文档页的路径。
+	adminDocsPagePath = "/docs/admin"
+	// adminReferenceSpecPath 是浏览器拉取管理端规范的路径。
+	adminReferenceSpecPath = adminDocsPagePath + "/openapi.json"
 )
 
-// referencePage 是 Scalar API Reference 的宿主页。
-//
-// 与 Swagger UI 不同，Scalar 不需要服务端渲染：整页只是一个 ES module 引导，
-// UI 本体由浏览器从 jsDelivr 拉取。代价是访问 /docs 的浏览器必须能连到公网 CDN；
-// 纯内网环境要么放行该域名，要么把 @scalar/api-reference 的构建产物自行内嵌。
-//
-// 规范路径由 referenceSpecPath 拼接而来，避免同一路径写在两处后悄悄漂移。
-const referencePage = `<!doctype html>
+var (
+	clientReferencePage = []byte(buildReferencePage("bgin API", referenceSpecPath))
+	adminReferencePage  = []byte(buildReferencePage("bgin Admin API", adminReferenceSpecPath))
+)
+
+// buildReferencePage 构建 Scalar API Reference 的宿主 HTML 页。
+func buildReferencePage(title, specPath string) string {
+	return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>bgin API</title>
+    <title>` + title + `</title>
   </head>
   <body>
     <div id="app"></div>
     <script type="module">
       import { createApiReference } from 'https://cdn.jsdelivr.net/npm/@scalar/api-reference/esm.js'
 
-      const spec = await fetch('` + referenceSpecPath + `').then(r => r.json()).catch(() => ({}))
+      const spec = await fetch('` + specPath + `').then(r => r.json()).catch(() => ({}))
 
       const SCALAR_UNIFIED_CONFIG = {
         layout: 'modern',
@@ -111,7 +116,7 @@ const referencePage = `<!doctype html>
 
       createApiReference('#app', {
         ...SCALAR_UNIFIED_CONFIG,
-        url: '` + referenceSpecPath + `',
+        url: '` + specPath + `',
         content: spec,
         tagsSorter: (a, b) => {
           const getTagOrder = (tag) => {
@@ -139,25 +144,34 @@ const referencePage = `<!doctype html>
       })
     </script>
   </body>
-</html>
-`
+</html>`
+}
 
 // registerDocs 挂载 API 文档，仅在 ENABLE_DOCS 开启时调用。
-//
-// 这里用两条静态路由而不是 gin-swagger 那种 catch-all：规范文件与页面都在 /docs 之下，
-// 而 gin 不允许静态路径与 catch-all 通配同级（注册时会 panic）。
 func registerDocs(engine *gin.Engine) {
-	engine.GET(docsPagePath, serveReference)
-	engine.GET(referenceSpecPath, serveReferenceSpec)
+	engine.GET(docsPagePath, serveClientReference)
+	engine.GET(referenceSpecPath, serveClientReferenceSpec)
+
+	engine.GET(adminDocsPagePath, serveAdminReference)
+	engine.GET(adminReferenceSpecPath, serveAdminReferenceSpec)
 }
 
-// serveReference 返回 Scalar 的宿主页。
-func serveReference(c *gin.Context) {
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(referencePage))
+// serveClientReference 返回客户端 Scalar 的宿主页。
+func serveClientReference(c *gin.Context) {
+	c.Data(http.StatusOK, "text/html; charset=utf-8", clientReferencePage)
 }
 
-// serveReferenceSpec 原样返回编进二进制的规范，不做任何转换。
-// Scalar 自己会在加载时把 Swagger 2.0 升级为 OpenAPI 3.x。
-func serveReferenceSpec(c *gin.Context) {
+// serveClientReferenceSpec 原样返回编进二进制的客户端规范。
+func serveClientReferenceSpec(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", apidocs.Spec)
+}
+
+// serveAdminReference 返回管理端 Scalar 的宿主页。
+func serveAdminReference(c *gin.Context) {
+	c.Data(http.StatusOK, "text/html; charset=utf-8", adminReferencePage)
+}
+
+// serveAdminReferenceSpec 原样返回编进二进制的管理端规范。
+func serveAdminReferenceSpec(c *gin.Context) {
+	c.Data(http.StatusOK, "application/json; charset=utf-8", apidocs.AdminSpec)
 }

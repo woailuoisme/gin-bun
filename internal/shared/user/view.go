@@ -3,7 +3,8 @@ package user
 import (
 	"time"
 
-	"bgin/internal/database/model"
+	"bgin/internal/models"
+	"bgin/internal/shared/enums"
 )
 
 // Profile 是用户档案的响应视图，面向前端自助与后台管理两个交付面共用。
@@ -23,9 +24,9 @@ type Profile struct {
 	// 用户头像 URL
 	Image *string `json:"image" example:"https://example.com/avatar.png"`
 	// 用户权限角色 (user: 普通用户, admin: 系统管理员)
-	Role string `json:"role" example:"user" enums:"user,admin"`
-	// 账号状态 (active: 正常活跃, suspended: 封禁停用)
-	Status string `json:"status" example:"active" enums:"active,suspended"`
+	Role enums.Role `json:"role" example:"user" enums:"user,admin"`
+	// 账号状态 (active: 正常活跃, inactive: 未激活, banned: 已封禁)
+	Status enums.Status `json:"status" example:"active" enums:"active,inactive,banned"`
 	// 唯一登录用户名
 	Username *string `json:"username" example:"alexmercer"`
 	// 用户显示名称
@@ -39,15 +40,15 @@ type Profile struct {
 }
 
 // ProjectProfile 把用户模型投影为档案视图。
-func ProjectProfile(entity *model.User) Profile {
+func ProjectProfile(entity *models.User) Profile {
 	return Profile{
 		ID:              entity.ID,
 		Name:            entity.Name,
 		Email:           entity.Email,
 		EmailVerified:   entity.EmailVerified,
 		Image:           entity.Image,
-		Role:            entity.Role,
-		Status:          entity.Status,
+		Role:            enums.Role(entity.Role),
+		Status:          enums.Status(entity.Status),
 		Username:        entity.Username,
 		DisplayUsername: entity.DisplayUsername,
 		PhoneNumber:     entity.PhoneNumber,

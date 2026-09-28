@@ -9,14 +9,18 @@ import (
 	"context"
 	"slices"
 
+	"github.com/golang-module/carbon/v2"
 	"github.com/rs/zerolog"
 	"github.com/uptrace/bun"
 
 	"bgin/internal/config"
 	"bgin/internal/database"
+	adminauth "bgin/internal/features/admin/auth"
 	admin "bgin/internal/features/admin/user"
 	"bgin/internal/features/auth"
 	"bgin/internal/features/client/profile"
+	paymentFeature "bgin/internal/features/payment"
+	realtimeFeature "bgin/internal/features/realtime"
 	"bgin/internal/features/system"
 	"bgin/internal/middleware"
 	"bgin/internal/platform/authz"
@@ -25,8 +29,14 @@ import (
 	"bgin/internal/platform/i18n"
 	"bgin/internal/platform/logger"
 	"bgin/internal/platform/mailer"
+	"bgin/internal/platform/media"
+	"bgin/internal/platform/notification"
+	"bgin/internal/platform/payment"
+	"bgin/internal/platform/pdf"
+	"bgin/internal/platform/realtime"
 	"bgin/internal/platform/storage"
 	"bgin/internal/platform/token"
+	"bgin/internal/platform/wechat"
 	"bgin/internal/shared/user"
 )
 
@@ -41,6 +51,9 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		cfg.App.Port = portOverride
 	}
 
+	carbon.SetTimezone(cfg.App.Timezone)
+	carbon.SetLocale(cfg.I18n.DefaultLanguage)
+
 	log := logger.New(cfg)
 
 	// 从第一个需要释放的资源起，把释放动作登记进 teardown：中途失败时逆序关闭。
@@ -53,26 +66,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	}
 	td.add(db.Close)
 
-	// 池参数与两个会话级超时都属于"静默生效"的一类配置：不打印出来，就只能在连接被
-	// 服务端拒绝、或某条查询被杀掉时才反推。时长用字符串形式：zerolog 的 Dur 会渲染成
-	// 毫秒整数（300000），人读不出是 5 分钟。
-	log.Info().
-		Int("max_open_conns", cfg.Database.MaxOpenConns).
-		Int("max_idle_conns", cfg.Database.MaxIdleConns).
-		Str("conn_max_lifetime", cfg.Database.ConnMaxLifetime.String()).
-		Str("conn_max_idle_time", cfg.Database.ConnMaxIdleTime.String()).
-		Str("connect_timeout", cfg.Database.ConnectTimeout.String()).
-		Str("statement_timeout", cfg.Database.StatementTimeout.String()).
-		Str("idle_in_tx_timeout", cfg.Database.IdleInTxTimeout.String()).
-		Msg("数据库连接池已就绪")
-
-	// 池上限是否超过这台 Postgres 能给出的份额。它只是诊断：读不到就算了，但发现越界
-	// 必须在启动时说一声——连接被拒绝通常发生在峰值，那时离这条日志已经很远。
-	if warning, err := database.BudgetWarning(ctx, db, cfg.Database.MaxOpenConns); err != nil {
-		log.Debug().Err(err).Msg("跳过连接预算检查")
-	} else if warning != "" {
-		log.Warn().Str("detail", warning).Msg("数据库连接池上限超出推荐预算")
-	}
+	logDatabaseReady(ctx, log, db, cfg.Database)
 
 	cacheClient, err := cache.Open(ctx, cfg.Cache)
 	if err != nil {
@@ -80,7 +74,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	}
 	td.add(cacheClient.Close)
 
-	mailerClient, err := mailer.New(cfg.Mail)
+	mailerClient, err := mailer.New(cfg.Mail, *log)
 	if err != nil {
 		return nil, td.fail(err)
 	}
@@ -97,6 +91,9 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	if err != nil {
 		return nil, td.fail(err)
 	}
+	// 注册一份全局默认翻译器：PDF 文档模版的 Build 只收到 ctx 与 Builder，
+	// 无法从签名上拿到翻译器，与 pdf.RegisterPDF 的全局默认服务同构。
+	i18n.SetDefault(translator)
 
 	enforcer, err := authz.New()
 	if err != nil {
@@ -107,21 +104,16 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	hasherClient := hasher.New()
 
 	mw := middleware.New(middleware.Deps{
-		Tokens:     tokens,
-		Cache:      cacheClient,
-		Authz:      enforcer,
-		Logger:     log,
-		Limiter:    cfg.Limiter,
-		CORS:       cfg.CORS,
-		Production: cfg.IsProduction(),
-		Translator: translator,
+		Tokens:         tokens,
+		Cache:          cacheClient,
+		Authz:          enforcer,
+		Logger:         log,
+		Limiter:        cfg.Limiter,
+		CORS:           cfg.CORS,
+		Production:     cfg.IsProduction(),
+		Translator:     translator,
+		RequestTimeout: cfg.App.Server.RequestTimeout,
 	})
-
-	// 通配放开跨域在生产是配置事故：Allow-Origin: * 意味着任何站点都能调用这个 API。
-	// 它不会报错、只是安静地放行，所以在启动时说一声。
-	if cfg.IsProduction() && slices.Contains(cfg.CORS.AllowedOrigins, "*") {
-		log.Warn().Msg("生产环境的 CORS_ALLOWED_ORIGINS 是 *：任何站点都能调用本 API，建议改为具名来源")
-	}
 
 	authService := auth.NewService(auth.Deps{
 		Repo:       auth.NewRepository(db),
@@ -136,6 +128,11 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	userRepo := user.NewRepository(db)
 	profileService := profile.NewService(profile.Deps{Repo: userRepo})
 	adminService := admin.NewService(admin.Deps{Repo: userRepo, Hasher: hasherClient})
+	adminAuthService := adminauth.NewService(adminauth.Deps{
+		Repo:   adminauth.NewRepository(db),
+		Tokens: tokens,
+		Hasher: hasherClient,
+	})
 
 	// 就绪探针只探测数据库与缓存：它们决定请求能否被服务。
 	// 存储刻意不进来——它只影响上传类端点，让存储故障摘掉全部流量是过度反应；
@@ -145,24 +142,69 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		log,
 	)
 
+	realtimeGateway, err := realtime.RegisterRealtimeGateway(cfg, nil)
+	if err != nil {
+		return nil, td.fail(err)
+	}
+	realtimeService := realtimeFeature.NewService(realtimeFeature.Deps{
+		Gateway: realtimeGateway,
+		Cfg:     cfg,
+		Secret:  cfg.Realtime.Secret,
+		Users:   userRepo,
+	})
+	realtimeHandler := realtimeFeature.NewHandler(realtimeService)
+	var wechatClient *wechat.Client
+	if cfg.WeChat.MiniProgram.AppID != "" {
+		wechatClient = wechat.NewClient(cfg.WeChat.MiniProgram, cacheClient)
+	}
+
+	paymentManager, err := payment.NewManager(cfg, *log)
+	if err != nil {
+		return nil, td.fail(err)
+	}
+
+	paymentService := paymentFeature.NewService(paymentManager, cacheClient, cfg)
+	paymentHandler := paymentFeature.NewHandler(paymentService)
+
+	notifier, err := notification.New(cfg.Notification, db, mailerClient, realtimeGateway)
+	if err != nil {
+		return nil, td.fail(err)
+	}
+	td.add(notifier.Close)
+
 	engine, err := buildEngine(
 		cfg, mw, systemHandler,
 		auth.NewHandler(authService),
 		profile.NewHandler(profileService),
 		admin.NewHandler(adminService),
+		adminauth.NewHandler(adminAuthService),
+		realtimeHandler,
+		paymentHandler,
 	)
 	if err != nil {
 		return nil, td.fail(err)
 	}
 
+	mediaManager := media.New(cfg.Media, cfg.Storage, disk, db)
+
+	pdfService, err := pdf.RegisterPDF(cfg, disk, log)
+	if err != nil {
+		return nil, td.fail(err)
+	}
+
 	return &Application{
-		cfg:     cfg,
-		logger:  log,
-		db:      db,
-		cache:   cacheClient,
-		mailer:  mailerClient,
-		storage: disk,
-		engine:  engine,
+		cfg:          cfg,
+		logger:       log,
+		db:           db,
+		cache:        cacheClient,
+		mailer:       mailerClient,
+		notification: notifier,
+		storage:      disk,
+		media:        mediaManager,
+		pdf:          pdfService,
+		wechat:       wechatClient,
+		payment:      paymentManager,
+		engine:       engine,
 	}, nil
 }
 
@@ -179,6 +221,27 @@ type databasePinger struct{ db *bun.DB }
 
 // Ping 实现 system.Pinger。
 func (p databasePinger) Ping(ctx context.Context) error { return p.db.PingContext(ctx) }
+
+// logDatabaseReady 打印数据库连接池就绪日志并进行连接池配额诊断。
+func logDatabaseReady(ctx context.Context, log *zerolog.Logger, db *bun.DB, cfg config.DatabaseConfig) {
+	log.Info().
+		Int("max_open_conns", cfg.MaxOpenConns).
+		Int("max_idle_conns", cfg.MaxIdleConns).
+		Str("conn_max_lifetime", cfg.ConnMaxLifetime.String()).
+		Str("conn_max_idle_time", cfg.ConnMaxIdleTime.String()).
+		Str("connect_timeout", cfg.ConnectTimeout.String()).
+		Str("statement_timeout", cfg.StatementTimeout.String()).
+		Str("idle_in_tx_timeout", cfg.IdleInTxTimeout.String()).
+		Str("slow_threshold", cfg.SlowThreshold.String()).
+		Bool("debug", cfg.Debug).
+		Msg("database connection pool ready")
+
+	if warning, err := database.BudgetWarning(ctx, db, cfg.MaxOpenConns); err != nil {
+		log.Debug().Err(err).Msg("database connection budget check skipped")
+	} else if warning != "" {
+		log.Warn().Str("detail", warning).Msg("database max open connections exceed configured budget")
+	}
+}
 
 // teardown 累积已装配资源的释放动作，供装配中途失败时逆序调用。
 //
@@ -197,7 +260,7 @@ func (t *teardown) add(closer func() error) { t.closers = append(t.closers, clos
 func (t *teardown) fail(cause error) error {
 	for _, closer := range slices.Backward(t.closers) {
 		if err := closer(); err != nil {
-			t.log.Warn().Err(err).Msg("装配失败后释放资源出错")
+			t.log.Warn().Err(err).Msg("failed to close resource during teardown")
 		}
 	}
 	return cause

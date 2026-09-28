@@ -105,7 +105,7 @@ func (v *verifier) consume(ctx context.Context, purpose, email, code string) err
 
 	if !time.Now().UTC().Before(record.ExpiresAt) {
 		if err := v.repo.DeleteVerification(ctx, record.ID); err != nil {
-			logger.FromContext(ctx).Warn().Err(err).Msg("清理过期凭据失败")
+			logger.FromContext(ctx).Warn().Err(err).Msg("failed to clean up expired credential")
 		}
 		return errs.New(errs.CodeAuthOTPExpired, "The verification code has expired")
 	}
@@ -125,7 +125,7 @@ func (v *verifier) consume(ctx context.Context, purpose, email, code string) err
 	}
 
 	if _, err := v.cache.Delete(ctx, cache.Key("auth", "otp-attempts", identifier)); err != nil {
-		logger.FromContext(ctx).Warn().Err(err).Msg("清理验证失败计数失败")
+		logger.FromContext(ctx).Warn().Err(err).Msg("failed to clear verification attempts")
 	}
 	return nil
 }
@@ -135,7 +135,7 @@ func (v *verifier) checkAttempts(ctx context.Context, identifier string) error {
 	attempts, err := v.cache.Increment(ctx, cache.Key("auth", "otp-attempts", identifier), otpAttemptsTTL)
 	if err != nil {
 		// 计数不可用时放行：凭据本身仍有 HMAC 与过期时间保护。
-		logger.FromContext(ctx).Error().Err(err).Msg("累计验证失败次数失败，本次放行")
+		logger.FromContext(ctx).Error().Err(err).Msg("failed to record verification attempts, request allowed")
 		return nil
 	}
 	if attempts > int64(v.maxAttempts) {

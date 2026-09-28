@@ -3,7 +3,7 @@
 // 本文件对着真实对象存储跑通 S3 驱动的成功路径。
 //
 // 单元测试只能覆盖构造校验与预签名（签名在本地计算），真正的读写必须有一个可达的桶。
-// 未配置 S3_ENDPOINT 时跳过，因此不会给"只跑单元测试"的环境添麻烦；
+// 未配置 AWS_ENDPOINT 时跳过，因此不会给"只跑单元测试"的环境添麻烦；
 // 配置齐了（例如本机共享栈里的 garage）就跑真东西。
 package integration_test
 
@@ -29,7 +29,7 @@ func newS3Disk(t *testing.T) storage.Disk {
 	cfg, err := config.Load()
 	require.NoError(t, err, "加载配置失败")
 	if cfg.Storage.S3.Endpoint == "" {
-		t.Skip("未配置 S3_ENDPOINT，跳过对象存储连测")
+		t.Skip("未配置 AWS_ENDPOINT，跳过对象存储连测")
 	}
 
 	disk, err := storage.NewS3Disk(cfg.Storage.S3)

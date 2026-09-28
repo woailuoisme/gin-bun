@@ -1,0 +1,65 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"time"
+)
+
+// DatabaseConfig 描述 PostgreSQL 连接池参数（对齐 Laravel config/database.php）。
+type DatabaseConfig struct {
+	URL              string        `env:"DB_URL,required,notEmpty"`
+	MaxOpenConns     int           `env:"DB_MAX_OPEN_CONNS" envDefault:"10"`
+	MaxIdleConns     int           `env:"DB_MAX_IDLE_CONNS" envDefault:"10"`
+	ConnMaxLifetime  time.Duration `env:"DB_CONN_MAX_LIFETIME" envDefault:"30m"`
+	ConnMaxIdleTime  time.Duration `env:"DB_CONN_MAX_IDLE_TIME" envDefault:"5m"`
+	ConnectTimeout   time.Duration `env:"DB_CONNECT_TIMEOUT" envDefault:"5s"`
+	StatementTimeout time.Duration `env:"DB_STATEMENT_TIMEOUT" envDefault:"30s"`
+	IdleInTxTimeout  time.Duration `env:"DB_IDLE_IN_TX_TIMEOUT" envDefault:"60s"`
+	SlowThreshold    time.Duration `env:"DB_SLOW_THRESHOLD" envDefault:"200ms"`
+	Debug            bool          `env:"DB_DEBUG" envDefault:"false"`
+}
+
+// SeedConfig 描述初始管理员播种凭据。
+type SeedConfig struct {
+	AdminEmail    string `env:"SEED_ADMIN_EMAIL"`
+	AdminPassword string `env:"SEED_ADMIN_PASSWORD"`
+	AdminName     string `env:"SEED_ADMIN_NAME" envDefault:"Administrator"`
+}
+
+// ResolveDBDebug 报告是否开启数据库 SQL 调试输出，优先显式配置，其次回退至 APP_DEBUG。
+func (c *Config) ResolveDBDebug() bool {
+	return c.Database.Debug || c.App.Debug
+}
+
+// validateDatabase 检查连接池参数与会话超时区间。
+func (c *Config) validateDatabase() error {
+	db := c.Database
+	if db.MaxOpenConns <= 0 {
+		return errors.New("config: DB_MAX_OPEN_CONNS must be positive")
+	}
+	if db.MaxIdleConns < 0 || db.MaxIdleConns > db.MaxOpenConns {
+		return fmt.Errorf("config: DB_MAX_IDLE_CONNS must be between 0 and DB_MAX_OPEN_CONNS(%d), got %d",
+			db.MaxOpenConns, db.MaxIdleConns)
+	}
+	if db.ConnectTimeout <= 0 {
+		return errors.New("config: DB_CONNECT_TIMEOUT must be positive")
+	}
+
+	for _, item := range []struct {
+		name  string
+		value time.Duration
+	}{
+		{"DB_STATEMENT_TIMEOUT", db.StatementTimeout},
+		{"DB_IDLE_IN_TX_TIMEOUT", db.IdleInTxTimeout},
+	} {
+		if item.value < 0 || (item.value > 0 && item.value < time.Millisecond) {
+			return fmt.Errorf("config: %s must be 0 (server default) or at least 1ms, got %s", item.name, item.value)
+		}
+	}
+
+	if db.SlowThreshold < 0 {
+		return fmt.Errorf("config: DB_SLOW_THRESHOLD cannot be negative: %s", db.SlowThreshold)
+	}
+	return nil
+}

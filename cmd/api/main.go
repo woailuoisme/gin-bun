@@ -34,10 +34,16 @@ var (
 // @tag.name                   个人资料
 // @tag.description            当前登录用户本人资料读取与局部更新接口
 // @tag.x-order                2
-// @securityDefinitions.apikey BearerAuth
+// @tag.name                   实时通信
+// @tag.description            Centrifugo 实时通信连接凭据与订阅鉴权代理端点
+// @tag.x-order                3
+// @tag.name                   支付中心
+// @tag.description            微信支付与支付宝支付/退款异步通知回调及客户端重定向端点
+// @tag.x-order                4
+// @securityDefinitions.access_token BearerAuth
 // @in                         header
 // @name                       Authorization
-// @description                取值为 "Bearer <accessToken>"，含 Bearer 前缀与一个空格。
+// @description                取值为 "Bearer <access_token>"，含 Bearer 前缀与一个空格。
 func main() {
 	console.SetVersion(version, commit, date)
 

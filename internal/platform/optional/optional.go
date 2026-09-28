@@ -5,7 +5,10 @@
 // 因此需要一个额外记录"字段是否出现"的容器。
 package optional
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // Optional 表示一个字段的三态：缺省、显式 null、具体值。
 //
@@ -20,7 +23,7 @@ type Optional[T any] struct {
 // UnmarshalJSON 记录字段是否出现。标准库不会为缺省字段调用本方法，因此 Present 可靠。
 func (o *Optional[T]) UnmarshalJSON(data []byte) error {
 	o.Present = true
-	if string(data) == "null" {
+	if bytes.Equal(data, []byte("null")) {
 		o.Value = nil
 		return nil
 	}

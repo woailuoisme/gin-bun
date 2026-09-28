@@ -20,6 +20,9 @@ import (
 //
 // 它没有预签名能力（返回 ErrPresignUnsupported）：本地文件由谁提供、怎么鉴权，属于部署环境
 // 的事（静态服务器、反向代理）。公开地址因此必须由配置显式给出，驱动不会凭空拼一个。
+// 编译期断言：驱动一旦不再满足 Disk 契约，构建就失败在这里，而不是在 Open 的赋值处。
+var _ Disk = (*localDisk)(nil)
+
 type localDisk struct {
 	rootPath string
 	baseURL  string
@@ -55,6 +58,14 @@ func (d *localDisk) resolvePath(key string) (string, error) {
 	return full, nil
 }
 
+// preparePath 校验上下文有效性并将对象键解析为物理路径。
+func (d *localDisk) preparePath(ctx context.Context, key string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return d.resolvePath(key)
+}
+
 // ensureDir 递归创建目标文件的父目录。
 func ensureDir(filePath string) error {
 	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
@@ -65,11 +76,7 @@ func ensureDir(filePath string) error {
 
 // Put 覆盖写入整个对象，父目录不存在时自动创建。
 func (d *localDisk) Put(ctx context.Context, key string, contents []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	full, err := d.resolvePath(key)
+	full, err := d.preparePath(ctx, key)
 	if err != nil {
 		return err
 	}
@@ -83,12 +90,8 @@ func (d *localDisk) Put(ctx context.Context, key string, contents []byte) error 
 }
 
 // PutStream 从流写入对象。
-func (d *localDisk) PutStream(ctx context.Context, key string, r io.Reader) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	full, err := d.resolvePath(key)
+func (d *localDisk) PutStream(ctx context.Context, key string, r io.Reader) (err error) {
+	full, err := d.preparePath(ctx, key)
 	if err != nil {
 		return err
 	}
@@ -100,12 +103,15 @@ func (d *localDisk) PutStream(ctx context.Context, key string, r io.Reader) erro
 	if err != nil {
 		return opFailed("write local object", key, err)
 	}
-	defer func() { _ = f.Close() }()
+	// 统一在 defer 中关闭：Close 是延迟写入错误的唯一出口，同时覆盖 io.Copy 提前返回
+	// 的路径（不泄漏文件描述符），并避免正常路径上的重复关闭。
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = opFailed("write local object", key, cerr)
+		}
+	}()
 
 	if _, err := io.Copy(f, r); err != nil {
-		return opFailed("write local object", key, err)
-	}
-	if err := f.Close(); err != nil {
 		return opFailed("write local object", key, err)
 	}
 	return nil
@@ -127,11 +133,7 @@ func (d *localDisk) PutMultipart(ctx context.Context, key string, file *multipar
 
 // Get 读出对象的全部字节。
 func (d *localDisk) Get(ctx context.Context, key string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	full, err := d.resolvePath(key)
+	full, err := d.preparePath(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -148,11 +150,7 @@ func (d *localDisk) Get(ctx context.Context, key string) ([]byte, error) {
 
 // GetStream 返回对象的只读流。
 func (d *localDisk) GetStream(ctx context.Context, key string) (io.ReadCloser, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	full, err := d.resolvePath(key)
+	full, err := d.preparePath(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -169,11 +167,7 @@ func (d *localDisk) GetStream(ctx context.Context, key string) (io.ReadCloser, e
 
 // Delete 删除对象；对象本就不存在时视为成功，使删除操作天然幂等。
 func (d *localDisk) Delete(ctx context.Context, key string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	full, err := d.resolvePath(key)
+	full, err := d.preparePath(ctx, key)
 	if err != nil {
 		return err
 	}
@@ -186,11 +180,7 @@ func (d *localDisk) Delete(ctx context.Context, key string) error {
 
 // Exists 报告对象是否存在。
 func (d *localDisk) Exists(ctx context.Context, key string) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-
-	full, err := d.resolvePath(key)
+	full, err := d.preparePath(ctx, key)
 	if err != nil {
 		return false, err
 	}
@@ -224,11 +214,7 @@ func (d *localDisk) LastModified(ctx context.Context, key string) (time.Time, er
 
 // stat 是 Size 与 LastModified 共用的取元数据路径。
 func (d *localDisk) stat(ctx context.Context, key, op string) (os.FileInfo, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	full, err := d.resolvePath(key)
+	full, err := d.preparePath(ctx, key)
 	if err != nil {
 		return nil, err
 	}

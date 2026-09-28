@@ -46,7 +46,7 @@ func (a *Application) Serve(ctx context.Context) error {
 		if a.cfg.App.EnableDocs {
 			event = event.Str("docs", base+docsPagePath)
 		}
-		event.Msg("HTTP 服务已启动")
+		event.Msg("HTTP server started and listening")
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
@@ -57,7 +57,7 @@ func (a *Application) Serve(ctx context.Context) error {
 	case err := <-errCh:
 		return fmt.Errorf("HTTP server exited unexpectedly: %w", err)
 	case <-ctx.Done():
-		a.logger.Info().Msg("收到退出信号，开始优雅停机")
+		a.logger.Info().Msg("shutdown signal received, initiating graceful shutdown")
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), srvCfg.ShutdownTimeout)

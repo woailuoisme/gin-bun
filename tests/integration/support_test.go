@@ -30,6 +30,27 @@ func init() { gin.SetMode(gin.TestMode) }
 // reusedApp 让同一进程内的多个用例共用一套装配好的依赖，避免反复建连接池。
 var reusedApp *bootstrap.Application
 
+// appStorageRoot 是整套集成测试共用的存储根目录，由 TestMain 创建与回收。
+//
+// reusedApp 是进程级单例，若把它绑到某个用例的 t.TempDir()，该用例一结束目录就被删除，
+// 而后面的用例仍会复用它，最终表现为"文件写入成功但读取 404"这类难查的偶发失败。
+var appStorageRoot string
+
+// TestMain 准备进程级共享资源并在退出前回收。
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "bgin-integration-storage-")
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "failed to create integration storage root: %v\n", err)
+		os.Exit(1)
+	}
+
+	appStorageRoot = dir
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+
+	os.Exit(code)
+}
+
 // newEngine 装配真实应用并返回路由引擎。
 // TEST_DATABASE_URL 存在时指向测试库，否则沿用 .env 里的库。
 func newEngine(t *testing.T) *gin.Engine {
@@ -43,9 +64,9 @@ func newEngine(t *testing.T) *gin.Engine {
 	t.Setenv("RATELIMIT_AUTHENTICATED", "100000")
 	t.Setenv("RATELIMIT_ANONYMOUS", "100000")
 	t.Setenv("APP_ENV", "test")
-	// 本地存储驱动默认写到工作目录下的 ./storage/app/uploads；测试改到临时目录，
-	// 免得在仓库里留下运行时产物。
-	t.Setenv("STORAGE_LOCAL_ROOT", t.TempDir())
+	// 本地存储驱动默认写到工作目录下的 ./storage/app/uploads；测试改到进程级临时目录，
+	// 免得在仓库里留下运行时产物（详见 appStorageRoot 的说明）。
+	t.Setenv("STORAGE_LOCAL_ROOT", appStorageRoot)
 
 	if reusedApp == nil {
 		application, err := bootstrap.NewApplication(t.Context(), 0)
@@ -104,6 +125,30 @@ func call(t *testing.T, engine *gin.Engine, method, path, body, token string) re
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
+
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+
+	result := response{
+		Status: recorder.Code,
+		Header: recorder.Header(),
+		Raw:    recorder.Body.String(),
+	}
+	if recorder.Body.Len() > 0 {
+		_ = json.Unmarshal(recorder.Body.Bytes(), &result.Body)
+	}
+	return result
+}
+
+// callRawAuth 用原始 Authorization 头发起请求，用于覆盖"缺少 Bearer 前缀"这类畸形头分支。
+// call 会自动补上 Bearer 前缀，无法表达该场景。
+func callRawAuth(t *testing.T, engine *gin.Engine, method, path, authorization string) response {
+	t.Helper()
+
+	request := httptest.NewRequest(method, path, nil)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", authorization)
 
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, request)

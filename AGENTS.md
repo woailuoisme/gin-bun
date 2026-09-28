@@ -14,9 +14,10 @@
 - **数据库迁移 (Migrations)**：[Atlas CLI](file:///Users/seaside/Projects/go/gin-bun/atlas.hcl)，采用声明式 Schema 驱动的版本化 SQL 迁移。
 - **缓存体系**：[Valkey (Redis 兼容)](file:///Users/seaside/Projects/go/gin-bun/internal/platform/cache/cache.go) + 高性能驱动 (`redis/rueidis`)。
 - **鉴权与授权**：无状态 JWT 令牌 (`golang-jwt/jwt/v5`) + 基于 [Casbin v3](file:///Users/seaside/Projects/go/gin-bun/internal/platform/authz/authz.go) 的 RBAC 静态权限矩阵。
-- **CLI 命令行体系**：基于 [`urfave/cli/v3`](file:///Users/seaside/Projects/go/gin-bun/internal/console/root.go) 的 Laravel Artisan 风格命令行系统。
+- **CLI 命令行体系**：基于 [`spf13/cobra`](file:///Users/seaside/Projects/go/gin-bun/internal/console/root.go) 的现代工业级分层命令行系统，分组管理子命令并提供隐式 Artisan 风格冒号别名兼容。
 - **对象存储与邮件**：S3/MinIO (`minio/minio-go/v7`) 与本地存储抽象；Mailpit 邮件测试系统 (`wneessen/go-mail`)。
 - **结构化日志与错误处理**：`rs/zerolog` 结构化上下文日志；`samber/oops` 业务错误堆栈与语义化错误码。
+- **时间推导与数据格式化**：[Carbon v2](https://github.com/golang-module/carbon) (`golang-module/carbon/v2`) 链式时间计算与多语言相对时间 + [go-humanize](https://github.com/dustin/go-humanize) (`dustin/go-humanize`) 字节容量与大数字千分位格式化。
 - **接口契约与文档**：基于 [api.md](file:///Users/seaside/Projects/go/gin-bun/api.md) 契约，使用 `swag` 自动化生成 OpenAPI 规范并嵌入二进制。
 
 ---
@@ -29,8 +30,12 @@
 
 | 命令分类 | 执行指令 | 功能说明与关键约束 |
 | :--- | :--- | :--- |
-| **开发与运行** | `just dev` | Air 热重载启动（自动检测并释放占用端口）。 |
-| | `just run [ARGS]` | 直接运行服务（如 `just run --port 3400`）。 |
+| **开发与运行** | `just dev` | 多进程并发热重载（基于 `concurrently` 同时启动 API 与 Worker 双 Air 实例）。 |
+| | `just dev-api` | 仅启动 API 服务的 Air 热重载（自动释放端口占用）。 |
+| | `just dev-worker` | 仅启动 Worker 服务的 Air 热重载（基于 `.air.worker.toml`）。 |
+| | `just run [ARGS]` | 直接运行 API 服务（如 `just run --port 3400`）。 |
+| | `just work [ARGS]` | 直接运行 Worker 服务（如 `just work -q high:3,default:1`）。 |
+| | `just cli [ARGS]` | 运行 CLI 控制台命令（如 `just cli route list` 或 `just cli make:feature blog`，支持别名 `just artisan`）。 |
 | | `just build` | 编译可执行文件至 `bin/bgin`，自动注入 version/commit/date 元数据。 |
 | **静态检查与格式化** | `just fmt` | 代码自动格式化并就地改写文件（基于 `golangci-lint fmt`）。 |
 | | `just fmt-check` | 仅检查格式是否规范，不改写文件。 |
@@ -42,11 +47,11 @@
 | **三级门禁** | `just check` | **交付前强制执行**：`fmt-check` + `lint` + `test`。 |
 | | `just ci` | 完整 CI 门禁：`fmt-check` + `lint` + `test-all`。 |
 | **数据库与迁移** | `just migrate` | 应用未执行的 Atlas 版本迁移（依赖本地 Postgres 5432）。 |
-| | `just migrate-diff <name>` | 对比 `schema.sql` 生成新的版本迁移文件。 |
+| | `just migrate-diff <name>` | 对比 `schemas/` 目录的声明式 DDL 生成新的版本迁移文件。 |
 | | `just migrate-hash` | 重算 `migrations/` 目录的哈希完整性校验链。 |
 | | `just seed` | 幂等注入首个管理员数据。 |
 | | `just fresh` | 破坏性重建数据库并重新播种（需确认；自动化脚本可用 `just fresh-force`）。 |
-| **API 文档生成** | `just docs` | 使用 `swag` 解析生成 OpenAPI 规范到 [apidocs/swagger.json](file:///Users/seaside/Projects/go/gin-bun/apidocs/swagger.json)。 |
+| **API 文档生成** | `just docs` | 使用 `swag` 解析生成客户端规范（`internal/apidocs/swagger.json`）与管理端规范（`internal/apidocs/admin_swagger.json`）。 |
 
 ---
 
@@ -60,11 +65,11 @@ internal/
 ├── bootstrap/                  # 依赖组装、引擎初始化与服务生命周期管理
 ├── config/                     # 基于 caarlos0/env 的强类型环境配置加载
 ├── console/                    # Artisan 风格 CLI 命令（serve, db:seed, db:fresh）
-├── database/                   # Bun ORM 客户端初始化与实体定义
-│   ├── model/                  # 数据库表实体模型（Account, User, Verification 等）
-│   └── schema.sql              # 声明式目标 DDL（Atlas 迁移计算的事实源）
+├── database/                   # Bun ORM 客户端初始化与目标 DDL
+│   └── schemas/                # 声明式目标 DDL（Atlas 迁移计算的事实源）
+├── models/                     # 数据库表实体模型（Account, User, Verification 等）
 ├── features/                   # 垂直领域切片（核心业务逻辑）
-│   ├── admin/user/             # 管理端用户管理（routes, handler, service, dto, resource）
+│   ├── admin/user/             # 管理端用户管理（routes, handler, service, request, response）
 │   ├── auth/                   # 认证中心（登录/注册/密码重置/会话撤销）
 │   ├── client/profile/         # 客户端个人资料
 │   └── system/                 # 系统探针与元信息（healthz, readyz）
@@ -128,10 +133,11 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 
 ### 4.5 注释精简中文与代码字符串全英文约束 (Chinese Comments & English Code Literals)
 - **注释保留精简中文**：所有包注释、结构体/类型文档注释、函数/方法文档注释、行内逻辑说明**统一强制保留精炼、地道的简体中文**，严禁书写英文注释，严禁中英文机械混杂。
-- **代码中所有字符串字面量、操作名与底层错误统一为标准英文（绝对红线）**：
+- **代码中所有字符串字面量、操作名、结构化日志与底层错误统一为标准英文（绝对红线）**：
   - 代码中的所有字符串字面量、底层驱动与库操作名（如 `"write local object"`、`"open upload file"`、`"read s3 object"` 等）、Go 哨兵错误以及 `errors.New` / `fmt.Errorf` 错误信息**必须全部统一使用标准英文**。**绝对严禁在代码中出现中文字符串字面量、中文操作名或中文内部错误**。
+  - **结构化运行日志全英文**：所有结构化运行日志文本（`.Msg("...")`）统一强制使用标准英文表达（如 `logger.Warn().Msg("failed to write cache")`），以契合现代化 APM 检索分析与业界标准，彻底杜绝中文日志说明。
   - 面向终端用户的多语言展示文案与字段校验提示，**绝对严禁直接硬编码在业务代码中**，必须统一由 `lang/` 目录下的 i18n 资源文件（TOML）承载。
-- **Swagger 与日志全中文**：所有 API 接口文档注解（`@Summary`、`@Description`、`@Tags`、字段说明）以及结构化运行日志文本（`.Msg("...")`）必须为纯中文表达，彻底消除英文日志说明。
+- **Swagger 接口文档全中文**：所有 API 接口文档注解（`@Summary`、`@Description`、`@Tags`、字段说明）必须为纯中文表达，面向国内调用与研发协同保持地道语义。
 - **语法级标识符保持英文**：Go 语言语法标识符（包名、结构体名、字段名、函数/方法名、接口名）以及协议级标签（`json:"..."`、`validate:"..."`、HTTP 头部字段）严格遵循标准英文命名与 CamelCase 驼峰规范。
 
 | 代码要素分类 | 语言硬性约束 | 规范示范 | 违规反例（严禁出现） |
@@ -139,9 +145,14 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 | **代码注释 (`// ...`)** | 强制精简中文 | `// ensureDir 递归创建目标文件的父目录。` | `// ensureDir recursively creates...` |
 | **代码内字符串与操作名** | **强制标准英文** | `opFailed("write local object", path, err)` | `opFailed("写入本地对象", path, err)` |
 | **底层与内部错误信息** | **强制标准英文** | `errors.New("storage: local root path cannot be empty")` | `errors.New("本地存储根目录不能为空")` |
+| **结构化运行日志** | **强制标准英文** | `logger.Warn().Msg("failed to write cache")` | `logger.Warn().Msg("回源数据写入缓存失败")` |
 | **API 接口文档注解** | 强制地道中文 | `// @Summary 邮箱密码登录` | `// @Summary Email password login` |
-| **结构化运行日志** | 强制地道中文 | `logger.Warn().Msg("回源数据写入缓存失败")` | `logger.Warn().Msg("failed to write cache")` |
 | **终端用户错误提示** | 统一 i18n 资源 | `lang/zh-CN/*.toml`, `lang/en/*.toml` | 在业务代码中直接硬编码中文提示 |
+
+### 4.6 时间、容量与数据格式化红线规范 (Time, Capacity & Formatting Discipline)
+- **Model 与 DTO 原生时间红线（绝对红线）**：数据库实体 Model（`internal/models/`）与对外传输对象 DTO（`request.go` / `response.go`）**必须严格使用 Go 原生 `time.Time`**。严禁在数据库映射模型或对外契约中引入 `carbon.Carbon` / `carbon.DateTime` 等第三方包装类型，彻底确保 Bun ORM、PostgreSQL `timestamptz` 原生驱动与 OpenAPI RFC 3339 序列化的极致性能、类型安全与契约稳定。
+- **业务时间推导统一 Carbon**：在业务逻辑层（Service）、计划任务（Worker）、CLI 命令与报表导出（Excel）中，凡涉及复杂时间计算（如有效期加减、封禁时间推导、自然日跨度）、相对时间展示（`DiffForHumans`）以及非标日期字符串解析时，**统一使用 `github.com/golang-module/carbon/v2`**（全局时区与 Locale 自动与 `.env` 中 `APP_TIMEZONE` 和 `APP_LOCALE` 同步）。
+- **容量与数字人性化统一 Humanize**：在 CLI 报表输出、运维日志、存储元数据与监控统计中，文件/对象字节容量展示（`humanize.Bytes` / `humanize.IBytes`）、大数字千分位分割（`humanize.Comma`）**统一使用 `github.com/dustin/go-humanize`**，严禁手动编写冗余的除法换算或格式化逻辑。
 
 ---
 
@@ -157,7 +168,22 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 - **统一错误响应模型**：非 2xx 响应一律输出统一 JSON 结构 `{ "code": "STRING_CODE", "message": "Localized message" }`。
   - 参数校验失败返回 `422 Unprocessable Entity`，并在响应中附加 `errors: { "fieldName": ["localized error message"] }` 错误归集字典。
 
-### 5.2 Swag / OpenAPI 注解编写约束与规范 (Swag Annotation Standards)
+### 5.2 前后台双文档体系架构 (Dual-Doc System Architecture)
+
+系统采用前后台严格隔离的双 OpenAPI / Scalar 文档架构：
+1. **客户端文档 (`/docs`)**：
+   - 宿主页挂载在 `/docs`，规范接口为 `/docs/openapi.json`（对应静态文件 `internal/apidocs/swagger.json`）。
+   - 根信息在 `cmd/api/main.go` 中声明（Title 为 `bgin API`）。
+   - **严格收录范围**：仅包含客户端自助与认证端点（`auth`、`profile`、`realtime`），构建时严格排除后台管理端点（`internal/features/admin`）。
+2. **管理端文档 (`/docs/admin`)**：
+   - 宿主页挂载在 `/docs/admin`，规范接口为 `/docs/admin/openapi.json`（对应静态文件 `internal/apidocs/admin_swagger.json`）。
+   - 根信息在 `cmd/api/admin_doc.go` 中声明（Title 为 `bgin Admin API`）。
+   - **严格收录范围**：仅收录管理端 API（如 `internal/features/admin/user`），构建时严格排除客户端专属端点。
+   - **解除旧约束**：取消原 ADR-0005 中“管理端不添加 swag 注解”的旧约束，管理端 Handler 与 DTO 必须全量规范书写 Swag 注解。
+3. **环境与访问控制**：
+   - 两份文档统一受 `ENABLE_DOCS` 配置项控制，生产环境未开启时均返回 404。
+
+### 5.3 Swag / OpenAPI 注解编写约束与规范 (Swag Annotation Standards)
 
 对外暴露的所有 API Handler 与传输对象 DTO 必须严格遵守以下注解规范，保证生成的 OpenAPI/Swagger 文档精确、一致且符合中文本土化标准：
 
@@ -204,11 +230,11 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
    }
    ```
 
-### 5.3 Swagger 已知坑点与类型规避 (Known Swagger Pitfalls)
+### 5.4 Swagger 已知坑点与类型规避 (Known Swagger Pitfalls)
 - **注解格式扁平化**：保持扁平化 OpenAPI/Swagger 注解规范，**严禁使用 `oneOf` 冗余包装**。
 - ⚠️ **`swag` 跨包类型解析缺陷与别名避坑**：
   - **现象**：`swag` 在解析跨包结构体引用（如跨包直接声明 `{object} user.Profile`）时存在编译器缺陷，极易偶发报 `cannot find type definition` 导致 `just docs` 失败。
-  - **强制规则**：涉及跨包引用的结构体，必须在当前 handler 包内定义一层本地同名类型别名（例如在 [internal/features/client/profile/](file:///Users/seaside/Projects/go/gin-bun/internal/features/client/profile/dto.go) 中显式声明 `type Profile = user.Profile`）。修改或重构相关代码时**严禁误删此类类型别名**！
+  - **强制规则**：涉及跨包引用的结构体，必须在当前 handler 包内定义一层本地同名类型别名（例如在 [internal/features/client/profile/](file:///Users/seaside/Projects/go/gin-bun/internal/features/client/profile/response.go) 中显式声明 `type Profile = user.Profile`）。修改或重构相关代码时**严禁误删此类类型别名**！
 - **三态字段 Swagger 类型修正**：使用 `optional.Optional[T]` 的字段必须显式附加 `swaggertype:"string" extensions:"x-nullable"`（或对应基础标量类型），防止泛型容器被展开为 `{present, value}`。
 
 ---
@@ -218,17 +244,17 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 本项目的数据库表结构演进遵循严格的**三位一体强一致性**机制：
 
 ```
-[internal/database/schema.sql] ──(唯一事实源)──> 声明式目标 DDL
+[internal/database/schemas/] ──(唯一事实源)──> 声明式目标 DDL
              │
              ▼ (通过 `just migrate-diff <name>` 比对生成)
 [migrations/YYYYMMDD_name.sql] ──(版本化记录)──> 真实执行的增量迁移脚本
              │
              ▼ (同步映射)
-[internal/database/model/*.go] ──(ORM 实体定义)──> Bun ORM 强类型 Go Struct
+[internal/models/*.go] ──(ORM 实体定义)──> Bun ORM 强类型 Go Struct
 ```
 
 ### 数据库操作硬性准则：
-1. **唯一事实源**：[internal/database/schema.sql](file:///Users/seaside/Projects/go/gin-bun/internal/database/schema.sql) 是数据库最终预期形态的声明式事实源。新增或修改表结构时，**必须先在此文件中补充完整的 PostgreSQL DDL**。
+1. **唯一事实源**：[internal/database/schemas/](file:///Users/seaside/Projects/go/gin-bun/internal/database/schemas) 是数据库最终预期形态的声明式事实源。新增或修改表结构时，**必须先在此目录中补充完整的 PostgreSQL DDL**。
 2. **严禁裸写 DDL**：绝对禁止直接连接数据库手动跑未版本化的 DDL，绝对禁止 Agent 手写虚构的 migration 文件。所有迁移必须运行 `just migrate-diff <feature_name>` 由 Atlas 自动差量比对生成。
 3. **哈希完整性**：若发生合并不慎改动了 `migrations/` 文件，必须执行 `just migrate-hash` 重建完整性校验链。
 4. **事务治理**：Bun ORM 事务通过 Context 传递；复杂复合写操作必须开启事务并使用 SAVEPOINT 隔离异常。

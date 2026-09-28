@@ -1,25 +1,30 @@
+x-app: &app
+  build: .
+  image: bgin:local
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  volumes:
+    - ./storage:/app/storage
+
 services:
-  app:
-    build:
-      # 构建上下文即仓库根：Dockerfile 需读取 go.mod、cmd/ 等源码树
-      context: .
-      dockerfile: Dockerfile
-    image: bgin:local
-    container_name: bgin-app
-    restart: unless-stopped
+  api:
+    <<: *app
+    container_name: bgin-api
+    command: ["serve"]
     ports:
       - "${APP_PORT:-3300}:3300"
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      APP_ENV: ${APP_ENV:-production}
-      APP_PORT: 3300
-      APP_HOST: 0.0.0.0
-    volumes:
-      - ./storage:/app/storage
+
+  worker:
+    <<: *app
+    container_name: bgin-worker
+    command: ["queue:work"]
+    depends_on:
+      - api
 
 networks:
   default:
     name: backend
     external: true
+

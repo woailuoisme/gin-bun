@@ -102,10 +102,7 @@ func (i *Issuer) Parse(raw, wantType string) (*Claims, error) {
 		}
 		return nil, errs.Wrap(errs.CodeAuthTokenInvalid, "The token is invalid", err)
 	}
-	if !parsed.Valid {
-		return nil, errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
-	}
-	if claims.Type != wantType {
+	if !parsed.Valid || claims.Type != wantType {
 		return nil, errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
 	}
 	return claims, nil
@@ -121,7 +118,7 @@ func (i *Issuer) Revoke(ctx context.Context, claims *Claims) error {
 
 // RevokeByID 在只有 jti 与到期时间的场景下作废令牌（例如登出时只拿到中间件传入的身份）。
 func (i *Issuer) RevokeByID(ctx context.Context, jti string, expiresAt time.Time) error {
-	if jti == "" {
+	if jti == "" || i.blacklist == nil {
 		return nil
 	}
 
@@ -145,7 +142,7 @@ func (i *Issuer) expiryOf(claims *Claims) time.Time {
 
 // IsRevoked 判断令牌是否已被撤销。
 func (i *Issuer) IsRevoked(ctx context.Context, jti string) (bool, error) {
-	if jti == "" {
+	if jti == "" || i.blacklist == nil {
 		return false, nil
 	}
 

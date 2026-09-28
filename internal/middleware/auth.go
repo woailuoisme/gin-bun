@@ -41,7 +41,7 @@ func (m *Middleware) RequireAuth() gin.HandlerFunc {
 			return
 		}
 
-		tokenExpiresAt := time.Time{}
+		var tokenExpiresAt time.Time
 		if claims.ExpiresAt != nil {
 			tokenExpiresAt = claims.ExpiresAt.Time
 		}

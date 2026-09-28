@@ -38,7 +38,8 @@ func (m *Middleware) CORS() gin.HandlerFunc {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Access-Control-Allow-Credentials", "true")
 			// 同一 URL 的响应随 Origin 而变，必须声明，否则会被共享缓存串用。
-			c.Header("Vary", "Origin")
+			// 用 Add 而非 Set：上游中间件可能已写入其他 Vary 维度，覆盖会丢掉它们。
+			c.Writer.Header().Add("Vary", "Origin")
 		case allowAll:
 			// 通配放开：只能回 *，且规范禁止它与 Allow-Credentials 同时出现。
 			// 回显任意来源 + 允许凭证，等于让任何站点都能带凭证跨域读响应（CWE-942）：

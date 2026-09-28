@@ -9,11 +9,9 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// dotenvPath 是本地敏感值的来源，通常不入库。
 const dotenvPath = ".env"
 
-// Load 装配配置并校验：先把 .env 补进进程环境，再逐字段解析，最后做标签表达不了的检查。
-// 任何一步失败都立即返回，不做带病启动。
+// Load 从环境变量装载并校验全部应用配置。
 func Load() (*Config, error) {
 	if err := loadDotEnv(dotenvPath); err != nil {
 		return nil, err
@@ -23,17 +21,28 @@ func Load() (*Config, error) {
 	if err := env.Parse(cfg); err != nil {
 		return nil, fmt.Errorf("config: parse failed: %w", err)
 	}
+	cfg.Database.Debug = cfg.ResolveDBDebug()
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
-// loadDotEnv 把 .env 里的变量补进进程环境：只填空缺、不覆盖已有值（godotenv.Load 的语义），
-// 因此进程环境始终优先于文件。
+// Default 返回一份最小可用配置，供「配置装载失败」时的自省类命令使用
+// （例如 route list 需要一份配置才能构建路由表）。
 //
-// 文件不存在属于正常情况——容器里通常只注入环境变量。其余错误必须返回：被吞掉的格式错误会
-// 表现为"一批必填项突然缺失"，让人往环境没配好的方向排查，而真正的原因是文件本身。
+// 它既未经校验也不含任何真实连接信息，因此严禁用于启动服务；
+// 与 InspectEngine 的 nil 校验配合，避免出现"静默伪造配置"的隐性路径。
+func Default() *Config {
+	return &Config{
+		App: AppConfig{
+			Name: "bgin",
+			Env:  "local",
+		},
+	}
+}
+
+// loadDotEnv 尝试装载本地 .env 文件至进程环境，文件不存在时不报错。
 func loadDotEnv(path string) error {
 	err := godotenv.Load(path)
 	if err == nil || errors.Is(err, fs.ErrNotExist) {

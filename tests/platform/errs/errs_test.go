@@ -2,6 +2,7 @@
 package errs_test
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -225,6 +226,7 @@ func TestStatusCoversEveryDeclaredCode(t *testing.T) {
 		{errs.CodeAuthTokenRevoked, http.StatusUnauthorized},
 		{errs.CodeAuthPasswordMismatch, http.StatusUnprocessableEntity},
 		{errs.CodeAuthPasswordTooWeak, http.StatusUnprocessableEntity},
+		{errs.CodeGatewayTimeout, http.StatusGatewayTimeout},
 	}
 
 	for _, tt := range tests {
@@ -233,6 +235,17 @@ func TestStatusCoversEveryDeclaredCode(t *testing.T) {
 
 	// 未登记的错误码必须兜底为 500，而不是漏成 2xx。
 	assert.Equal(t, http.StatusInternalServerError, errs.Status(errs.Code("NOT_REGISTERED")))
+}
+
+// TestGatewayTimeoutMapping 校验 context.DeadlineExceeded 与 GatewayTimeout 映射为 504。
+func TestGatewayTimeoutMapping(t *testing.T) {
+	status, resp := errs.Map(context.DeadlineExceeded)
+	assert.Equal(t, http.StatusGatewayTimeout, status)
+	assert.Equal(t, string(errs.CodeGatewayTimeout), resp.Code)
+
+	status, resp = errs.Map(errs.GatewayTimeout(context.DeadlineExceeded))
+	assert.Equal(t, http.StatusGatewayTimeout, status)
+	assert.Equal(t, string(errs.CodeGatewayTimeout), resp.Code)
 }
 
 // TestStackIsAvailableForLogging 校验 oops 堆栈可被提取，便于 500 日志定位。

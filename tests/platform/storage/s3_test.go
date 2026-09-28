@@ -37,10 +37,10 @@ func TestNewS3DiskRequiresConfig(t *testing.T) {
 		mutate func(*config.S3StorageConfig)
 		want   string
 	}{
-		{"缺 endpoint", func(c *config.S3StorageConfig) { c.Endpoint = "" }, "S3_ENDPOINT"},
-		{"缺 bucket", func(c *config.S3StorageConfig) { c.Bucket = "" }, "S3_BUCKET"},
-		{"缺 access key", func(c *config.S3StorageConfig) { c.AccessKeyID = "" }, "S3_ACCESS_KEY_ID"},
-		{"缺 secret", func(c *config.S3StorageConfig) { c.SecretAccessKey = "" }, "S3_SECRET_ACCESS_KEY"},
+		{"缺 endpoint", func(c *config.S3StorageConfig) { c.Endpoint = "" }, "AWS_ENDPOINT"},
+		{"缺 bucket", func(c *config.S3StorageConfig) { c.Bucket = "" }, "AWS_BUCKET"},
+		{"缺 access key", func(c *config.S3StorageConfig) { c.AccessKeyID = "" }, "AWS_ACCESS_KEY_ID"},
+		{"缺 secret", func(c *config.S3StorageConfig) { c.SecretAccessKey = "" }, "AWS_SECRET_ACCESS_KEY"},
 	}
 
 	for _, tt := range tests {

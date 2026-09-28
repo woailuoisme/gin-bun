@@ -1,6 +1,7 @@
 package errs
 
 import (
+	"cmp"
 	"errors"
 
 	"github.com/samber/oops"
@@ -17,15 +18,20 @@ const (
 	msgConflict         = "The request conflicts with the current state of the resource"
 	msgRateLimited      = "Too many requests"
 	msgRequestTooLarge  = "The request body is too large"
+	msgGatewayTimeout   = "The request timed out while waiting for a response"
 	msgInvalidLogin     = "Invalid email or password"
 )
 
 // Error 是携带机器可读错误码与可选字段级明细的业务错误。
+//
+// 字段级明细有两种表达：fields 保存已渲染好的文案，fieldKeys 保存待翻译的文案键
+// （见 ValidationKeys），渲染层按请求语言择一使用。
 type Error struct {
-	code    Code
-	message string
-	fields  map[string][]string
-	cause   error
+	code      Code
+	message   string
+	fields    map[string][]string
+	fieldKeys map[string][]MessageKey
+	cause     error
 }
 
 // Error 实现 error 接口，返回面向调用方的文案。
@@ -75,55 +81,62 @@ func Wrap(code Code, message string, cause error) *Error {
 
 // BadRequest 构造 400，用于请求体无法解析等结构性错误。
 func BadRequest(message string) *Error {
-	if message == "" {
-		message = msgBadRequest
-	}
-	return New(CodeBadRequest, message)
+	return New(CodeBadRequest, cmp.Or(message, msgBadRequest))
 }
 
 // NotFound 构造 404。
 func NotFound(message string) *Error {
-	if message == "" {
-		message = msgNotFound
-	}
-	return New(CodeNotFound, message)
+	return New(CodeNotFound, cmp.Or(message, msgNotFound))
 }
 
 // MethodNotAllowed 构造 405。
 func MethodNotAllowed(message string) *Error {
-	if message == "" {
-		message = msgMethodNotAllowed
-	}
-	return New(CodeMethodNotAllowed, message)
+	return New(CodeMethodNotAllowed, cmp.Or(message, msgMethodNotAllowed))
 }
 
 // Forbidden 构造 403。
 func Forbidden(message string) *Error {
-	if message == "" {
-		message = msgForbidden
-	}
-	return New(CodeForbidden, message)
+	return New(CodeForbidden, cmp.Or(message, msgForbidden))
 }
 
 // Conflict 构造 409。
 func Conflict(message string) *Error {
-	if message == "" {
-		message = msgConflict
-	}
-	return New(CodeConflict, message)
+	return New(CodeConflict, cmp.Or(message, msgConflict))
+}
+
+// IdempotencyConflict 构造 409，表示同一幂等键正在执行中。
+func IdempotencyConflict(message string) *Error {
+	return New(CodeIdempotencyConflict, cmp.Or(message, "A request with the same idempotency key is currently being processed"))
+}
+
+// IdempotencyMismatch 构造 422，表示相同幂等键被复用于不同的请求载荷。
+func IdempotencyMismatch(message string) *Error {
+	return New(CodeIdempotencyMismatch, cmp.Or(message, "Idempotency key was previously used with different request parameters"))
+}
+
+// IdempotencyRequired 构造 400，表示当前端点强制要求携带幂等键。
+func IdempotencyRequired(message string) *Error {
+	return New(CodeIdempotencyRequired, cmp.Or(message, "Idempotency-Key header is required for this request"))
 }
 
 // RateLimited 构造 429。
 func RateLimited(message string) *Error {
-	if message == "" {
-		message = msgRateLimited
-	}
-	return New(CodeRateLimited, message)
+	return New(CodeRateLimited, cmp.Or(message, msgRateLimited))
 }
 
 // RequestTooLarge 构造 413，用于请求体超过中间件设定的上限。
 func RequestTooLarge(cause error) *Error {
 	return Wrap(CodeRequestTooLarge, msgRequestTooLarge, cause)
+}
+
+// GatewayTimeout 构造 504，用于请求在等待外部依赖或完成处理时超时。
+func GatewayTimeout(cause error) *Error {
+	return Wrap(CodeGatewayTimeout, msgGatewayTimeout, cause)
+}
+
+// ServiceUnavailable 构造 503，用于外部依赖或本服务暂不可用。
+func ServiceUnavailable(message string) *Error {
+	return New(CodeServiceUnavailable, cmp.Or(message, "Service is temporarily unavailable"))
 }
 
 // InvalidCredentials 是登录失败的唯一对外口径，不区分"邮箱不存在"与"密码错误"。
@@ -141,6 +154,26 @@ func Validation(fields map[string][]string) *Error {
 	e.fields = fields
 	return e
 }
+
+// MessageKey 描述一条待按请求语言渲染的字段级校验文案。
+// 业务代码只声明"哪个字段违反了哪条规则"，用户可见文案统一留在 lang/<语言>/validation.toml。
+type MessageKey struct {
+	// Key 是语言包 validation 分节中的键名。
+	Key string
+	// Param 是模板 {{.Param}} 的取值，无参时留空。
+	Param string
+}
+
+// ValidationKeys 构造 422 校验错误，字段明细交由渲染层按 Accept-Language 翻译。
+// 相比 Validation，它避免把面向用户的提示硬编码进业务代码。
+func ValidationKeys(fields map[string][]MessageKey) *Error {
+	e := New(CodeValidationFailed, msgValidationFailed)
+	e.fieldKeys = fields
+	return e
+}
+
+// FieldKeys 返回待翻译的字段级明细，无明细时为 nil。
+func (e *Error) FieldKeys() map[string][]MessageKey { return e.fieldKeys }
 
 // As 从错误链中提取 *Error，是 errors.AsType 的语义化封装。
 func As(err error) (*Error, bool) {

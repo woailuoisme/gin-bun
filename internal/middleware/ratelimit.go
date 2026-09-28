@@ -49,7 +49,7 @@ func (m *Middleware) RateLimit(tier Tier) gin.HandlerFunc {
 		count, err := m.cache.Increment(c.Request.Context(), key, 2*rateLimitWindow)
 		if err != nil {
 			// 计数器不可用时放行并告警：宁可少拦，也不能让全站不可用。
-			logger.FromContext(c.Request.Context()).Error().Err(err).Msg("限流计数失败，本次请求放行")
+			logger.FromContext(c.Request.Context()).Error().Err(err).Msg("rate limit counter failed, request allowed")
 			c.Next()
 			return
 		}

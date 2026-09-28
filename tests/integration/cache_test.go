@@ -180,7 +180,7 @@ func TestCacheRemember(t *testing.T) {
 
 	// 回源失败：错误向上传递，且不留下缓存。
 	failingKey := cacheKey(t, client, "remember-fail")
-	loadErr := errors.New("回源失败")
+	loadErr := errors.New("origin load failed")
 	_, err = client.Remember(ctx, failingKey, time.Minute, func(context.Context) (string, error) {
 		return "", loadErr
 	})

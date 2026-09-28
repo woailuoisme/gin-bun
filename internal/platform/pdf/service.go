@@ -1,0 +1,362 @@
+package pdf
+
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/johnfercher/maroto/v2"
+	marotoconfig "github.com/johnfercher/maroto/v2/pkg/config"
+	"github.com/johnfercher/maroto/v2/pkg/consts/fontstyle"
+	"github.com/johnfercher/maroto/v2/pkg/consts/orientation"
+	"github.com/johnfercher/maroto/v2/pkg/core"
+	"github.com/johnfercher/maroto/v2/pkg/core/entity"
+	"github.com/johnfercher/maroto/v2/pkg/props"
+	"github.com/rs/zerolog"
+	"github.com/samber/oops"
+
+	"bgin/internal/config"
+	"bgin/internal/platform/storage"
+)
+
+// Service 统一管理 PDF 文档的排版、渲染与多通道交付。
+type Service struct {
+	cfg        config.PDFConfig
+	storage    storage.Disk
+	log        *zerolog.Logger
+	fonts      []entity.CustomFont
+	fontFamily string
+}
+
+var (
+	defaultMu      sync.RWMutex
+	defaultService *Service
+)
+
+// NewService 实例化 PDF 服务。
+func NewService(cfg config.PDFConfig, disk storage.Disk, log *zerolog.Logger) *Service {
+	fonts, resolvedFamily := ResolveFontConfig(cfg.FontPath, cfg.FontFamily, log)
+
+	return &Service{
+		cfg:        cfg,
+		storage:    disk,
+		log:        log,
+		fonts:      fonts,
+		fontFamily: resolvedFamily,
+	}
+}
+
+// RegisterPDF 注册并初始化全局默认 PDF 服务。
+func RegisterPDF(cfg *config.Config, disk storage.Disk, log *zerolog.Logger) (*Service, error) {
+	pdfCfg := config.PDFConfig{
+		FontFamily: "SourceHanSans",
+		PageSize:   "A4",
+		Margin:     DefaultMargin,
+	}
+	if cfg != nil {
+		pdfCfg = cfg.PDF
+	}
+
+	service := NewService(pdfCfg, disk, log)
+	SetDefaultService(service)
+	return service, nil
+}
+
+// SetDefaultService 注册全局默认的 PDF 服务实例。
+func SetDefaultService(service *Service) {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	defaultService = service
+}
+
+// DefaultService 获取全局默认的 PDF 服务实例。
+func DefaultService() *Service {
+	defaultMu.RLock()
+	defer defaultMu.RUnlock()
+	return defaultService
+}
+
+// Render 全局快捷渲染入口。
+func Render(ctx context.Context, doc Document) ([]byte, error) {
+	s := DefaultService()
+	if s == nil {
+		return nil, oops.Errorf("pdf: default service not initialized")
+	}
+	return s.Render(ctx, doc)
+}
+
+// RenderToWriter 全局快捷流式写入入口。
+func RenderToWriter(ctx context.Context, doc Document, w io.Writer) error {
+	s := DefaultService()
+	if s == nil {
+		return oops.Errorf("pdf: default service not initialized")
+	}
+	return s.RenderToWriter(ctx, doc, w)
+}
+
+// StreamToHTTP 全局快捷标准 HTTP 响应写入入口。
+func StreamToHTTP(ctx context.Context, w http.ResponseWriter, filename string, doc Document, mode DeliveryMode) error {
+	s := DefaultService()
+	if s == nil {
+		return oops.Errorf("pdf: default service not initialized")
+	}
+	return s.StreamToHTTP(ctx, w, filename, doc, mode)
+}
+
+// StreamToResponse 全局快捷 HTTP 响应分发入口（兼容 Gin）。
+func StreamToResponse(c *gin.Context, filename string, doc Document, mode DeliveryMode) error {
+	s := DefaultService()
+	if s == nil {
+		return oops.Errorf("pdf: default service not initialized")
+	}
+	return s.StreamToResponse(c, filename, doc, mode)
+}
+
+// SaveToStorage 全局快捷转存入口。
+func SaveToStorage(ctx context.Context, path string, doc Document) (string, error) {
+	s := DefaultService()
+	if s == nil {
+		return "", oops.Errorf("pdf: default service not initialized")
+	}
+	return s.SaveToStorage(ctx, path, doc)
+}
+
+// Render 将 Document 编排并编译生成原始 PDF 二进制字节切片。
+func (s *Service) Render(ctx context.Context, doc Document) ([]byte, error) {
+	if doc == nil {
+		return nil, oops.Errorf("pdf: document cannot be nil")
+	}
+
+	m, b, err := s.createMaroto(ctx, doc)
+	if err != nil {
+		return nil, oops.Wrap(err)
+	}
+
+	if err := doc.Build(ctx, b); err != nil {
+		return nil, oops.Wrap(err)
+	}
+
+	pdfDoc, err := m.Generate()
+	if err != nil {
+		return nil, oops.Wrap(err)
+	}
+
+	return pdfDoc.GetBytes(), nil
+}
+
+// RenderToWriter 将渲染完成的 PDF 二进制内容写入目标 io.Writer。
+func (s *Service) RenderToWriter(ctx context.Context, doc Document, w io.Writer) error {
+	data, err := s.Render(ctx, doc)
+	if err != nil {
+		return oops.Wrap(err)
+	}
+	if _, err := w.Write(data); err != nil {
+		return oops.Wrap(err)
+	}
+	return nil
+}
+
+// StreamToHTTP 将生成的 PDF 以流式方式直接输出给标准 HTTP 响应写入器。
+func (s *Service) StreamToHTTP(ctx context.Context, w http.ResponseWriter, filename string, doc Document, mode DeliveryMode) error {
+	data, err := s.Render(ctx, doc)
+	if err != nil {
+		return oops.Wrap(err)
+	}
+
+	if filename == "" {
+		filename = "document.pdf"
+	}
+	disposition := string(mode)
+	if disposition == "" {
+		disposition = string(DeliveryInline)
+	}
+
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+
+	// ASCII 兜底文件名必须清洗：内嵌引号会提前终止 filename 参数，
+	// 反斜杠与控制字符同样会破坏头部结构（CRLF 已由 net/http 写头时中和）。
+	asciiFilename := sanitizeHeaderFilename(filename)
+	encodedFilename := url.PathEscape(filename)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename="%s"; filename*=UTF-8''%s`, disposition, asciiFilename, encodedFilename))
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(data); err != nil {
+		return oops.Wrap(err)
+	}
+	return nil
+}
+
+// StreamToResponse 为 Gin 框架提供便捷流式响应分发（基于 StreamToHTTP 委托）。
+func (s *Service) StreamToResponse(c *gin.Context, filename string, doc Document, mode DeliveryMode) error {
+	return s.StreamToHTTP(c.Request.Context(), c.Writer, filename, doc, mode)
+}
+
+// sanitizeHeaderFilename 清洗用于 Content-Disposition 的兜底文件名。
+//
+// 引号、反斜杠、路径分隔符与控制字符会破坏头部参数结构；非 ASCII 字符按 RFC 6266
+// 也不适合出现在 filename 参数里（真正的文件名由 filename*= 以 UTF-8 承载），一并剔除。
+// 清洗后为空时回落到默认名。
+func sanitizeHeaderFilename(name string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 0x20 || r > 0x7e || r == '"' || r == '\\' || r == '/' {
+			return -1
+		}
+		return r
+	}, name)
+
+	return cmp.Or(strings.TrimSpace(cleaned), "document.pdf")
+}
+
+// SaveToStorage 将生成的 PDF 文档持久化转存至已装配的 storage.Disk 对象存储。
+func (s *Service) SaveToStorage(ctx context.Context, storagePath string, doc Document) (string, error) {
+	if s.storage == nil {
+		return "", oops.Errorf("pdf: storage disk not configured")
+	}
+
+	data, err := s.Render(ctx, doc)
+	if err != nil {
+		return "", oops.Wrap(err)
+	}
+
+	if err := s.storage.Put(ctx, storagePath, data); err != nil {
+		return "", oops.Wrap(err)
+	}
+
+	return storagePath, nil
+}
+
+func (s *Service) createMaroto(ctx context.Context, doc Document) (core.Maroto, *Builder, error) {
+	cfgBuilder := marotoconfig.NewBuilder()
+	s.applyFonts(cfgBuilder)
+	applyLayout(cfgBuilder, doc)
+	applyMetadata(cfgBuilder, doc)
+	s.applyPageNumber(cfgBuilder, doc)
+
+	marotoCfg := cfgBuilder.Build()
+	if err := s.applyHeaderFooter(ctx, marotoCfg, doc); err != nil {
+		return nil, nil, err
+	}
+
+	m := maroto.New(marotoCfg)
+	builder := NewBuilder(m, s.fontFamily)
+	return m, builder, nil
+}
+
+func (s *Service) applyFonts(cfgBuilder marotoconfig.Builder) {
+	if len(s.fonts) > 0 {
+		cfgBuilder.WithCustomFonts(s.fonts)
+	}
+	cfgBuilder.WithDefaultFont(&props.Font{
+		Family: s.fontFamily,
+		Size:   FontSizeBody,
+		Style:  fontstyle.Normal,
+		Color:  &ColorTextPrimary,
+	})
+}
+
+func applyLayout(cfgBuilder marotoconfig.Builder, doc Document) {
+	layout, ok := doc.(WithLayout)
+	if !ok {
+		cfgBuilder.WithPageSize(DefaultPageSize)
+		cfgBuilder.WithOrientation(orientation.Vertical)
+		cfgBuilder.WithTopMargin(DefaultMargin)
+		cfgBuilder.WithRightMargin(DefaultMargin)
+		cfgBuilder.WithBottomMargin(DefaultMargin)
+		cfgBuilder.WithLeftMargin(DefaultMargin)
+		return
+	}
+
+	pageSize := layout.PageSize()
+	if pageSize == "" {
+		pageSize = DefaultPageSize
+	}
+	pageOrientation := layout.Orientation()
+	if pageOrientation == "" {
+		pageOrientation = orientation.Vertical
+	}
+
+	t, r, b, l := layout.Margins()
+	cfgBuilder.WithPageSize(pageSize)
+	cfgBuilder.WithOrientation(pageOrientation)
+	cfgBuilder.WithTopMargin(resolveMargin(t))
+	cfgBuilder.WithRightMargin(resolveMargin(r))
+	cfgBuilder.WithBottomMargin(resolveMargin(b))
+	cfgBuilder.WithLeftMargin(resolveMargin(l))
+}
+
+func resolveMargin(m float64) float64 {
+	if m > 0 {
+		return m
+	}
+	return DefaultMargin
+}
+
+func applyMetadata(cfgBuilder marotoconfig.Builder, doc Document) {
+	cfgBuilder.WithCreationDate(time.Now())
+
+	meta, ok := doc.(WithMetadata)
+	if !ok {
+		return
+	}
+
+	if t := meta.Title(); t != "" {
+		cfgBuilder.WithTitle(t, true)
+	}
+	if a := meta.Author(); a != "" {
+		cfgBuilder.WithAuthor(a, true)
+	}
+	if sub := meta.Subject(); sub != "" {
+		cfgBuilder.WithSubject(sub, true)
+	}
+	if kw := meta.Keywords(); kw != "" {
+		cfgBuilder.WithKeywords(kw, true)
+	}
+}
+
+func (s *Service) applyPageNumber(cfgBuilder marotoconfig.Builder, doc Document) {
+	useDefaultFooter := true
+	if footerDoc, ok := doc.(WithDefaultPageFooter); ok {
+		useDefaultFooter = footerDoc.UseDefaultFooter()
+	}
+	if _, customFooter := doc.(WithPageFooter); customFooter {
+		useDefaultFooter = false
+	}
+
+	if useDefaultFooter {
+		cfgBuilder.WithPageNumber(props.PageNumber{
+			Pattern: "{current} / {total}",
+			Place:   props.RightBottom,
+			Family:  s.fontFamily,
+			Style:   fontstyle.Normal,
+			Size:    FontSizeSmall,
+			Color:   &ColorTextMuted,
+		})
+	}
+}
+
+func (s *Service) applyHeaderFooter(ctx context.Context, marotoCfg *entity.Config, doc Document) error {
+	if headerDoc, ok := doc.(WithPageHeader); ok {
+		headerMaroto := maroto.New(marotoCfg)
+		headerBuilder := NewBuilder(headerMaroto, s.fontFamily)
+		if err := headerDoc.Header(ctx, headerBuilder); err != nil {
+			return oops.Wrap(err)
+		}
+	}
+
+	if footerDoc, ok := doc.(WithPageFooter); ok {
+		footerMaroto := maroto.New(marotoCfg)
+		footerBuilder := NewBuilder(footerMaroto, s.fontFamily)
+		if err := footerDoc.Footer(ctx, footerBuilder); err != nil {
+			return oops.Wrap(err)
+		}
+	}
+	return nil
+}

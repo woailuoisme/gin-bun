@@ -1,0 +1,126 @@
+package {{ .PackageName }}
+
+import (
+	"context"
+
+	"github.com/samber/lo"
+
+	"bgin/internal/models"
+	"bgin/internal/platform/errs"
+	"bgin/internal/platform/response"
+)
+
+// Service 定义 {{ .ChineseName }} 业务用例契约。
+type Service interface {
+	List(ctx context.Context, query List{{ .PascalName }}Query) ([]{{ .PascalName }}Response, response.Meta, error)
+	GetByID(ctx context.Context, id string) (*{{ .PascalName }}Response, error)
+	Create(ctx context.Context, req Create{{ .PascalName }}Request) (*{{ .PascalName }}Response, error)
+	Update(ctx context.Context, id string, req Update{{ .PascalName }}Request) (*{{ .PascalName }}Response, error)
+	Delete(ctx context.Context, id string) error
+}
+
+type service struct {
+	repo Repository
+}
+
+// NewService 构造 {{ .ChineseName }} 业务服务实例。
+func NewService(repo Repository) Service {
+	return &service{repo: repo}
+}
+
+func (s *service) List(ctx context.Context, query List{{ .PascalName }}Query) ([]{{ .PascalName }}Response, response.Meta, error) {
+	total, err := s.repo.Count(ctx, query)
+	if err != nil {
+		return nil, response.Meta{}, errs.Internal(err)
+	}
+
+	offset := (query.Page - 1) * query.PageSize
+	entities, err := s.repo.List(ctx, query, offset, query.PageSize)
+	if err != nil {
+		return nil, response.Meta{}, errs.Internal(err)
+	}
+
+	items := lo.Map(entities, func(item models.{{ .PascalName }}, _ int) {{ .PascalName }}Response {
+		return To{{ .PascalName }}Response(&item)
+	})
+
+	meta := response.NewMeta(query.Page, query.PageSize, total)
+	return items, meta, nil
+}
+
+func (s *service) GetByID(ctx context.Context, id string) (*{{ .PascalName }}Response, error) {
+	entity, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, errs.Internal(err)
+	}
+	if entity == nil {
+		return nil, errs.NotFound("{{ .ChineseName }}不存在")
+	}
+
+	res := To{{ .PascalName }}Response(entity)
+	return &res, nil
+}
+
+func (s *service) Create(ctx context.Context, req Create{{ .PascalName }}Request) (*{{ .PascalName }}Response, error) {
+	entity := &models.{{ .PascalName }}{
+		Name:        req.Name,
+		Description: &req.Description,
+		Status:      req.Status,
+	}
+
+	if err := s.repo.Create(ctx, entity); err != nil {
+		return nil, errs.Internal(err)
+	}
+
+	res := To{{ .PascalName }}Response(entity)
+	return &res, nil
+}
+
+func (s *service) Update(ctx context.Context, id string, req Update{{ .PascalName }}Request) (*{{ .PascalName }}Response, error) {
+	entity, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, errs.Internal(err)
+	}
+	if entity == nil {
+		return nil, errs.NotFound("{{ .ChineseName }}不存在")
+	}
+
+	var changedColumns []string
+	if req.Name != nil {
+		entity.Name = *req.Name
+		changedColumns = append(changedColumns, "name")
+	}
+	if req.Description != nil {
+		entity.Description = req.Description
+		changedColumns = append(changedColumns, "description")
+	}
+	if req.Status != nil {
+		entity.Status = *req.Status
+		changedColumns = append(changedColumns, "status")
+	}
+
+	if len(changedColumns) > 0 {
+		if err := s.repo.Update(ctx, entity, changedColumns...); err != nil {
+			return nil, errs.Internal(err)
+		}
+	}
+
+	res := To{{ .PascalName }}Response(entity)
+	return &res, nil
+}
+
+func (s *service) Delete(ctx context.Context, id string) error {
+	entity, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return errs.Internal(err)
+	}
+	if entity == nil {
+		return errs.NotFound("{{ .ChineseName }}不存在")
+	}
+
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return errs.Internal(err)
+	}
+
+	return nil
+}

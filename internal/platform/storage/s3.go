@@ -15,6 +15,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/samber/lo"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/errs"
@@ -32,6 +33,9 @@ type (
 )
 
 // s3Disk 用 minio-go/v7 实现 Disk，对接任何 S3 兼容对象存储。
+// 编译期断言：驱动一旦不再满足 Disk 契约，构建就失败在这里，而不是在 Open 的赋值处。
+var _ Disk = (*s3Disk)(nil)
+
 type s3Disk struct {
 	client    *minio.Client
 	bucket    string
@@ -45,13 +49,13 @@ type s3Disk struct {
 // 阶段拦截，这里的检查是防止绕过配置层直接调用的兜底。
 func NewS3Disk(cfg config.S3StorageConfig) (Disk, error) {
 	if strings.TrimSpace(cfg.Endpoint) == "" {
-		return nil, errors.New("storage: S3_ENDPOINT cannot be empty")
+		return nil, errors.New("storage: AWS_ENDPOINT cannot be empty")
 	}
 	if strings.TrimSpace(cfg.Bucket) == "" {
-		return nil, errors.New("storage: S3_BUCKET cannot be empty")
+		return nil, errors.New("storage: AWS_BUCKET cannot be empty")
 	}
 	if strings.TrimSpace(cfg.AccessKeyID) == "" || strings.TrimSpace(cfg.SecretAccessKey) == "" {
-		return nil, errors.New("storage: S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY cannot be empty")
+		return nil, errors.New("storage: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY cannot be empty")
 	}
 
 	region := cfg.Region
@@ -88,14 +92,18 @@ func isNotFound(err error) bool {
 		resp.StatusCode == http.StatusNotFound
 }
 
+func (d *s3Disk) wrapS3Error(op, key string, err error) error {
+	if isNotFound(err) {
+		return notFound(key)
+	}
+	return opFailed(op, key, err)
+}
+
 // statObject 取对象元数据，对象不存在时转成统一的 404。
 func (d *s3Disk) statObject(ctx context.Context, key string) (minio.ObjectInfo, error) {
 	info, err := d.client.StatObject(ctx, d.bucket, keyOf(key), minio.StatObjectOptions{})
 	if err != nil {
-		if isNotFound(err) {
-			return minio.ObjectInfo{}, notFound(key)
-		}
-		return minio.ObjectInfo{}, opFailed("stat s3 object", key, err)
+		return minio.ObjectInfo{}, d.wrapS3Error("stat s3 object", key, err)
 	}
 	return info, nil
 }
@@ -104,18 +112,12 @@ func (d *s3Disk) statObject(ctx context.Context, key string) (minio.ObjectInfo, 
 func (d *s3Disk) openObject(ctx context.Context, key string) (*minio.Object, error) {
 	obj, err := d.client.GetObject(ctx, d.bucket, keyOf(key), minio.GetObjectOptions{})
 	if err != nil {
-		if isNotFound(err) {
-			return nil, notFound(key)
-		}
-		return nil, opFailed("open s3 object stream", key, err)
+		return nil, d.wrapS3Error("open s3 object stream", key, err)
 	}
 
 	if _, err := obj.Stat(); err != nil {
 		_ = obj.Close()
-		if isNotFound(err) {
-			return nil, notFound(key)
-		}
-		return nil, opFailed("stat s3 object", key, err)
+		return nil, d.wrapS3Error("stat s3 object", key, err)
 	}
 	return obj, nil
 }
@@ -289,10 +291,7 @@ func (d *s3Disk) URL(key string) (string, error) {
 		return d.publicURL + "/" + keyOf(key), nil
 	}
 
-	scheme := "http"
-	if d.useSSL {
-		scheme = "https"
-	}
+	scheme := lo.Ternary(d.useSSL, "https", "http")
 	return fmt.Sprintf("%s://%s/%s/%s", scheme, d.endpoint, d.bucket, keyOf(key)), nil
 }
 

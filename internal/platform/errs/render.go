@@ -1,6 +1,8 @@
 package errs
 
 import (
+	"cmp"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -50,10 +52,10 @@ func Render(c *gin.Context, err error) {
 		log.Error().
 			Str("stack", Stack(err)).
 			Err(RootCause(err)).
-			Int("status", status).Str("code", resp.Code).Msg("请求处理失败")
+			Int("status", status).Str("code", resp.Code).Msg("request processing failed")
 	} else {
 		log.Warn().Err(err).
-			Int("status", status).Str("code", resp.Code).Msg("请求被拒绝")
+			Int("status", status).Str("code", resp.Code).Msg("request rejected")
 	}
 
 	c.AbortWithStatusJSON(status, resp)
@@ -105,15 +107,18 @@ func Map(err error) (int, Response) {
 		return http.StatusNotFound, Response{Code: string(CodeNotFound), Message: msgNotFound}
 	}
 
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout, Response{Code: string(CodeGatewayTimeout), Message: msgGatewayTimeout}
+	}
+
 	// 平台层直接抛出的、已在 statuses 登记过的 oops 错误。
 	if oopsErr, ok := oops.AsOops(err); ok {
 		code := Code(fmt.Sprintf("%v", oopsErr.Code()))
 		if _, registered := statuses[code]; registered {
-			message := oopsErr.Public()
-			if message == "" {
-				message = msgInternal
+			return Status(code), Response{
+				Code:    string(code),
+				Message: cmp.Or(oopsErr.Public(), msgInternal),
 			}
-			return Status(code), Response{Code: string(code), Message: message}
 		}
 	}
 
@@ -149,9 +154,7 @@ func isBadRequestError(err error) bool {
 // mapPgError 把数据库约束错误翻译成业务语义，避免把 PgError 细节暴露出去。
 func mapPgError(err *pgconn.PgError) (int, Response) {
 	switch err.Code {
-	case pgErrUniqueViolation:
-		return http.StatusConflict, Response{Code: string(CodeConflict), Message: msgConflict}
-	case pgErrForeignKeyViolation, pgErrNotNullViolation:
+	case pgErrUniqueViolation, pgErrForeignKeyViolation, pgErrNotNullViolation:
 		return http.StatusConflict, Response{Code: string(CodeConflict), Message: msgConflict}
 	case pgErrInvalidTextRepresentation:
 		return http.StatusBadRequest, Response{Code: string(CodeBadRequest), Message: msgBadRequest}

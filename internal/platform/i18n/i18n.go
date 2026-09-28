@@ -2,12 +2,14 @@
 package i18n
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/pelletier/go-toml/v2"
@@ -21,6 +23,7 @@ const (
 	sectionValidation = "validation"
 	sectionFields     = "fields"
 	sectionMail       = "mail"
+	sectionInvoice    = "invoice"
 )
 
 // bundle 是一门语言的文案集合。
@@ -28,6 +31,7 @@ type bundle struct {
 	validation map[string]string
 	fields     map[string]string
 	mail       map[string]string
+	invoice    map[string]string
 }
 
 // Translator 按请求语言渲染文案；缺失的键一律回退到默认语言。
@@ -65,18 +69,43 @@ func New(cfg *config.Config) (*Translator, error) {
 	return &Translator{fallback: fallback, bundles: bundles}, nil
 }
 
+var (
+	defaultMu         sync.RWMutex
+	defaultTranslator *Translator
+)
+
+// SetDefault 注册全局默认翻译器。
+//
+// 装配树里的调用方直接持有 Translator，本入口是给拿不到装配依赖的调用方准备的：
+// PDF 文档模版的 Build 只收到 ctx 与 Builder，无法从签名上取到翻译器。
+// 形态与 pdf.RegisterPDF / pdf.DefaultService 保持一致。
+func SetDefault(translator *Translator) {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	defaultTranslator = translator
+}
+
+// Default 返回全局默认翻译器；未注册时为 nil，调用方须自行判断。
+func Default() *Translator {
+	defaultMu.RLock()
+	defer defaultMu.RUnlock()
+	return defaultTranslator
+}
+
 // loadBundle 读取单门语言的全部文案文件。
 func loadBundle(name string) (*bundle, error) {
 	loaded := &bundle{
 		validation: make(map[string]string),
 		fields:     make(map[string]string),
 		mail:       make(map[string]string),
+		invoice:    make(map[string]string),
 	}
 
 	sections := map[string]map[string]string{
 		sectionValidation: loaded.validation,
 		sectionFields:     loaded.fields,
 		sectionMail:       loaded.mail,
+		sectionInvoice:    loaded.invoice,
 	}
 	for section, target := range sections {
 		if err := decode(lang.FS, name+"/"+section+".toml", &target); err != nil {
@@ -149,11 +178,7 @@ func (t *Translator) ValidationMessage(language, key, field, param string) strin
 		return ""
 	}
 
-	label := t.FieldLabel(language, field)
-	if label == "" {
-		label = humanize(field)
-	}
-
+	label := cmp.Or(t.FieldLabel(language, field), humanize(field))
 	return render(tpl, map[string]string{"Field": label, "Param": param})
 }
 
@@ -162,6 +187,14 @@ func (t *Translator) Mail(language, key string, vars map[string]string) (subject
 	subject = render(t.template(language, sectionMail, key+"_subject"), vars)
 	body = render(t.template(language, sectionMail, key+"_body"), vars)
 	return subject, body
+}
+
+// Invoice 渲染一条发票/结算凭据的展示文案；键或语言缺失时回退默认语言。
+//
+// 它是 invoice 分节的取值入口，与 Mail 同构：PDF 模板只声明键，
+// 展示文案一律留在 lang/<语言>/invoice.toml，模板里不留硬编码文案。
+func (t *Translator) Invoice(language, key string, vars map[string]string) string {
+	return render(t.template(language, sectionInvoice, key), vars)
 }
 
 // FieldLabel 返回字段路径对应的可读标签，缺键时返回空串交由调用方兜底。
@@ -198,6 +231,8 @@ func lookup(b *bundle, section, key string) string {
 		return b.fields[key]
 	case sectionMail:
 		return b.mail[key]
+	case sectionInvoice:
+		return b.invoice[key]
 	default:
 		return ""
 	}

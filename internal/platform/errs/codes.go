@@ -18,10 +18,17 @@ const (
 	CodeForbidden        Code = "FORBIDDEN"
 	CodeConflict         Code = "CONFLICT"
 	CodeRateLimited      Code = "RATE_LIMITED"
+	// 幂等性控制错误码。
+	CodeIdempotencyConflict Code = "IDEMPOTENCY_CONFLICT"
+	CodeIdempotencyMismatch Code = "IDEMPOTENCY_MISMATCH"
+	CodeIdempotencyRequired Code = "IDEMPOTENCY_REQUIRED"
 	// CodeRequestTooLarge 对应请求体超过服务端上限（见 middleware.BodyLimit）。
 	// 单独成码而不是并入 BAD_REQUEST：调用方需要据此判断"重试无用、必须改小载荷"。
 	CodeRequestTooLarge Code = "REQUEST_TOO_LARGE"
-	CodeInternal        Code = "INTERNAL_SERVER_ERROR"
+	// CodeGatewayTimeout 对应上游数据库或外部依赖未在请求时限内响应。
+	CodeGatewayTimeout     Code = "GATEWAY_TIMEOUT"
+	CodeServiceUnavailable Code = "SERVICE_UNAVAILABLE"
+	CodeInternal           Code = "INTERNAL_SERVER_ERROR"
 )
 
 // 认证域错误码。前缀 AUTH_ 用于把认证失败与业务失败区分开。
@@ -45,15 +52,20 @@ const (
 
 // statuses 是错误码到 HTTP 状态码的唯一映射表，新增错误码必须在此登记。
 var statuses = map[Code]int{
-	CodeBadRequest:       http.StatusBadRequest,
-	CodeValidationFailed: http.StatusUnprocessableEntity,
-	CodeNotFound:         http.StatusNotFound,
-	CodeMethodNotAllowed: http.StatusMethodNotAllowed,
-	CodeForbidden:        http.StatusForbidden,
-	CodeConflict:         http.StatusConflict,
-	CodeRateLimited:      http.StatusTooManyRequests,
-	CodeRequestTooLarge:  http.StatusRequestEntityTooLarge,
-	CodeInternal:         http.StatusInternalServerError,
+	CodeBadRequest:          http.StatusBadRequest,
+	CodeValidationFailed:    http.StatusUnprocessableEntity,
+	CodeNotFound:            http.StatusNotFound,
+	CodeMethodNotAllowed:    http.StatusMethodNotAllowed,
+	CodeForbidden:           http.StatusForbidden,
+	CodeConflict:            http.StatusConflict,
+	CodeRateLimited:         http.StatusTooManyRequests,
+	CodeIdempotencyConflict: http.StatusConflict,
+	CodeIdempotencyMismatch: http.StatusUnprocessableEntity,
+	CodeIdempotencyRequired: http.StatusBadRequest,
+	CodeRequestTooLarge:     http.StatusRequestEntityTooLarge,
+	CodeGatewayTimeout:      http.StatusGatewayTimeout,
+	CodeServiceUnavailable:  http.StatusServiceUnavailable,
+	CodeInternal:            http.StatusInternalServerError,
 
 	CodeAuthInvalidCredentials: http.StatusUnauthorized,
 	CodeAuthEmailAlreadyExists: http.StatusConflict,

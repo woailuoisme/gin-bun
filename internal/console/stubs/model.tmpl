@@ -1,0 +1,19 @@
+package models
+
+import (
+	"github.com/uptrace/bun"
+)
+
+// {{ .PascalName }} 对应 "{{ .TableName }}" 表实体。
+type {{ .PascalName }} struct {
+	bun.BaseModel `bun:"table:{{ .TableName }},alias:{{ .TableAlias }}"`
+
+	Base
+
+	// 业务名称
+	Name string `bun:"name,notnull"`
+	// 详细描述
+	Description *string `bun:"description"`
+	// 状态 (active: 正常, inactive: 停用)
+	Status string `bun:"status,notnull,default:'active'"`
+}

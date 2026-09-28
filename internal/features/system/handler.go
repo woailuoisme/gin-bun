@@ -40,8 +40,8 @@ func (h *Handler) Liveness(c *gin.Context) {
 
 // Readiness 处理 GET /readyz：逐个探测依赖，任一不可达即 503，让编排系统摘掉本实例的流量。
 //
-// 与 errs 体系的关系：探针不属于对外 API 的错误模型（api.md 里没有 503 码），
-// 因此这里直接写状态码与固定文案，不经过 errs.Render。
+// 与 errs 体系的关系：探针不套用对外错误模型——api.md 登记了 503 SERVICE_UNAVAILABLE，
+// 但运维需要的是逐个组件的结果，因此这里返回自己的响应体，不经过 errs.Render。
 func (h *Handler) Readiness(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), probeTimeout)
 	defer cancel()
@@ -56,7 +56,7 @@ func (h *Handler) Readiness(c *gin.Context) {
 		if outcome.Err != nil {
 			checks[outcome.Name] = ComponentCheck{Status: CheckUnreachable}
 			// 原始错误常含目标地址与驱动名，只进日志——与 errs.Internal 把原因留给日志的处置一致。
-			h.logger.Warn().Err(outcome.Err).Str("component", outcome.Name).Msg("就绪探测失败")
+			h.logger.Warn().Err(outcome.Err).Str("component", outcome.Name).Msg("readiness probe failed")
 			continue
 		}
 		checks[outcome.Name] = ComponentCheck{Status: CheckHealthy}

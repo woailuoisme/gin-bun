@@ -7,14 +7,34 @@ set dotenv-load := true
 default:
     @just --list
 
-# 开发模式：热重载启动服务 (Air)
+# 开发模式：使用 concurrently 同时启动 API 服务与 Worker (均支持 Air 热重载)
 dev: free-port
+    concurrently -n "api,worker" -c "bgBlue.bold,bgMagenta.bold" --kill-others \
+        "just dev-api" \
+        "just dev-worker"
+
+# 仅热重载启动 API 服务 (Air)
+dev-api: free-port
     air
 
-# 直接运行服务 (如 just run --port 3400)
+# 仅热重载启动 Worker 服务 (Air)
+dev-worker:
+    air -c .air.worker.toml
+
+# 直接运行 API 服务 (如 just run --port 3400)
 run *ARGS:
     @just free-port "$(printf '%s' '{{ARGS}}' | sed -nE 's/.*(-p|--port)[= ]+([0-9]+).*/\2/p' | tail -1)"
     go run ./cmd/api serve {{ARGS}}
+
+# 直接运行 Worker 服务 (如 just work -q high:3,default:1)
+work *ARGS:
+    go run ./cmd/api queue:work {{ARGS}}
+
+# 运行 CLI 控制台命令 (如 just cli route list, just cli make:feature blog)
+cli *ARGS:
+    go run ./cmd/api {{ARGS}}
+
+alias artisan := cli
 
 # 释放指定或默认 APP_PORT 端口
 free-port port="":
@@ -81,7 +101,7 @@ alias wrk := bench
 migrate:
     atlas migrate apply --env app
 
-# 基于 schema.sql 差异生成新的版本迁移
+# 基于 schemas/ 目录的声明式 DDL 差异生成新的版本迁移
 migrate-diff name:
     atlas migrate diff {{name}} --env local
 
@@ -101,6 +121,10 @@ fresh:
 fresh-force:
     go run ./cmd/api db:fresh --force
 
+# 生成或更新 JWT 签名密钥 (仿照 artisan jwt:secret)
+jwt-secret *ARGS:
+    go run ./cmd/api jwt:secret {{ARGS}}
+
 # 打开 PostgreSQL 交互终端
 db:
     psql "$DB_URL"
@@ -113,6 +137,10 @@ redis:
 
 alias cache-shell := redis
 
-# 生成 OpenAPI 接口文档到 apidocs/swagger.json
+# 生成前台与管理端两套 OpenAPI 接口文档到 internal/apidocs/
 docs:
-    swag init -g cmd/api/main.go -o apidocs --parseInternal --parseDependency --outputTypes json
+    swag init -d "$(find cmd internal -type f -name '*.go' ! -path '*/admin/*' ! -path '*/admin' -exec dirname {} + | sort -u | paste -sd, -)" -g main.go -o internal/apidocs --parseInternal --outputTypes json
+    swag init -d "$(find cmd internal -type f -name '*.go' ! -path '*/features/client*' ! -path '*/features/auth*' ! -path '*/features/realtime*' -exec dirname {} + | sort -u | paste -sd, -)" -g admin_doc.go -o internal/apidocs/admin_tmp --parseInternal --outputTypes json
+    mv internal/apidocs/admin_tmp/swagger.json internal/apidocs/admin_swagger.json
+    rm -rf internal/apidocs/admin_tmp
+

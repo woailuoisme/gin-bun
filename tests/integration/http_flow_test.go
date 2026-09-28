@@ -132,9 +132,12 @@ func TestUnauthorizedShapes(t *testing.T) {
 	})
 
 	t.Run("Authorization 头缺 Bearer 前缀", func(t *testing.T) {
-		result := call(t, engine, http.MethodGet, "/v1/users/me", "", "")
+		// 直接写入缺少 Bearer 前缀的原始头，覆盖解析失败分支（call 会自动补前缀，无法表达该场景）。
+		result := callRawAuth(t, engine, http.MethodGet, "/v1/users/me", "not-a-jwt")
 		assert.Equal(t, http.StatusUnauthorized, result.Status)
+		assert.Equal(t, "AUTH_TOKEN_INVALID", str(result.Body, "code"))
 
+		// 前缀正确但令牌本身畸形，同样必须拒绝。
 		raw := call(t, engine, http.MethodGet, "/v1/auth/get-session", "", "not-a-jwt")
 		assert.Equal(t, http.StatusUnauthorized, raw.Status)
 	})
@@ -475,8 +478,7 @@ func TestAdminUserCRUDAndPermissions(t *testing.T) {
 	})
 
 	t.Run("管理员软删用户返回 204 并释放邮箱", func(t *testing.T) {
-		targetToken, _, targetID, targetEmail := signUp(t, engine)
-		_ = targetToken
+		_, _, targetID, targetEmail := signUp(t, engine)
 
 		deleted := call(t, engine, http.MethodDelete, "/v1/admin/users/"+targetID, "", adminToken)
 		require.Equal(t, http.StatusNoContent, deleted.Status, deleted.Raw)
@@ -512,7 +514,7 @@ func TestRateLimitHeaders(t *testing.T) {
 // 依赖 Mailpit 的 HTTP 接口；不可达时跳过而不是伪装通过。
 func TestEmailVerificationOTPFlow(t *testing.T) {
 	engine := newEngine(t)
-	token, _, userID, email := signUp(t, engine)
+	token, _, _, email := signUp(t, engine)
 
 	sent := callJSON(t, engine, http.MethodPost, "/v1/auth/send-verification-otp", map[string]any{"email": email}, "")
 	require.Equal(t, http.StatusOK, sent.Status, sent.Raw)
@@ -541,7 +543,6 @@ func TestEmailVerificationOTPFlow(t *testing.T) {
 		session := call(t, engine, http.MethodGet, "/v1/auth/get-session", "", token)
 		require.Equal(t, http.StatusOK, session.Status)
 		assert.Equal(t, true, nested(session.Body, "user")["emailVerified"])
-		_ = userID
 	})
 
 	t.Run("同一验证码不能复用", func(t *testing.T) {

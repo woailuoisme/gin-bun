@@ -1,28 +1,27 @@
 package console
 
 import (
-	"context"
 	"os/signal"
 	"syscall"
 
-	"github.com/urfave/cli/v3"
+	"github.com/spf13/cobra"
 
 	"bgin/internal/bootstrap"
 )
 
-// serveCommand 启动 HTTP 服务，对应 .air.toml 的 args_bin。
-func serveCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "serve",
-		Usage: "启动 HTTP 服务",
-		Flags: []cli.Flag{
-			&cli.IntFlag{Name: "port", Aliases: []string{"p"}, Usage: "覆盖 APP_PORT，0 表示使用配置值"},
-		},
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+// newServeCmd 启动 HTTP 服务，对应 .air.toml 的 args_bin。
+func newServeCmd() *cobra.Command {
+	var port int
+
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start the HTTP server",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			application, err := bootstrap.NewApplication(ctx, cmd.Int("port"))
+			application, err := bootstrap.NewApplication(ctx, port)
 			if err != nil {
 				return err
 			}
@@ -31,4 +30,8 @@ func serveCommand() *cli.Command {
 			return application.Serve(ctx)
 		},
 	}
+
+	cmd.Flags().IntVarP(&port, "port", "p", 0, "Override APP_PORT (0 to use configured value)")
+
+	return cmd
 }

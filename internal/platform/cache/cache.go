@@ -270,26 +270,44 @@ func (c *Client) Remember(
 		return "", err
 	}
 
-	result, err, _ := c.group.Do(key, func() (any, error) {
+	// 用 DoChan 而非 Do：Do 会把首个调用方（leader）的 ctx 共享给所有等待者，
+	// leader 一旦被取消或超时，其余调用方会跟着收到 context.Canceled，
+	// 而它们各自的截止时间对共享的 load 并不生效。DoChan 让每个调用方都能按自己的 ctx 退出。
+	ch := c.group.DoChan(key, func() (any, error) {
+		// 共享回源不能被任何单个调用方的取消信号带走：leader 的请求提前结束时，
+		// 其余等待者仍需拿到结果、缓存也应照常写入。摘除取消信号但保留上下文值
+		// （日志器、request_id 继续可用）；真正的超时约束由底层客户端自行负责。
+		fillCtx := context.WithoutCancel(ctx)
+
 		// 等锁期间缓存可能已被别的调用方填上，因此进来再查一次。
-		if cached, err := c.Get(ctx, key); err == nil {
+		cached, err := c.Get(fillCtx, key)
+		if err == nil {
 			return cached, nil
-		} else if !errors.Is(err, ErrNotFound) {
+		}
+		if !errors.Is(err, ErrNotFound) {
 			return "", err
 		}
 
-		loaded, err := load(ctx)
+		loaded, err := load(fillCtx)
 		if err != nil {
 			return "", err
 		}
 
-		if err := c.Set(ctx, key, loaded, ttl); err != nil {
-			logger.FromContext(ctx).Warn().Err(err).Str("key", key).Msg("回源数据写入缓存失败")
+		if err := c.Set(fillCtx, key, loaded, ttl); err != nil {
+			logger.FromContext(fillCtx).Warn().Err(err).Str("key", key).Msg("failed to write origin data to cache")
 		}
 		return loaded, nil
 	})
-	if err != nil {
-		return "", err
+
+	var result any
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return "", res.Err
+		}
+		result = res.Val
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
 
 	value, ok := result.(string)

@@ -1,176 +1,225 @@
 package console
 
 import (
-	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
-	"charm.land/huh/v2"
+	"github.com/spf13/cobra"
 	"github.com/uptrace/bun"
-	"github.com/urfave/cli/v3"
 
 	"bgin/internal/config"
+	"bgin/internal/console/core"
 	"bgin/internal/database"
-	"bgin/internal/database/model"
-	"bgin/internal/platform/hasher"
-	"bgin/internal/platform/validator"
-	"bgin/internal/shared/user"
+	"bgin/internal/database/seeders"
 )
 
-// dbMigrateCommand 委托 atlas 应用版本式迁移。
-// 迁移文件由 `atlas migrate diff` 依据 schema.sql 生成，因此这里不自行实现迁移器，
-// 也不去伪造 atlas 的版本记账表（见 ADR-0004）。
-func dbMigrateCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "db:migrate",
-		Usage: "应用迁移（委托 atlas migrate apply）",
-		Action: func(ctx context.Context, _ *cli.Command) error {
-			return runAtlas(ctx, "migrate", "apply", "--env", "app")
+// newDBCmd 组装数据库管理命令组。
+func newDBCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "db",
+		Short: "Database migrations, seeding, and management",
+	}
+
+	cmd.AddCommand(newDBMigrateCmd())
+	cmd.AddCommand(newDBSeedCmd())
+	cmd.AddCommand(newDBFreshCmd())
+
+	return cmd
+}
+
+// newDBMigrateCmd 委托 atlas 应用版本式迁移。
+func newDBMigrateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "migrate",
+		Short: "Apply database migrations via Atlas (atlas migrate apply)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runAtlas(cmd, "migrate", "apply", "--env", "app")
 		},
 	}
 }
 
-// dbSeedCommand 创建首个管理员账号，幂等：已存在则跳过。
-func dbSeedCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "db:seed",
-		Usage: "创建首个管理员账号（幂等）",
-		Action: func(ctx context.Context, _ *cli.Command) error {
+// newDBSeedCmd 调度运行数据播种器（支持通过 --class 指定单个 Seeder，缺省为 DatabaseSeeder）。
+func newDBSeedCmd() *cobra.Command {
+	var className string
+
+	cmd := &cobra.Command{
+		Use:   "seed",
+		Short: "Seed database with records (default: DatabaseSeeder)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load()
 			if err != nil {
 				return err
 			}
 
-			db, err := database.Open(ctx, cfg.Database, cfg.App.Name)
+			db, err := database.Open(cmd.Context(), cfg.Database, cfg.App.Name)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = db.Close() }()
 
-			return seedAdmin(ctx, cfg, db)
+			if className == "" {
+				className = "DatabaseSeeder"
+			}
+
+			targetSeeder, ok := seeders.Get(className)
+			if !ok {
+				available := seeders.List()
+				return fmt.Errorf("seeder [%s] not found. Available seeders: %v", className, available)
+			}
+
+			core.Title(cmd, fmt.Sprintf("Seeding [%s]...", className))
+			if err := runSeederWithProgress(cmd, db, targetSeeder); err != nil {
+				return err
+			}
+
+			core.Success(cmd, "Database seeding completed successfully.")
+			return nil
 		},
 	}
+
+	cmd.Flags().StringVarP(&className, "class", "c", "DatabaseSeeder", "The class name of the seeder to run")
+	_ = cmd.RegisterFlagCompletionFunc("class", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return seeders.List(), cobra.ShellCompDirectiveNoFileComp
+	})
+
+	return cmd
 }
 
-// dbFreshCommand 清空数据库后重放迁移并写入种子数据。破坏性操作默认需要交互确认。
-func dbFreshCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "db:fresh",
-		Usage: "清空数据库、重放迁移并写入种子数据（破坏性）",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{Name: "force", Usage: "跳过交互确认，仅供自动化使用"},
-		},
-		Action: func(ctx context.Context, cmd *cli.Command) error {
+// newDBFreshCmd 清空数据库后重放迁移并写入种子数据。破坏性操作默认需要交互确认。
+func newDBFreshCmd() *cobra.Command {
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "fresh",
+		Short: "Drop all tables, re-run migrations, and seed database (destructive)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load()
 			if err != nil {
 				return err
 			}
 
-			if !cmd.Bool("force") {
-				confirmed, err := confirmFresh(cfg)
-				if err != nil || !confirmed {
-					warn("已取消")
+			if !force {
+				confirmed, err := core.Confirm("Are you sure you want to fresh the database?",
+					fmt.Sprintf("All data in %s will be permanently dropped and migrations will be re-run.", cfg.App.Name),
+					"Yes, drop and re-migrate")
+				if err != nil {
 					return err
+				}
+				if !confirmed {
+					core.Warn(cmd, "Database fresh operation cancelled.")
+					return core.ErrCanceled
 				}
 			}
 
-			db, err := database.Open(ctx, cfg.Database, cfg.App.Name)
+			db, err := database.Open(cmd.Context(), cfg.Database, cfg.App.Name)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = db.Close() }()
 
-			title("正在重建 public schema…")
-			if _, err := db.ExecContext(ctx, "DROP SCHEMA IF EXISTS public CASCADE"); err != nil {
-				return fmt.Errorf("删除 public schema 失败: %w", err)
+			core.Title(cmd, "Rebuilding public schema...")
+			if _, err := db.ExecContext(cmd.Context(), "DROP SCHEMA IF EXISTS public CASCADE"); err != nil {
+				return fmt.Errorf("failed to drop public schema: %w", err)
 			}
-			if _, err := db.ExecContext(ctx, "CREATE SCHEMA public"); err != nil {
-				return fmt.Errorf("重建 public schema 失败: %w", err)
+			if _, err := db.ExecContext(cmd.Context(), "CREATE SCHEMA public"); err != nil {
+				return fmt.Errorf("failed to recreate public schema: %w", err)
 			}
 
-			title("正在重放迁移…")
-			if err := runAtlas(ctx, "migrate", "apply", "--env", "app"); err != nil {
+			core.Title(cmd, "Applying versioned migrations...")
+			if err := runAtlas(cmd, "migrate", "apply", "--env", "app"); err != nil {
 				return err
 			}
 
-			title("正在写入种子数据…")
-			return seedAdmin(ctx, cfg, db)
+			core.Title(cmd, "Seeding initial data via DatabaseSeeder...")
+			if err := runSeederWithProgress(cmd, db, &seeders.DatabaseSeeder{}); err != nil {
+				return err
+			}
+
+			core.Success(cmd, "Database refreshed and seeded successfully.")
+			return nil
 		},
 	}
+
+	cmd.Flags().BoolVarP(&force, core.FlagForce, "f", false, core.UsageForceFlag)
+
+	return cmd
 }
 
-// seedAdmin 创建首个管理员。凭据来自环境变量，绝不硬编码（Q28）。
-func seedAdmin(ctx context.Context, cfg *config.Config, db *bun.DB) error {
-	if cfg.Seed.AdminEmail == "" || cfg.Seed.AdminPassword == "" {
-		return errors.New("请先设置 SEED_ADMIN_EMAIL 与 SEED_ADMIN_PASSWORD")
-	}
-	if err := validator.PasswordStrength("password", cfg.Seed.AdminPassword); err != nil {
-		return fmt.Errorf("SEED_ADMIN_PASSWORD 不满足口令强度要求: %w", err)
-	}
+// 兼容老 Artisan 风格冒号别名命令构造工厂（设为 Hidden: true 保持帮助信息精简）。
 
-	repo := user.NewRepository(db)
-	_, err := repo.FindByEmail(ctx, cfg.Seed.AdminEmail)
-	switch {
-	case err == nil:
-		warn("管理员 %s 已存在，跳过", cfg.Seed.AdminEmail)
-		return nil
-	case !errors.Is(err, sql.ErrNoRows):
-		return fmt.Errorf("查询管理员失败: %w", err)
-	}
-
-	hasherClient := hasher.New()
-	hash, err := hasherClient.Make(cfg.Seed.AdminPassword)
-	if err != nil {
-		return err
-	}
-
-	// 变量刻意不叫 user，避免遮蔽上面引入的 user 包名。
-	administrator := &model.User{
-		Name:          cfg.Seed.AdminName,
-		Email:         strings.ToLower(strings.TrimSpace(cfg.Seed.AdminEmail)),
-		EmailVerified: true,
-		Role:          model.RoleAdmin,
-		Status:        model.StatusActive,
-	}
-	if err := repo.CreateWithCredential(ctx, administrator, hash); err != nil {
-		return fmt.Errorf("创建管理员失败: %w", err)
-	}
-
-	success("管理员 %s 已创建（id=%s）", administrator.Email, administrator.ID)
-	return nil
+func newDBMigrateAliasCmd() *cobra.Command {
+	c := newDBMigrateCmd()
+	c.Use = "db:migrate"
+	c.Hidden = true
+	return c
 }
 
-// confirmFresh 用 huh 收集破坏性操作的确认。
-func confirmFresh(cfg *config.Config) (bool, error) {
-	confirmed := false
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewConfirm().
-			Title("确认清空数据库？").
-			Description(fmt.Sprintf("将删除 %s 的全部数据并重放迁移，此操作不可撤销。", cfg.App.Name)).
-			Affirmative("确认清空").
-			Negative("取消").
-			Value(&confirmed),
-	))
+func newDBSeedAliasCmd() *cobra.Command {
+	c := newDBSeedCmd()
+	c.Use = "db:seed"
+	c.Hidden = true
+	return c
+}
 
-	if err := form.Run(); err != nil {
-		return false, fmt.Errorf("读取确认失败: %w", err)
-	}
-	return confirmed, nil
+func newDBFreshAliasCmd() *cobra.Command {
+	c := newDBFreshCmd()
+	c.Use = "db:fresh"
+	c.Hidden = true
+	return c
 }
 
 // runAtlas 以当前工作目录为基准调用 atlas 命令行工具，输出直接透传给用户。
-func runAtlas(ctx context.Context, args ...string) error {
-	command := exec.CommandContext(ctx, "atlas", args...)
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
+func runAtlas(cmd *cobra.Command, args ...string) error {
+	command := exec.CommandContext(cmd.Context(), "atlas", args...)
+	command.Stdout = cmd.OutOrStdout()
+	command.Stderr = cmd.ErrOrStderr()
 	command.Stdin = os.Stdin
 
 	if err := command.Run(); err != nil {
-		return fmt.Errorf("执行 atlas %s 失败（请确认已安装 atlas 且已配置 .env）: %w", strings.Join(args, " "), err)
+		return fmt.Errorf("failed to execute atlas %s (ensure atlas is installed and .env configured): %w", strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+// runSeederWithProgress 带有控制台步骤展示与细粒度进度条调度的 Seeder 执行函数。
+func runSeederWithProgress(cmd *cobra.Command, db *bun.DB, targetSeeder seeders.Seeder) error {
+	var subBar *core.ProgressBar
+
+	stepHook := func(name string, index, total int, duration time.Duration, done bool) {
+		if !done {
+			core.Info(cmd, "• [%d/%d] Seeding %s...", index, total, name)
+		} else {
+			if subBar != nil {
+				subBar.Finish()
+				subBar = nil
+			}
+			core.Success(cmd, "✓ [%d/%d] %s completed (%s)", index, total, name, duration.Round(time.Millisecond))
+		}
+	}
+
+	subHook := func(current, total int64) {
+		if total <= 0 {
+			return
+		}
+		if subBar == nil {
+			subBar = core.NewProgressBar(cmd, total, "Records")
+		}
+		subBar.Set(current)
+	}
+
+	ctx := seeders.WithProgressHook(cmd.Context(), stepHook)
+	ctx = seeders.WithSubProgressHook(ctx, subHook)
+
+	runner := seeders.NewRunner(db).WithStepHook(stepHook)
+	err := runner.Call(ctx, targetSeeder)
+	if subBar != nil {
+		subBar.Finish()
+	}
+	return err
 }

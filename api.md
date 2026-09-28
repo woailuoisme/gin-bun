@@ -51,7 +51,8 @@ curl https://api.example.com/v1/users/me \
 - **资源路径**：复数名词、全小写短横线，不使用动词（如 `/{version}/{resources}`）。
 - **Query 参数与 JSON 键名**：小驼峰（`camelCase`），例如 `createdAt`、`sortBy`。
 - **布尔字段**：统一使用 `is` / `has` / `can` 前缀，例如 `isActive`、`hasAttachments`。
-- **枚举值**：全大写下划线（`UPPER_SNAKE`），例如 `"ACTIVE"`、`"IN_PROGRESS"`。
+- **大小写例外**：`/v1/realtime/token` 的响应沿用既有的 `snake_case` 字段名（`expires_at`、`ws_url`），改名会破坏已联调的客户端；新增端点一律使用小驼峰。
+- **枚举值**：全小写，多词用下划线分隔，例如 `"user"`、`"admin"`、`"active"`、`"in_progress"`（与 AGENTS.md §5.3 的示范一致）。
 
 ### 2.2 时间与数值精度 (Timestamp & Precision)
 
@@ -102,14 +103,16 @@ Authorization: Bearer <your_access_token>
 | **`Accept`**          |  ✅  | 客户端期望的响应格式                                     | `application/json`                     |
 | **`Authorization`**   | 条件 | 访问受保护资源的 Bearer Token                            | `Bearer eyJhbGci...`                   |
 | **`x-request-id`**    |  ❌  | 全链路追踪 ID；未提供时由服务端生成，并在响应头回写      | `req_019572d4a6c878b18cf0`             |
-| **`Idempotency-Key`** | 未实现 | 非幂等写操作的去重键，确保重试不产生重复副作用           | `019572d4-a6c8-78b1-8cf0-281b94c032a1` |
+| **`Idempotency-Key`** | 可选 | 非幂等写操作的去重键；携带则去重并回放首次响应，未携带行为不变 | `019572d4-a6c8-78b1-8cf0-281b94c032a1` |
 | **`If-None-Match`**   | 未实现 | 条件读取：资源未变化时返回`304 Not Modified`，节省带宽 | `W/"019572d4a6c878b1"`                 |
 
-> 上表标为「未实现」的两个请求头当前**会被服务端忽略**，不产生任何效果，详见 3.3 与 3.4。
+> 上表标为「未实现」的请求头当前**会被服务端忽略**，不产生任何效果，详见 3.4。
+>
+> 本 API 只使用 `application/json`：不实现 415/406 内容协商——`Accept` 与 `Content-Type` 不匹配不会单独报错，请求体结构有问题时仍返回 400。
 
 ### 3.3 幂等请求 (Idempotency)
 
-> **当前版本不支持。** 本版本不实现 `Idempotency-Key`：该请求头会被忽略，重复提交会重复执行。以下为规划中的语义，接入前请勿依赖。
+> **已接线（探测模式）。** 服务端已挂载幂等中间件：携带 `Idempotency-Key` 的写请求会按该键去重、并在重复提交时回放首次响应；**未携带时行为与从前完全一致**（不强制要求，避免破坏既有客户端与渠道回调）。以下语义适用于携带该头的请求。
 
 对创建类、支付类等非幂等写操作，建议携带 `Idempotency-Key`：
 
@@ -169,6 +172,7 @@ Authorization: Bearer <your_access_token>
 | **`422`** | `VALIDATION_FAILED` 等   | 请求体字段语义或参数验证规则校验失败        |
 | **`429`** | `RATE_LIMITED`          | 请求频率超出速率配额限制              |
 | **`500`** | `INTERNAL_SERVER_ERROR` | 服务器内部异常，未捕获错误统一转为通用提示     |
+| **`504`** | `GATEWAY_TIMEOUT`       | 请求处理超时（上游数据库或依赖未在时限内响应） |
 
 > 关于第二列：2xx 与 304 的成功响应**不含 `code` 字段**（成功响应直接返回业务对象本身，见 5.1），该列对这些行给出的是状态语义名；4xx 与 5xx 行给出的是错误响应体里 `code` 字段的字面取值，标为「等」表示该状态码对应多个具体错误码，完整清单见 5.2 的错误码清单。
 
@@ -310,6 +314,11 @@ Location: /{version}/tasks/<task_id>
 | `CONFLICT`                  |  409   | 资源状态冲突（如唯一键重复）                         |
 | `RATE_LIMITED`              |  429   | 超出速率配额                                         |
 | `REQUEST_TOO_LARGE`         |  413   | 请求体超过服务端上限（1 MiB），重试无用、须改小载荷  |
+| `IDEMPOTENCY_REQUIRED`      |  400   | 该端点要求 `Idempotency-Key` 却未提供                |
+| `IDEMPOTENCY_CONFLICT`      |  409   | 同一幂等键的请求正在处理中，请稍后重试               |
+| `IDEMPOTENCY_MISMATCH`      |  422   | 同一幂等键重复提交但载荷不一致                       |
+| `GATEWAY_TIMEOUT`           |  504   | 请求处理超时（上游数据库或外部依赖未在时限内响应）   |
+| `SERVICE_UNAVAILABLE`       |  503   | 外部依赖暂不可用或服务暂未启用                       |
 | `INTERNAL_SERVER_ERROR`     |  500   | 未捕获的服务器内部异常                               |
 | `AUTH_INVALID_CREDENTIALS`  |  401   | 邮箱/用户名或口令不正确（账号不存在返回同一码，防枚举） |
 | `AUTH_EMAIL_ALREADY_EXISTS` |  409   | 邮箱已被占用                                         |
@@ -386,9 +395,10 @@ GET /{version}/{resources}?page=1&pageSize=20&search=<keyword>&filter[<field>]=<
 
 接口在网关与中间件层实施多级配额控制：
 
-- **未认证客户端**：低频防刷配额；
 - **已认证用户**：标准业务并发配额；
 - **敏感认证端点**：防暴力破解的严格限制。
+
+支付与实时回调端点**不做限流**：渠道服务端的阶梯重试是合法流量，限流会误伤、极端情况下导致漏单；这两个端点依靠签名校验（渠道验签 / HMAC）与幂等防重放抵御滥用。
 
 超出配额时返回 `429 Too Many Requests`，并通过标准响应头给出配额状态：
 

@@ -14,20 +14,30 @@ import (
 	"bgin/internal/config"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/mailer"
+	"bgin/internal/platform/media"
+	"bgin/internal/platform/notification"
+	"bgin/internal/platform/payment"
+	"bgin/internal/platform/pdf"
 	"bgin/internal/platform/storage"
+	"bgin/internal/platform/wechat"
 )
 
 // Application 聚合装配完成的依赖与 HTTP 引擎。
 //
 // 字段一律不导出：外部只能经 Engine 取路由、经 Serve 启服务，依赖不会被绕开装配层取用。
 type Application struct {
-	cfg     *config.Config
-	logger  *zerolog.Logger
-	db      *bun.DB
-	cache   *cache.Client
-	mailer  *mailer.Mailer
-	storage storage.Disk
-	engine  *gin.Engine
+	cfg          *config.Config
+	logger       *zerolog.Logger
+	db           *bun.DB
+	cache        *cache.Client
+	mailer       mailer.Mailer
+	notification *notification.Notifier
+	storage      storage.Disk
+	media        *media.Manager
+	pdf          *pdf.Service
+	wechat       *wechat.Client
+	payment      *payment.Manager
+	engine       *gin.Engine
 }
 
 // Engine 暴露已装配的路由引擎，供集成测试直接驱动请求而不必真的监听端口。
@@ -38,13 +48,18 @@ func (a *Application) Engine() *gin.Engine { return a.engine }
 // 三者互不依赖，无需讲究关闭顺序；这里只保证每个失败都留下日志——调用方在退出路径上，
 // 已经没有更合适的处理位置了。
 func (a *Application) Close() {
+	if a.notification != nil {
+		if err := a.notification.Close(); err != nil {
+			a.logger.Warn().Err(err).Msg("failed to close notification worker pool")
+		}
+	}
 	if err := a.mailer.Close(); err != nil {
-		a.logger.Warn().Err(err).Msg("关闭 SMTP 连接失败")
+		a.logger.Warn().Err(err).Msg("failed to close SMTP connection")
 	}
 	if err := a.cache.Close(); err != nil {
-		a.logger.Warn().Err(err).Msg("关闭 Redis 连接失败")
+		a.logger.Warn().Err(err).Msg("failed to close Redis connection")
 	}
 	if err := a.db.Close(); err != nil {
-		a.logger.Warn().Err(err).Msg("关闭数据库连接失败")
+		a.logger.Warn().Err(err).Msg("failed to close database connection")
 	}
 }

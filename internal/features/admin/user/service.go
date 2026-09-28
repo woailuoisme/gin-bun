@@ -9,12 +9,13 @@ import (
 
 	"github.com/samber/lo"
 
-	"bgin/internal/database/model"
+	"bgin/internal/models"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/optional"
 	"bgin/internal/platform/response"
 	"bgin/internal/platform/validator"
+	"bgin/internal/shared/enums"
 	"bgin/internal/shared/user"
 )
 
@@ -38,11 +39,11 @@ func NewService(deps Deps) *Service {
 
 // ListUsers 返回分页用户列表，排序与过滤都走白名单。
 func (s *Service) ListUsers(ctx context.Context, query ListUsersQuery) ([]User, response.Meta, error) {
-	page, pageSize := normalisePagination(query)
+	page, pageSize := NormalisePagination(query.Page, query.PageSize)
 	filter := user.ListFilter{
 		Search: strings.TrimSpace(query.Search),
-		Status: strings.TrimSpace(query.Status),
-		Role:   strings.TrimSpace(query.Role),
+		Status: enums.Status(strings.TrimSpace(string(query.Status))),
+		Role:   enums.Role(strings.TrimSpace(string(query.Role))),
 		Sort:   user.NormaliseSort(query.Sort),
 	}
 
@@ -56,7 +57,7 @@ func (s *Service) ListUsers(ctx context.Context, query ListUsersQuery) ([]User, 
 		return nil, response.Meta{}, errs.Internal(err)
 	}
 
-	items := lo.Map(users, func(entity model.User, _ int) User {
+	items := lo.Map(users, func(entity models.User, _ int) User {
 		return projectUser(&entity)
 	})
 	return items, response.NewMeta(page, pageSize, total), nil
@@ -80,16 +81,16 @@ func (s *Service) CreateUser(ctx context.Context, req CreateUserRequest) (User, 
 		return User{}, err
 	}
 
-	entity := &model.User{
+	entity := &models.User{
 		Name:          strings.TrimSpace(req.Name),
 		Email:         user.NormaliseEmail(req.Email),
 		EmailVerified: req.EmailVerified,
 		Image:         req.Image,
-		Role:          req.Role,
-		Status:        model.StatusActive,
+		Role:          string(req.Role),
+		Status:        string(enums.StatusActive),
 	}
 	if req.Username != nil {
-		normalised := strings.ToLower(strings.TrimSpace(*req.Username))
+		normalised := user.NormaliseUsername(*req.Username)
 		entity.Username = &normalised
 		entity.DisplayUsername = &normalised
 	}
@@ -159,15 +160,15 @@ func (s *Service) buildAdminFields(ctx context.Context, id string, req UpdateUse
 	return fields, nil
 }
 
-// setRequiredString 处理库层 NOT NULL、因而不接受显式 null 的字符串列。
-func setRequiredString(fields map[string]any, column string, value optional.Optional[string]) error {
+// setRequiredString 处理库层 NOT NULL、因而不接受显式 null 的字符串或枚举列。
+func setRequiredString[T ~string](fields map[string]any, column string, value optional.Optional[T]) error {
 	if !value.Present {
 		return nil
 	}
 	if value.Value == nil {
 		return user.FieldCannotBeNull(column)
 	}
-	fields[column] = *value.Value
+	fields[column] = string(*value.Value)
 	return nil
 }
 
@@ -182,19 +183,19 @@ func nullableTime(value optional.Optional[time.Time]) any {
 // reconcileBanState 消除 banned 布尔与 status 文本可能出现的自相矛盾组合。
 // 置 status=banned 会自动带上 banned=true，反之亦然。
 func reconcileBanState(fields map[string]any) {
-	if status, ok := fields["status"].(string); ok && status == model.StatusBanned {
+	if status, ok := fields["status"].(string); ok && status == string(enums.StatusBanned) {
 		fields["banned"] = true
 	}
 	if banned, ok := fields["banned"].(bool); ok && banned {
-		fields["status"] = model.StatusBanned
+		fields["status"] = string(enums.StatusBanned)
 	}
 }
 
-// normalisePagination 把分页参数收敛到 api.md 6.1 允许的范围。
-func normalisePagination(query ListUsersQuery) (page, pageSize int) {
-	page = max(query.Page, defaultPage)
+// NormalisePagination 把分页参数收敛到 api.md 6.1 允许的范围。
+// page 上限用于阻断超大 OFFSET 扫描，同时保证 (page-1)*pageSize 不会溢出为负。
+func NormalisePagination(page, pageSize int) (int, int) {
+	page = min(max(page, defaultPage), maxPage)
 
-	pageSize = query.PageSize
 	if pageSize < 1 {
 		pageSize = defaultPageSize
 	}

@@ -65,10 +65,63 @@ func TestLoadAcceptsKnownAppEnvs(t *testing.T) {
 		t.Run(env, func(t *testing.T) {
 			setRequiredEnv(t)
 			t.Setenv("APP_ENV", env)
+			if env == "production" {
+				// 生产环境禁止通配来源，本地 .env 里的 * 会在此被拦下，
+				// 因此该用例必须显式给出真实来源（见 TestLoadRejectsWildcardCORSInProduction）。
+				t.Setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
+			}
 
 			cfg, err := config.Load()
 			require.NoError(t, err)
 			assert.Equal(t, env, cfg.App.Env)
+		})
+	}
+}
+
+// TestLoadRejectsWildcardCORSInProduction 锁定生产环境禁止通配跨域来源。
+// 通配意味着任意站点都能调用该 API，且它不会报错、只是安静地放行，必须在启动期拦下。
+func TestLoadRejectsWildcardCORSInProduction(t *testing.T) {
+	t.Run("生产环境拒绝通配", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("APP_ENV", "production")
+		t.Setenv("CORS_ALLOWED_ORIGINS", "*")
+
+		_, err := config.Load()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "CORS_ALLOWED_ORIGINS")
+	})
+
+	t.Run("非生产环境允许通配", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("APP_ENV", "local")
+		t.Setenv("CORS_ALLOWED_ORIGINS", "*")
+
+		cfg, err := config.Load()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"*"}, cfg.CORS.AllowedOrigins)
+	})
+}
+
+// TestLoadRejectsMalformedCORSOrigins 锁定来源白名单的格式校验：
+// 多写一个逗号或漏写 scheme 都会静默地不让任何来源通过，排障时极难定位。
+func TestLoadRejectsMalformedCORSOrigins(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "多余逗号", raw: "https://a.com,"},
+		{name: "缺少 scheme", raw: "a.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("APP_ENV", "local")
+			t.Setenv("CORS_ALLOWED_ORIGINS", tt.raw)
+
+			_, err := config.Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "CORS_ALLOWED_ORIGINS")
 		})
 	}
 }
@@ -111,7 +164,7 @@ func TestLoadReportsMalformedDotEnv(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, ".env"),
-		[]byte("MAIL_FROM_NAME=\"未闭合的引号\n"),
+		[]byte("MAIL_FROM_NAME=\"unterminated\n"),
 		0o600,
 	))
 	t.Chdir(dir)

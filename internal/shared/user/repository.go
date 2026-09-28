@@ -10,18 +10,27 @@ import (
 	"strings"
 	"time"
 
+	govalidator "github.com/go-playground/validator/v10"
 	"github.com/samber/lo"
 	"github.com/uptrace/bun"
 
-	"bgin/internal/database/model"
+	"bgin/internal/models"
 	"bgin/internal/platform/errs"
+	"bgin/internal/platform/validator"
+	"bgin/internal/shared/enums"
 )
+
+func init() {
+	if err := validator.RegisterRule("usersort", ValidateSort, "oneof"); err != nil {
+		panic(err)
+	}
+}
 
 // ListFilter 是列表查询的过滤条件。
 type ListFilter struct {
 	Search string
-	Status string
-	Role   string
+	Status enums.Status
+	Role   enums.Role
 	Sort   []string
 }
 
@@ -32,6 +41,25 @@ var sortColumns = map[string]string{
 	"email":       "u.email",
 	"name":        "u.name",
 	"lastLoginAt": "u.last_login_at",
+}
+
+// ValidateSort 校验用户列表的排序字段，支持以逗号分隔的复合排序以及 - 降序前缀。
+func ValidateSort(field govalidator.FieldLevel) bool {
+	raw := field.Field().String()
+	if raw == "" {
+		return true
+	}
+	for part := range strings.SplitSeq(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return false
+		}
+		part = strings.TrimPrefix(part, "-")
+		if _, ok := sortColumns[part]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // defaultSort 保证分页遍历的确定性顺序，对应 api.md 6.2。
@@ -66,12 +94,12 @@ func NewRepository(db *bun.DB) *Repository { return &Repository{db: db} }
 
 // activeUsers 返回已排除软删除记录的查询，所有业务查询都必须经过它。
 func (r *Repository) activeUsers() *bun.SelectQuery {
-	return r.db.NewSelect().Model((*model.User)(nil)).Where("u.deleted_at IS NULL")
+	return r.db.NewSelect().Model((*models.User)(nil)).Where("u.deleted_at IS NULL")
 }
 
 // FindByID 按主键查找用户。
-func (r *Repository) FindByID(ctx context.Context, id string) (*model.User, error) {
-	user := new(model.User)
+func (r *Repository) FindByID(ctx context.Context, id string) (*models.User, error) {
+	user := new(models.User)
 	if err := r.activeUsers().Where("u.id = ?", id).Scan(ctx, user); err != nil {
 		return nil, err
 	}
@@ -79,8 +107,8 @@ func (r *Repository) FindByID(ctx context.Context, id string) (*model.User, erro
 }
 
 // FindByUsername 按用户名大小写不敏感查找用户。
-func (r *Repository) FindByUsername(ctx context.Context, username string) (*model.User, error) {
-	user := new(model.User)
+func (r *Repository) FindByUsername(ctx context.Context, username string) (*models.User, error) {
+	user := new(models.User)
 	err := r.activeUsers().
 		Where("u.username IS NOT NULL").
 		Where("LOWER(u.username) = ?", strings.ToLower(strings.TrimSpace(username))).
@@ -92,8 +120,8 @@ func (r *Repository) FindByUsername(ctx context.Context, username string) (*mode
 }
 
 // FindByEmail 按邮箱大小写不敏感查找用户。
-func (r *Repository) FindByEmail(ctx context.Context, email string) (*model.User, error) {
-	user := new(model.User)
+func (r *Repository) FindByEmail(ctx context.Context, email string) (*models.User, error) {
+	user := new(models.User)
 	err := r.activeUsers().Where("LOWER(u.email) = ?", strings.ToLower(strings.TrimSpace(email))).Scan(ctx, user)
 	if err != nil {
 		return nil, err
@@ -102,8 +130,8 @@ func (r *Repository) FindByEmail(ctx context.Context, email string) (*model.User
 }
 
 // List 按条件分页查询用户。
-func (r *Repository) List(ctx context.Context, filter ListFilter, offset, limit int) ([]model.User, error) {
-	users := make([]model.User, 0, limit)
+func (r *Repository) List(ctx context.Context, filter ListFilter, offset, limit int) ([]models.User, error) {
+	users := make([]models.User, 0, limit)
 
 	query := r.applyFilter(r.activeUsers(), filter)
 	for _, order := range filter.Sort {
@@ -123,21 +151,69 @@ func (r *Repository) Count(ctx context.Context, filter ListFilter) (int, error) 
 }
 
 // CreateWithCredential 在同一事务内创建用户与其本地密码凭据。
-func (r *Repository) CreateWithCredential(ctx context.Context, user *model.User, passwordHash string) error {
+func (r *Repository) CreateWithCredential(ctx context.Context, user *models.User, passwordHash string) error {
 	return r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := tx.NewInsert().Model(user).Exec(ctx); err != nil {
 			return err
 		}
 
-		account := &model.Account{
+		account := &models.Account{
 			UserID:     user.ID,
 			AccountID:  user.ID,
-			ProviderID: model.ProviderCredential,
+			ProviderID: models.ProviderCredential,
 			Password:   &passwordHash,
 		}
 		_, err := tx.NewInsert().Model(account).Exec(ctx)
 		return err
 	})
+}
+
+// FindCredentialAccount 取某用户的本地密码凭据；不存在时返回 sql.ErrNoRows。
+func (r *Repository) FindCredentialAccount(ctx context.Context, userID string) (*models.Account, error) {
+	account := new(models.Account)
+	err := r.db.NewSelect().
+		Model((*models.Account)(nil)).
+		Where("a.user_id = ?", userID).
+		Where("a.provider_id = ?", models.ProviderCredential).
+		Scan(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	return account, nil
+}
+
+// UpdatePassword 改写本地密码凭据的哈希；凭据不存在时返回 sql.ErrNoRows。
+func (r *Repository) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
+	result, err := r.db.NewUpdate().
+		Model((*models.Account)(nil)).
+		Set("password = ?", passwordHash).
+		Set("updated_at = ?", time.Now().UTC()).
+		Where("user_id = ?", userID).
+		Where("provider_id = ?", models.ProviderCredential).
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// RecordLogin 刷新最近登录时间与登录方式。
+func (r *Repository) RecordLogin(ctx context.Context, userID, method string) error {
+	_, err := r.db.NewUpdate().
+		Model((*models.User)(nil)).
+		Set("last_login_at = ?", time.Now().UTC()).
+		Set("last_login_method = ?", method).
+		Where("id = ?", userID).
+		Exec(ctx)
+	return err
 }
 
 // UpdateFields 按列名更新用户。列名必须落在 updatableColumns 白名单内，否则直接报错。
@@ -147,7 +223,7 @@ func (r *Repository) UpdateFields(ctx context.Context, id string, fields map[str
 	}
 
 	query := r.db.NewUpdate().
-		Model((*model.User)(nil)).
+		Model((*models.User)(nil)).
 		Where("id = ?", id).
 		Where("deleted_at IS NULL")
 	for column, value := range fields {
@@ -177,7 +253,7 @@ func (r *Repository) UpdateFields(ctx context.Context, id string, fields map[str
 func (r *Repository) SoftDelete(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	result, err := r.db.NewUpdate().
-		Model((*model.User)(nil)).
+		Model((*models.User)(nil)).
 		Set("deleted_at = ?", now).
 		Set("updated_at = ?", now).
 		Where("id = ?", id).

@@ -29,7 +29,7 @@ func TestGoJSONAdapter(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, original, decoded)
 
-	// 测试流式编码器与解码器
+	// 测试流式编码器与解码器。
 	var buf bytes.Buffer
 	enc := ginjson.API.NewEncoder(&buf)
 	err = enc.Encode(original)

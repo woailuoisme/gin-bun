@@ -86,7 +86,7 @@ func (m *Middleware) AccessLog() gin.HandlerFunc {
 			Int("status", c.Writer.Status()).
 			Str("latency", time.Since(start).String()).
 			Str("ip", c.ClientIP()).
-			Msg("HTTP 访问日志")
+			Msg("access")
 	}
 }
 
@@ -109,7 +109,7 @@ func (m *Middleware) Recovery() gin.HandlerFunc {
 			logger.FromContext(c.Request.Context()).Error().
 				Any("panic", recovered).
 				Str("stack", string(debug.Stack())).
-				Msg("请求处理发生 panic")
+				Msg("request panic recovered")
 
 			// 已经写出响应的请求改不了状态码了，此时再处理会二次写响应头
 			// （gin 报 superfluous WriteHeader），客户端拿到的是被截断的 body。

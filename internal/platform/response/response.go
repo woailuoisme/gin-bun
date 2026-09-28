@@ -24,7 +24,7 @@ type Page[T any] struct {
 
 // NewMeta 计算分页元信息，totalPages 向上取整。
 func NewMeta(page, pageSize, total int) Meta {
-	totalPages := 0
+	var totalPages int
 	if pageSize > 0 {
 		totalPages = (total + pageSize - 1) / pageSize
 	}

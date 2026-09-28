@@ -2,12 +2,14 @@
 package validator
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/gin-gonic/gin"
@@ -32,7 +34,25 @@ func InitEngine() error {
 	return nil
 }
 
-// registerRules 统一注册 json 标签名解析与业务校验规则。
+var (
+	customTagMu          sync.RWMutex
+	customTagMessageKeys = make(map[string]string)
+)
+
+// RegisterRule 注册自定义校验标签与对应函数，并可选指定文案映射键。
+func RegisterRule(tag string, fn govalidator.Func, messageKey ...string) error {
+	if len(messageKey) > 0 && messageKey[0] != "" {
+		customTagMu.Lock()
+		customTagMessageKeys[tag] = messageKey[0]
+		customTagMu.Unlock()
+	}
+	if v, ok := binding.Validator.Engine().(*govalidator.Validate); ok {
+		return v.RegisterValidation(tag, fn)
+	}
+	return nil
+}
+
+// registerRules 统一注册 json 标签名解析与基础校验规则。
 func registerRules(v *govalidator.Validate) error {
 	v.SetTagName("validate")
 	v.RegisterTagNameFunc(func(field reflect.StructField) string {
@@ -49,7 +69,6 @@ func registerRules(v *govalidator.Validate) error {
 		{"usernameslug", validateUsernameSlug},
 		{"e164", validateE164},
 		{"notreserved", validateNotReserved},
-		{"usersort", validateUserSort},
 	}
 	for _, rule := range rules {
 		if err := v.RegisterValidation(rule.tag, rule.fn); err != nil {
@@ -92,34 +111,6 @@ func validateNotReserved(field govalidator.FieldLevel) bool {
 	return !reserved
 }
 
-// userSortColumns 是允许排序的用户字段集合。
-var userSortColumns = map[string]struct{}{
-	"createdAt":   {},
-	"updatedAt":   {},
-	"email":       {},
-	"name":        {},
-	"lastLoginAt": {},
-}
-
-// validateUserSort 校验用户列表的排序字段，支持以逗号分隔的复合排序以及 - 降序前缀。
-func validateUserSort(field govalidator.FieldLevel) bool {
-	raw := field.Field().String()
-	if raw == "" {
-		return true
-	}
-	for part := range strings.SplitSeq(raw, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			return false
-		}
-		part = strings.TrimPrefix(part, "-")
-		if _, ok := userSortColumns[part]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 // PasswordStrength 校验口令至少 8 位且同时含字母与数字，返回契约规定的 422 业务错误。
 func PasswordStrength(field, password string) error {
 	if strings.ContainsFunc(password, unicode.IsLetter) && strings.ContainsFunc(password, unicode.IsDigit) {
@@ -150,25 +141,28 @@ func Translate(translator *i18n.Translator, language string, valErr govalidator.
 		if translator != nil {
 			message = translator.ValidationMessage(language, MessageKey(fe), field, fe.Param())
 		}
-		if message == "" {
-			message = fmt.Sprintf("The %s is invalid.", field)
-		}
-		fields[field] = append(fields[field], message)
+		fields[field] = append(fields[field], cmp.Or(message, fmt.Sprintf("The %s is invalid.", field)))
 	}
 	return fields
 }
 
-// MessageKey 选择文案键：数值与字符串的 min/max 措辞不同，需要区分。
+// MessageKey 选择文案键：优先查询自定义规则文案映射，随后区分数值与字符串的 min/max 措辞。
 func MessageKey(fe govalidator.FieldError) string {
-	switch fe.Tag() {
+	tag := fe.Tag()
+	customTagMu.RLock()
+	mapped, ok := customTagMessageKeys[tag]
+	customTagMu.RUnlock()
+	if ok {
+		return mapped
+	}
+
+	switch tag {
 	case "min", "max":
 		if isNumericKind(fe.Kind()) {
-			return fe.Tag() + "_numeric"
+			return tag + "_numeric"
 		}
-	case "usersort":
-		return "oneof"
 	}
-	return fe.Tag()
+	return tag
 }
 
 // isNumericKind 判断字段是否为数值类型，用于挑选 min/max 的措辞。

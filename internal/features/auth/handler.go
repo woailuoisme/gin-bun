@@ -280,7 +280,7 @@ func (h *Handler) RequestPasswordReset(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        payload body ResetPasswordRequest true "重置凭据与新口令"
-// @Success      200 {object} StatusResponse "口令已重置"
+// @Success      204 {string} string "口令已重置"
 // @x-order      12
 // @Router       /auth/reset-password [post]
 func (h *Handler) ResetPassword(c *gin.Context) {
@@ -290,12 +290,14 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	result, err := h.service.ResetPassword(c.Request.Context(), req)
-	if err != nil {
+	if _, err := h.service.ResetPassword(c.Request.Context(), req); err != nil {
 		_ = c.Error(err)
 		return
 	}
-	response.OK(c, result)
+
+	// api.md §5.1.4 规定重置口令返回 204：没有需要回传的业务数据，
+	// 空响应体也让"重置成功"不附带任何可被误用的信息。
+	response.NoContent(c)
 }
 
 // SendVerificationOTP 处理 POST /v1/auth/send-verification-otp。

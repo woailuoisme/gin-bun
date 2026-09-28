@@ -1,5 +1,5 @@
 // Package database 负责 PostgreSQL 连接与数据模型定义。
-// 建表由 atlas 依据 schema.sql 驱动，Go 模型只用于运行期映射（见 ADR-0004）。
+// 建表由 atlas 依据 schemas/ 驱动，Go 模型只用于运行期映射（见 ADR-0004）。
 //
 // 连接池建立在 database/sql 之上（bun 需要 *sql.DB），因此没有 pgxpool 那种后台健康
 // 检查：陈旧的连接在使用时由 database/sql 发现，并对同一条语句重试一次。
@@ -43,7 +43,7 @@ func Open(ctx context.Context, cfg config.DatabaseConfig, applicationName string
 	}
 	// 会话时区固定为 UTC，让服务端的时间函数与文本输出口径一致。
 	// 注意这并不能解决解码问题：pgx 会把 timestamptz 解成 time.Local，瞬时正确但偏移不对，
-	// 响应体的 UTC 归一必须在投影层做（见 model.UTCPtr）。
+	// 响应体的 UTC 归一必须在投影层做（见 models.UTCPtr）。
 	pgxConfig.RuntimeParams["timezone"] = "UTC"
 	if applicationName != "" {
 		pgxConfig.RuntimeParams["application_name"] = applicationName
@@ -72,7 +72,9 @@ func Open(ctx context.Context, cfg config.DatabaseConfig, applicationName string
 		return nil, fmt.Errorf("database: connect failed: %w", err)
 	}
 
-	return bun.NewDB(sqlDB, pgdialect.New()), nil
+	db := bun.NewDB(sqlDB, pgdialect.New())
+	AddQueryHooks(db, cfg)
+	return db, nil
 }
 
 // BudgetWarning 检查池上限相对服务端连接预算是否过大，返回一句可直接写进日志的告警；

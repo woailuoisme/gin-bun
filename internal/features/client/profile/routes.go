@@ -15,7 +15,7 @@ import (
 //
 // 路径保持 /users/me 不变：模块目录的划分不改变已发布的公开契约（Q27）。
 func RegisterRoutes(router *gin.RouterGroup, handler *Handler, mw *middleware.Middleware) {
-	group := router.Group("/users", mw.RateLimit(middleware.TierAuthenticated), mw.RequireAuth())
+	group := router.Group("/users", mw.RequireAuth(), mw.RateLimit(middleware.TierAuthenticated))
 
 	group.GET("/me", handler.GetProfile)
 	group.PATCH("/me", handler.UpdateProfile)

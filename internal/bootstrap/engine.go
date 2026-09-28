@@ -5,15 +5,19 @@
 package bootstrap
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/gin-gonic/gin"
 
 	"bgin/internal/config"
+	adminauth "bgin/internal/features/admin/auth"
 	admin "bgin/internal/features/admin/user"
 	"bgin/internal/features/auth"
 	"bgin/internal/features/client/profile"
+	paymentFeature "bgin/internal/features/payment"
+	realtimeFeature "bgin/internal/features/realtime"
 	"bgin/internal/features/system"
 	"bgin/internal/middleware"
 	"bgin/internal/platform/codec"
@@ -29,6 +33,9 @@ func buildEngine(
 	authHandler *auth.Handler,
 	profileHandler *profile.Handler,
 	adminHandler *admin.Handler,
+	adminAuthHandler *adminauth.Handler,
+	realtimeHandler *realtimeFeature.Handler,
+	paymentHandler *paymentFeature.Handler,
 ) (*gin.Engine, error) {
 	// 启用高性能 go-json 运行时编解码器与校验器规则。
 	codec.EnableGoJSON()
@@ -57,9 +64,13 @@ func buildEngine(
 		mw.AccessLog(),
 		mw.ErrorHandler(),
 		mw.Recovery(),
+		mw.Timeout(),
 		mw.SecurityHeaders(),
 		mw.BodyLimit(),
 		mw.CacheBody(),
+		// 幂等必须排在 CacheBody 之后：它要读已经被缓存下来的请求体来计算载荷指纹。
+		// 探测模式（不强制携带 Idempotency-Key），因此不会破坏既有客户端与渠道回调。
+		mw.Idempotency(),
 		mw.CORS(),
 	)
 
@@ -86,7 +97,38 @@ func buildEngine(
 	v1 := engine.Group("/v1")
 	auth.RegisterRoutes(v1, authHandler, mw)
 	profile.RegisterRoutes(v1, profileHandler, mw)
+	adminauth.RegisterAdminAuthRoutes(v1, adminAuthHandler, mw)
 	admin.RegisterAdminRoutes(v1, adminHandler, mw)
+	realtimeFeature.RegisterRoutes(v1, realtimeHandler, mw)
+	paymentFeature.RegisterRoutes(v1, paymentHandler, mw)
 
 	return engine, nil
+}
+
+// InspectEngine 组装用于路由探测与文档自省的轻量级 Gin 引擎实例（零数据库与缓存网络连接）。
+// cfg 必须由调用方显式提供：此处不再隐式装载配置，更不伪造默认配置兜底，
+// 否则 route list 展示的中间件行为可能与真实运行时不一致。
+func InspectEngine(cfg *config.Config) (*gin.Engine, error) {
+	if cfg == nil {
+		return nil, errors.New("bootstrap: inspect engine requires a non-nil config")
+	}
+
+	mw := middleware.New(middleware.Deps{
+		Limiter:        cfg.Limiter,
+		CORS:           cfg.CORS,
+		Production:     cfg.IsProduction(),
+		RequestTimeout: cfg.App.Server.RequestTimeout,
+	})
+
+	return buildEngine(
+		cfg,
+		mw,
+		&system.Handler{},
+		&auth.Handler{},
+		&profile.Handler{},
+		&admin.Handler{},
+		&adminauth.Handler{},
+		&realtimeFeature.Handler{},
+		&paymentFeature.Handler{},
+	)
 }

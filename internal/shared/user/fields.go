@@ -27,6 +27,11 @@ func NormaliseEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
+// NormaliseUsername 统一用户名大小写与首尾空白，与库中 idx_user_username 的口径一致。
+func NormaliseUsername(username string) string {
+	return strings.ToLower(strings.TrimSpace(username))
+}
+
 // ProfilePatch 是档案字段局部更新的校验投影。
 // 前端自助与后台管理对这组基础档案字段使用完全一致的校验规则。
 type ProfilePatch struct {
@@ -110,16 +115,17 @@ func SetNullable(fields map[string]any, column string, value optional.Optional[s
 }
 
 // FieldCannotBeNull 用于库层 NOT NULL、因而不能接受显式 null 的字段。
+// 这里只声明"违反 not_null 规则"，文案由渲染层按请求语言从 lang/*/validation.toml 取。
 func FieldCannotBeNull(field string) error {
-	return errs.Validation(map[string][]string{
-		field: {"The " + field + " field cannot be null."},
+	return errs.ValidationKeys(map[string][]errs.MessageKey{
+		field: {{Key: "not_null"}},
 	})
 }
 
 // MapUniqueConflict 把唯一索引冲突翻译成具体的业务错误码。
 func MapUniqueConflict(err error) error {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != uniqueViolation {
+	pgErr, ok := errors.AsType[*pgconn.PgError](err)
+	if !ok || pgErr.Code != uniqueViolation {
 		return errs.Internal(err)
 	}
 
@@ -150,7 +156,7 @@ func setUsername(
 		return nil
 	}
 
-	normalised := strings.ToLower(strings.TrimSpace(*value.Value))
+	normalised := NormaliseUsername(*value.Value)
 	// 这次查重只为给出友好错误，不构成并发保证：两个用户同时改名可能双双通过这里。
 	// 真正的仲裁是唯一索引 idx_user_username，冲突由 MapUniqueConflict 兜底成同一个错误码。
 	existing, err := repo.FindByUsername(ctx, normalised)

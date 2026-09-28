@@ -54,21 +54,19 @@ type CheckOutcome struct {
 // 它只如实报告，不做超时控制：时限由调用方通过 ctx 施加（见 handler.go 的 probeTimeout），
 // 这样"探针最多等多久"是一处可调的策略，而不是散在探测逻辑里的常量。
 func (s *Service) Check(ctx context.Context) []CheckOutcome {
-	probes := []struct {
+	type probe struct {
 		name   string
 		pinger Pinger
-	}{
+	}
+	probes := []probe{
 		{ComponentDatabase, s.database},
 		{ComponentCache, s.cache},
 	}
 
-	return lo.Map(probes, func(probe struct {
-		name   string
-		pinger Pinger
-	}, _ int) CheckOutcome {
-		if probe.pinger == nil {
-			return CheckOutcome{Name: probe.name, Err: errProbeNotConfigured}
+	return lo.Map(probes, func(p probe, _ int) CheckOutcome {
+		if p.pinger == nil {
+			return CheckOutcome{Name: p.name, Err: errProbeNotConfigured}
 		}
-		return CheckOutcome{Name: probe.name, Err: probe.pinger.Ping(ctx)}
+		return CheckOutcome{Name: p.name, Err: p.pinger.Ping(ctx)}
 	})
 }

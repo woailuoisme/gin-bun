@@ -154,3 +154,44 @@ func TestFieldLabelReturnsEmptyForUnknown(t *testing.T) {
 	assert.NotEmpty(t, translator.FieldLabel("en", "email"))
 	assert.Empty(t, translator.FieldLabel("en", "notARegisteredField"))
 }
+
+// TestInvoiceRendersLocalizedLabels 校验发票模板文案按语言渲染，且占位符被替换。
+//
+// PDF 内文无法在测试里反读，所以"文案对不对"这一层只能在这里锁定；
+// PDF 侧只断言渲染成功（见 tests/platform/pdf）。
+func TestInvoiceRendersLocalizedLabels(t *testing.T) {
+	translator := newTranslator(t, "en")
+
+	tests := []struct {
+		name     string
+		lang     string
+		key      string
+		vars     map[string]string
+		expected string
+	}{
+		{"中文标题", "zh-CN", "title", nil, "电子发票 / 结算凭据"},
+		{"英文标题", "en", "title", nil, "Electronic Invoice / Statement"},
+		{"中文凭据编号占位符", "zh-CN", "number", map[string]string{"Number": "INV-001"}, "凭据编号: INV-001"},
+		{"英文凭据编号占位符", "en", "number", map[string]string{"Number": "INV-001"}, "Reference No.: INV-001"},
+		{"中文备注占位符", "zh-CN", "notes", map[string]string{"Notes": "30 天内付款"}, "备注说明: 30 天内付款"},
+		{"表头中文", "zh-CN", "item_description", nil, "项目与服务描述"},
+		{"表头英文", "en", "unit_price", nil, "Unit Price"},
+		{"签章中文", "zh-CN", "signature", nil, "财务专用章"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, translator.Invoice(tt.lang, tt.key, tt.vars))
+		})
+	}
+}
+
+// TestInvoiceFallsBackAndGivesUp 校验未知语言回退默认语言，未知键返回空串。
+func TestInvoiceFallsBackAndGivesUp(t *testing.T) {
+	translator := newTranslator(t, "en")
+
+	assert.Equal(t, "Seller", translator.Invoice("fr-FR", "seller", nil),
+		"未装载的语言应回退到默认语言，而不是留空标签")
+	assert.NotEmpty(t, translator.Invoice("", "buyer", nil), "空语言标签同样回退默认语言")
+	assert.Empty(t, translator.Invoice("en", "no_such_label", nil))
+}
