@@ -4,6 +4,7 @@ package middleware
 import (
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 
 	"bgin/internal/config"
@@ -52,4 +53,10 @@ func New(deps Deps) *Middleware {
 		translator:     deps.Translator,
 		requestTimeout: deps.RequestTimeout,
 	}
+}
+
+// abortWithError 向上下文附加错误并立即中止后续处理。
+func abortWithError(c *gin.Context, err error) {
+	_ = c.Error(err)
+	c.Abort()
 }

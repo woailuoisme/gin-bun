@@ -1,8 +1,4 @@
-// Package admin 实现后台用户管理，对外路径为 /v1/admin/users。
-//
-// 本包刻意不参与 API 文档生成：管理端接口仅供内部使用，不是对外契约的一部分。
-// 前端用户的本人档案在 internal/features/client/profile，
-// 两个交付面共用的用户域内核在 internal/shared/user，见 ADR-0005。
+// Package admin 实现后台系统用户管理模块 (/v1/admin/users)。
 package admin
 
 import (

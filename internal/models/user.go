@@ -8,23 +8,20 @@ import (
 	"bgin/internal/shared/enums"
 )
 
-// 用户角色。取值只有一处定义（internal/shared/enums），这里是指向它的别名：
-// 同一枚举在两处各写一遍，改一处漏一处是必然的。库层有 CHECK 约束限定取值，
-// 新增角色必须同时改 schema 与策略矩阵。
+// 用户角色枚举别名，取值统一定义于 internal/shared/enums。
 const (
 	RoleUser  = string(enums.RoleUser)
 	RoleAdmin = string(enums.RoleAdmin)
 )
 
-// 用户账号状态。同样取自 internal/shared/enums，并保持 string 类型，
-// 以便直接写入实体字段而不必在每处调用点加转换。
+// 用户账号状态枚举别名，取值统一定义于 internal/shared/enums。
 const (
 	StatusActive   = string(enums.StatusActive)
 	StatusInactive = string(enums.StatusInactive)
 	StatusBanned   = string(enums.StatusBanned)
 )
 
-// User 对应 "user" 表。表名是 PostgreSQL 保留字，必须显式声明。
+// User 映射系统用户表 ("user")。
 type User struct {
 	bun.BaseModel `bun:"table:user,alias:u"`
 

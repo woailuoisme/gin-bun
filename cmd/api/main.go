@@ -20,7 +20,7 @@ var (
 // 完整契约——响应结构、错误模型、分页、限流与版本演进——见仓库根目录的 api.md。
 //
 // 注意：@BasePath 是 /v1，因此各 handler 上的 @Router 路径均不含 /v1 前缀。
-// /healthz 与 /readyz 是编排系统的存活与就绪探针，不在 /v1 之下，故不进入本文档。
+// /livez 与 /readyz 是编排系统的存活与就绪探针，不在 /v1 之下，故不进入本文档。
 //
 // @title                      bgin API
 // @version                    1.0

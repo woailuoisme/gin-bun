@@ -1,5 +1,4 @@
-// Package hasher 提供 argon2id 口令哈希。
-// 编码串采用 PHC 字符串格式，算法与成本参数随哈希一起存储，便于将来提升成本而不失效旧口令。
+// Package hasher 提供基于 Argon2id 的口令安全哈希与校验（PHC 格式）。
 package hasher
 
 import (
@@ -14,7 +13,7 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// 解析 PHC 编码串时可能遇到的失败。
+// 哈希格式解析错误。
 var (
 	ErrInvalidEncodedHash  = errors.New("hasher: invalid encoded hash format")
 	ErrIncompatibleVersion = errors.New("hasher: incompatible argon2 version")
@@ -102,8 +101,7 @@ func (h *Hasher) Check(encoded, password string) (bool, error) {
 	return subtle.ConstantTimeCompare(expected, actual) == 1, nil
 }
 
-// checkedLength 把字节切片长度安全地转成 uint32。
-// 这些切片长度实际上不可能溢出，显式校验是为了不让 gosec G115 把它当成静默截断。
+// checkedLength 安全转换字节切片长度为 uint32，规避整数溢出风险。
 func checkedLength(value int) (uint32, error) {
 	if value < 0 || int64(value) > math.MaxUint32 {
 		return 0, ErrInvalidEncodedHash

@@ -27,18 +27,7 @@ type RouteEntry struct {
 	RawHandler string `json:"raw_handler"`
 }
 
-// newRouteCmd 构造路由检查一级命令组。
-func newRouteCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "route",
-		Short: "Inspect and manage application HTTP routes",
-	}
-
-	cmd.AddCommand(newRouteListCmd())
-	return cmd
-}
-
-// newRouteListCmd 构造列出所有已注册路由的子命令。
+// newRouteListCmd 构造列出所有已注册路由的命令。
 func newRouteListCmd() *cobra.Command {
 	var (
 		methodFilter string
@@ -50,7 +39,7 @@ func newRouteListCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "list",
+		Use:   "route:list",
 		Short: "List all registered HTTP routes with methods and handlers",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -137,14 +126,6 @@ func newRouteListCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Explore routes interactively using bubbles/table TUI")
 
 	return cmd
-}
-
-// newRouteListAliasCmd 兼容老 Artisan 风格冒号别名命令构造工厂（设为 Hidden: true 保持帮助信息精简）。
-func newRouteListAliasCmd() *cobra.Command {
-	c := newRouteListCmd()
-	c.Use = "route:list"
-	c.Hidden = true
-	return c
 }
 
 // formatHandlerName 将冗长的运行时函数路径精简为易读的结构体方法名。

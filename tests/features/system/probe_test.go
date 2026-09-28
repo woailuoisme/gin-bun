@@ -74,10 +74,23 @@ func get(t *testing.T, engine *gin.Engine, path string) (int, string) {
 func TestLivenessIgnoresDependencies(t *testing.T) {
 	engine, logs := newProbe(t, stubPinger{err: errInternal}, stubPinger{err: errInternal})
 
-	status, body := get(t, engine, "/healthz")
+	status, body := get(t, engine, "/livez")
 	assert.Equal(t, http.StatusOK, status)
 	assert.JSONEq(t, `{"status":"ok"}`, body)
 	assert.Empty(t, logs.String(), "存活探针不该产生任何探测日志")
+
+	// 校验已彻底移除的 /healthz 返回 404
+	oldStatus, _ := get(t, engine, "/healthz")
+	assert.Equal(t, http.StatusNotFound, oldStatus)
+}
+
+// TestRootEndpointReturnsOK 验证根路径 GET / 返回 200 与 ok 状态。
+func TestRootEndpointReturnsOK(t *testing.T) {
+	engine, _ := newProbe(t, stubPinger{}, stubPinger{})
+
+	status, body := get(t, engine, "/")
+	assert.Equal(t, http.StatusOK, status)
+	assert.JSONEq(t, `{"status":"ok"}`, body)
 }
 
 // TestReadinessAllHealthy 覆盖全通路径。

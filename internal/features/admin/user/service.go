@@ -19,8 +19,7 @@ import (
 	"bgin/internal/shared/user"
 )
 
-// Deps 是管理域所需的依赖，由 main 装配后注入。
-// Repo 与客户端模块共用同一份仓库实例，见 ADR-0005。
+// Deps 声明用户管理服务的外部依赖。
 type Deps struct {
 	Repo   *user.Repository
 	Hasher *hasher.Hasher
@@ -117,8 +116,7 @@ func (s *Service) UpdateUser(ctx context.Context, id string, req UpdateUserReque
 	return s.GetUser(ctx, id)
 }
 
-// DeleteUser 软删除用户。写 deleted_at 而非物理删除，从而让邮箱可以重新注册，
-// 这正是 schema 里那批部分唯一索引的设计意图。
+// DeleteUser 软删除指定用户。
 func (s *Service) DeleteUser(ctx context.Context, id string) error {
 	if err := s.repo.SoftDelete(ctx, id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -129,8 +127,7 @@ func (s *Service) DeleteUser(ctx context.Context, id string) error {
 	return nil
 }
 
-// buildAdminFields 把管理端更新的三态请求翻译成待更新列，并保证封禁字段自洽。
-// 档案字段部分复用共享内核的映射，因此"哪些档案列可改"只有一处定义。
+// buildAdminFields 把管理端三态更新请求转换为待更新字段映射。
 func (s *Service) buildAdminFields(ctx context.Context, id string, req UpdateUserRequest) (map[string]any, error) {
 	fields, err := user.CollectFields(ctx, s.repo, id, req.fieldSet())
 	if err != nil {
@@ -180,8 +177,7 @@ func nullableTime(value optional.Optional[time.Time]) any {
 	return value.Value.UTC()
 }
 
-// reconcileBanState 消除 banned 布尔与 status 文本可能出现的自相矛盾组合。
-// 置 status=banned 会自动带上 banned=true，反之亦然。
+// reconcileBanState 保证 banned 布尔值与 status 状态相互协同一致。
 func reconcileBanState(fields map[string]any) {
 	if status, ok := fields["status"].(string); ok && status == string(enums.StatusBanned) {
 		fields["banned"] = true
@@ -191,14 +187,11 @@ func reconcileBanState(fields map[string]any) {
 	}
 }
 
-// NormalisePagination 把分页参数收敛到 api.md 6.1 允许的范围。
-// page 上限用于阻断超大 OFFSET 扫描，同时保证 (page-1)*pageSize 不会溢出为负。
+// NormalisePagination 将分页参数收敛到允许的安全区间。
 func NormalisePagination(page, pageSize int) (int, int) {
 	page = min(max(page, defaultPage), maxPage)
-
 	if pageSize < 1 {
 		pageSize = defaultPageSize
 	}
-	pageSize = min(pageSize, maxPageSize)
-	return page, pageSize
+	return page, min(pageSize, maxPageSize)
 }

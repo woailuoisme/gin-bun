@@ -9,10 +9,7 @@ type LimiterConfig struct {
 	Sensitive     int `env:"RATELIMIT_SENSITIVE" envDefault:"10"`
 }
 
-// validateLimiter 校验速率限制配额：0 表示显式关闭，负值属于配置错误。
-//
-// 中间件对限额 <= 0 一律放行，负值会被静默当成"不限制"，
-// 等于在无人察觉的情况下关停全站限流，因此必须在启动期拦下。
+// validateLimiter 校验速率限制配额：0 表示显式关闭，负值属于非法配置。
 func (c *Config) validateLimiter() error {
 	tiers := []struct {
 		name  string

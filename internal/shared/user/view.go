@@ -7,11 +7,7 @@ import (
 	"bgin/internal/shared/enums"
 )
 
-// Profile 是用户档案的响应视图，面向前端自助与后台管理两个交付面共用。
-//
-// 这里刻意只共用"输出"：两个域描述的是同一条记录的同几个列，各写一份必然漂移。
-// 差异主要在输入侧——谁能改哪些字段由各自的请求体约束，而不在视图上体现。
-// 这与 ADR-0002 早期"两份视图各自演进"的设想相反，理由见 ADR-0005。
+// Profile 是用户档案响应视图，面向客户端自助与后台管理共用。
 type Profile struct {
 	// 用户唯一标识
 	ID string `json:"id" example:"usr_01J9X4N8Y0ABCD"`

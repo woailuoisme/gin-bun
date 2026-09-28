@@ -179,8 +179,7 @@ func (p *exportPipeline) writeStreamCSV(ctx context.Context, w io.Writer) error 
 		}
 	}
 
-	// csv.Writer 把写失败延迟到 Flush 才暴露，因此必须在返回前显式 Flush 并检查；
-	// 两个错误都保留，避免落盘失败被 rows.Err() 掩盖。
+	// 刷新缓冲并合并检查错误。
 	cw.Flush()
 
 	return errors.Join(rows.Err(), cw.Error())

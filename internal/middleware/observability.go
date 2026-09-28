@@ -8,15 +8,25 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/logger"
 )
 
-// headerRequestID 是 api.md 3.2 约定的全链路追踪请求头。
+// headerRequestID 是全链路追踪请求头。
 const headerRequestID = "x-request-id"
 
-// RequestID 生成或透传 x-request-id，把日志器与请求标识绑定后写入请求 context。
+// requestIDPrefix 是追踪标识前缀。
+const requestIDPrefix = "req_"
+
+// probePaths 探针路径集合。
+var probePaths = map[string]struct{}{
+	"/livez":  {},
+	"/readyz": {},
+}
+
+// RequestID 生成或透传全链路追踪请求标识。
 func (m *Middleware) RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := strings.TrimSpace(c.GetHeader(headerRequestID))
@@ -24,35 +34,22 @@ func (m *Middleware) RequestID() gin.HandlerFunc {
 			requestID = newRequestID()
 		}
 
-		// 响应头必须回写，便于调用方在报障时提供。
 		c.Writer.Header().Set(headerRequestID, requestID)
 		c.Request = c.Request.WithContext(logger.WithContext(c.Request.Context(), m.logger, requestID))
 		c.Next()
 	}
 }
 
-// requestIDPrefix 是追踪标识的前缀，与 api.md 3.2 的示例一致。
-const requestIDPrefix = "req_"
-
 // newRequestID 生成形如 req_<uuidv7> 的追踪标识。
 func newRequestID() string {
-	// 一次分配：uuid.NewString() 会先生成 36 字节带连字符的串、再去掉连字符、再拼接，
-	// 三次分配只为得到一个标识。这里按最终长度开缓冲一次成型。
 	id, err := uuid.NewV7()
 	if err != nil {
-		// V7 依赖时间源与随机源；退回与旧实现相同的形态即可，标识本身不需要有序。
 		return requestIDPrefix + strings.ReplaceAll(uuid.NewString(), "-", "")
 	}
 
 	buf := make([]byte, 0, len(requestIDPrefix)+hex.EncodedLen(len(id)))
 	buf = append(buf, requestIDPrefix...)
 	return string(hex.AppendEncode(buf, id[:]))
-}
-
-// probePaths 是编排系统的探针路径：它们每几秒就会被调用一次。
-var probePaths = map[string]struct{}{
-	"/healthz": {},
-	"/readyz":  {},
 }
 
 // AccessLog 记录每个请求的方法、路径、状态码与耗时。
@@ -69,17 +66,18 @@ func (m *Middleware) AccessLog() gin.HandlerFunc {
 		case c.Writer.Status() >= 400:
 			event = log.Warn()
 		case isProbePath(c.FullPath()):
-			// 探针降为 Debug：它们仍要留痕，但不该把真实请求淹没在 Info 里。
 			event = log.Debug()
 		}
-		if len(c.Errors) > 0 {
-			event = event.Str("error", c.Errors.String())
+
+		if errMsg := formatErrors(c.Errors); errMsg != "" {
+			event = event.Str("error", errMsg)
 		}
 		if code, ok := c.Get("error_code"); ok {
-			if codeStr, ok := code.(string); ok {
+			if codeStr, ok := code.(string); ok && codeStr != "" {
 				event = event.Str("code", codeStr)
 			}
 		}
+
 		event.
 			Str("method", c.Request.Method).
 			Str("path", c.Request.URL.Path).
@@ -90,14 +88,27 @@ func (m *Middleware) AccessLog() gin.HandlerFunc {
 	}
 }
 
-// isProbePath 判断请求是否落在探针路由上。用路由模板而非原始路径，
-// 这样带参数的路由不会被误判。
+// formatErrors 提取并拼接上下文错误文本，去除内部格式前缀与换行。
+func formatErrors(errs []*gin.Error) string {
+	if len(errs) == 0 {
+		return ""
+	}
+	if len(errs) == 1 {
+		return errs[0].Err.Error()
+	}
+	msgs := lo.Map(errs, func(e *gin.Error, _ int) string {
+		return e.Err.Error()
+	})
+	return strings.Join(msgs, "; ")
+}
+
+// isProbePath 判断请求是否为探针路由。
 func isProbePath(fullPath string) bool {
 	_, ok := probePaths[fullPath]
 	return ok
 }
 
-// Recovery 捕获 panic 转为统一的 500 响应，堆栈只进日志不进响应体。
+// Recovery 捕获 panic 转为统一 500 响应，堆栈仅进入日志。
 func (m *Middleware) Recovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
@@ -111,8 +122,6 @@ func (m *Middleware) Recovery() gin.HandlerFunc {
 				Str("stack", string(debug.Stack())).
 				Msg("request panic recovered")
 
-			// 已经写出响应的请求改不了状态码了，此时再处理会二次写响应头
-			// （gin 报 superfluous WriteHeader），客户端拿到的是被截断的 body。
 			if c.Writer.Written() {
 				c.Abort()
 				return

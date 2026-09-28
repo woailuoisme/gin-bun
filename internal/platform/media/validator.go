@@ -45,10 +45,7 @@ type FileValidator struct {
 
 // NewValidator 创建具有标准安全默认配置的 FileValidator 实例（默认上限 20MB）。
 //
-// 注意与传输层的分工：HTTP multipart 上传会先被全局 BodyLimit 中间件
-// （middleware.maxBodyBytes，默认 1MiB）拦下，因此经 HTTP 进来的文件实际远小于此处上限；
-// 本上限主要约束进程内直接调用（UploadBytes / UploadReader / UploadMultiple）的场景。
-// 若确需放行更大的 HTTP 上传，应同时调整两侧，避免出现"校验放行但传输层拦死"的矛盾。
+// 注意：HTTP 上传受传输层全局 BodyLimit 约束，本上限主要约束进程内直接调用场景。
 func NewValidator() *FileValidator {
 	return &FileValidator{
 		MaxFileSize:          20 * 1024 * 1024, // 20 MB

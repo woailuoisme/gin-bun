@@ -5,11 +5,7 @@ import (
 	"bgin/internal/shared/user"
 )
 
-// UpdateProfileRequest 是 PATCH /v1/users/me 的请求体。
-// 邮箱不在可自助修改之列：改邮箱需要独立的 OTP 验证流程，本期只读（Q27）。
-//
-// 各字段的 swaggertype 标签用于修正文档：Optional 的三态在线上就是一个普通 JSON 字段，
-// 若不覆盖，swag 会把泛型展开成 {present, value}，生成一份照做就会失败的文档。
+// UpdateProfileRequest 是 PATCH /v1/users/me 的局部更新请求体。
 type UpdateProfileRequest struct {
 	// 用户展示昵称
 	Name optional.Optional[string] `json:"name" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
@@ -23,10 +19,8 @@ type UpdateProfileRequest struct {
 	PhoneNumber optional.Optional[string] `json:"phoneNumber" swaggertype:"string" extensions:"x-nullable" example:"+8613800138000"`
 }
 
-// fieldSet 把请求投影成共有的档案字段集。
-// 本请求的字段名与类型与 user.FieldSet 完全一致，因此可以直接转换。
+// fieldSet 将请求转换为共享内核档案字段集。
 func (r UpdateProfileRequest) fieldSet() user.FieldSet { return user.FieldSet(r) }
 
-// selfPatch 是自助更新的校验投影，复用共有档案补丁的统一校验规则。
-// 路由层的校验不直接作用于 UpdateProfileRequest，因为三态容器无法表达 min/max 之类的约束。
+// selfPatch 是自助更新的校验投影别名。
 type selfPatch = user.ProfilePatch

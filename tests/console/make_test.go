@@ -163,16 +163,17 @@ func TestGenerateCRUD_Execution(t *testing.T) {
 func TestMakeCommand_CLIExecution(t *testing.T) {
 	ctx := context.Background()
 
-	// 测试标准命令：bgin make crud article --dry-run
+	// 旧空格子命令格式已被废除，必须报错：bgin make crud article --dry-run
 	err := console.Execute(ctx, []string{"make", "crud", "article", "--dry-run"})
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown command "make"`)
 
-	// 测试 Artisan 冒号别名命令：bgin make:crud article --dry-run
+	// 测试 Artisan 冒号命令：bgin make:crud article --dry-run
 	err = console.Execute(ctx, []string{"make:crud", "article", "--dry-run"})
 	require.NoError(t, err)
 
 	// 缺少必填参数时应报错
-	err = console.Execute(ctx, []string{"make", "crud"})
+	err = console.Execute(ctx, []string{"make:crud"})
 	require.Error(t, err)
 }
 
@@ -237,19 +238,29 @@ func TestDestroyCRUD_Execution(t *testing.T) {
 	}
 }
 
-// TestMakeDestroyCommand_CLIExecution 验证通过 Cobra 命令入口执行 destroy dry-run 与非交互阻断。
+// TestMakeDestroyCommand_CLIExecution 验证通过 make:crud -d / --delete 执行回退删除 dry-run 与废弃命令拦截。
 func TestMakeDestroyCommand_CLIExecution(t *testing.T) {
 	ctx := context.Background()
 
-	// 测试标准命令：bgin make destroy article --dry-run
+	// 1. 旧空格子命令格式已被废除，必须报错：bgin make destroy article --dry-run
 	err := console.Execute(ctx, []string{"make", "destroy", "article", "--dry-run"})
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown command "make"`)
 
-	// 测试别名命令：bgin make:destroy article --dry-run
+	// 2. 原 make:destroy 命令已被彻底移除，必须报错：bgin make:destroy
 	err = console.Execute(ctx, []string{"make:destroy", "article", "--dry-run"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown command "make:destroy"`)
+
+	// 3. 测试通过 make:crud -d 进行回退删除 dry-run
+	err = console.Execute(ctx, []string{"make:crud", "article", "-d", "--dry-run"})
 	require.NoError(t, err)
 
-	// 缺少必填参数时在非 TTY 下应报错
-	err = console.Execute(ctx, []string{"make", "destroy"})
+	// 4. 测试通过 make:crud --delete 进行回退删除 dry-run
+	err = console.Execute(ctx, []string{"make:crud", "article", "--delete", "--dry-run"})
+	require.NoError(t, err)
+
+	// 5. 缺少必填参数时在非 TTY 下应报错
+	err = console.Execute(ctx, []string{"make:crud", "-d"})
 	require.Error(t, err)
 }

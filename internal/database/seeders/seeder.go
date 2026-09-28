@@ -3,8 +3,9 @@ package seeders
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 	"bgin/internal/platform/logger"
 )
 
-// Seeder 是所有数据库数据播种器必须实现的统一接口。
+// Seeder 是数据播种器必须实现的统一接口。
 type Seeder interface {
 	Seed(ctx context.Context, db *bun.DB) error
 }
@@ -59,7 +60,7 @@ func SubProgressHookFromContext(ctx context.Context) SubProgressHook {
 	return nil
 }
 
-// Runner 负责调度执行 Seeder 链条，并自动规避重复执行（类似 Laravel $this->call）。
+// Runner 负责调度执行 Seeder 链条，并自动规避重复执行。
 type Runner struct {
 	db       *bun.DB
 	called   map[string]bool
@@ -98,7 +99,7 @@ func (r *Runner) Call(ctx context.Context, seeders ...Seeder) error {
 			logger.FromContext(ctx).Debug().Str("seeder", name).Msg("seeder already executed, skipping duplicate seeding")
 			continue
 		}
-		// 标记当前 seeder 已在执行流程中，防止循环依赖或重入重复执行
+		// 标记当前 seeder 已在执行中，防止循环或重入
 		r.called[name] = true
 		r.mu.Unlock()
 
@@ -109,7 +110,6 @@ func (r *Runner) Call(ctx context.Context, seeders ...Seeder) error {
 		start := time.Now()
 		logger.FromContext(ctx).Info().Str("seeder", name).Msg("executing database seeder...")
 		if err := s.Seed(ctx, r.db); err != nil {
-			// 若执行失败，回退状态以允许后续重试
 			r.mu.Lock()
 			delete(r.called, name)
 			r.mu.Unlock()
@@ -160,12 +160,7 @@ func List() []string {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 
-	names := make([]string, 0, len(registry))
-	for name := range registry {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(registry))
 }
 
 // seederName 解析 Seeder 的类型名称。

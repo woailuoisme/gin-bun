@@ -73,13 +73,7 @@ func (r *Repository) DeleteVerification(ctx context.Context, id string) error {
 	return err
 }
 
-// ConsumeVerification 原子核销一枚凭据：仅当 identifier 与凭据摘要都匹配时删除，
-// 并报告是否真的删掉了那一行。返回 false 表示这枚凭据已不存在、已过期，或刚被别处消费。
-//
-// 把"取出—比对—删除"拆成两个事务是不安全的：两个携带同一验证码的并发请求会都读到
-// 同一条记录、都通过比对，随后都执行删除（第二次影响 0 行却同样返回成功），
-// 一次性凭据因此被消费两次。这里用 compare-and-delete 把判定收进一条语句，
-// 由受影响行数给出唯一裁决。
+// ConsumeVerification 原子核销一枚凭据，通过单条 compare-and-delete 语句保证并发安全。
 func (r *Repository) ConsumeVerification(ctx context.Context, identifier, value string) (bool, error) {
 	result, err := r.db.NewDelete().
 		Model((*models.Verification)(nil)).

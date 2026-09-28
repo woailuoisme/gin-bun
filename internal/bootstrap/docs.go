@@ -8,11 +8,11 @@ import (
 	"bgin/internal/apidocs"
 )
 
-// 文档页与规范的路径。定义在一处：路由、页面内的引用、启动日志共用同一份，避免漂移。
+// 文档页面与 OpenAPI 规范路由路径常量。
 const (
-	// docsPagePath 是客户端 Scalar 文档页的路径。
+	// docsPagePath 客户端 Scalar 文档页面路径。
 	docsPagePath = "/docs"
-	// referenceSpecPath 是浏览器拉取客户端规范的路径。
+	// referenceSpecPath 客户端 OpenAPI 规范路径。
 	referenceSpecPath = docsPagePath + "/openapi.json"
 
 	// adminDocsPagePath 是管理端 Scalar 文档页的路径。

@@ -416,11 +416,7 @@ func (p *PipelineImpl) uploadBytes(
 	}, nil
 }
 
-// getDisk 解析目标存储磁盘。
-//
-// 一个 Pipeline 实例只装配一块磁盘，因此 diskName 入参一律落到该磁盘上：
-// 这里显式忽略名称，而不是假装支持多磁盘。需要多磁盘时，请在装配层按名
-// 构造多个 Pipeline 实例，避免单实例内部出现"名称生效/不生效"两种语义。
+// getDisk 返回当前 Pipeline 装配的存储磁盘。
 func (p *PipelineImpl) getDisk(_ ...string) storage.Disk {
 	return p.disk
 }

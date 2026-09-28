@@ -1,8 +1,3 @@
-// 本文件是唯一知道"谁依赖谁"的地方：手工装配的全部顺序都在这里，不使用 DI 容器
-// （ADR-0002）。应用对象本身见 app.go。
-//
-// 与 package 子句之间留了空行：紧贴的话 go/doc 会把这段文件级说明并进包注释，
-// 于是 pkg.go.dev 上的包文档会变成几段"本文件……"的拼接。
 package bootstrap
 
 import (
@@ -41,7 +36,6 @@ import (
 )
 
 // NewApplication 按依赖顺序完成装配：配置 → 日志 → 基础设施 → 领域 → HTTP。
-// 任何一步失败都立即返回，不做带病启动。
 func NewApplication(ctx context.Context, portOverride int) (*Application, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -56,10 +50,10 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 
 	log := logger.New(cfg)
 
-	// 从第一个需要释放的资源起，把释放动作登记进 teardown：中途失败时逆序关闭。
+	// 登记 teardown 资源清理链，装配中途失败时逆序释放
 	td := &teardown{log: log}
 
-	// application_name 取自 APP_NAME：共享 Postgres 上只有它能区分连接属于谁。
+	// 初始化 PostgreSQL 数据库连接池
 	db, err := database.Open(ctx, cfg.Database, cfg.App.Name)
 	if err != nil {
 		return nil, err
@@ -80,8 +74,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	}
 	td.add(mailerClient.Close)
 
-	// 存储驱动在启动期就做一次可用性探测（见 storage.Open）：桶不存在或目录不可写时
-	// 直接失败，而不是等到第一次上传才发现。
+	// 探测并初始化文件/对象存储驱动
 	disk, err := storage.Open(ctx, cfg.Storage)
 	if err != nil {
 		return nil, td.fail(err)
@@ -91,8 +84,6 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	if err != nil {
 		return nil, td.fail(err)
 	}
-	// 注册一份全局默认翻译器：PDF 文档模版的 Build 只收到 ctx 与 Builder，
-	// 无法从签名上拿到翻译器，与 pdf.RegisterPDF 的全局默认服务同构。
 	i18n.SetDefault(translator)
 
 	enforcer, err := authz.New()
@@ -124,7 +115,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		Translator: translator,
 		Config:     cfg,
 	})
-	// user 域内核只装配一份：前端档案与后台管理两个交付面共用同一个仓库实例（ADR-0005）。
+	// 初始化共享用户仓储及各业务服务
 	userRepo := user.NewRepository(db)
 	profileService := profile.NewService(profile.Deps{Repo: userRepo})
 	adminService := admin.NewService(admin.Deps{Repo: userRepo, Hasher: hasherClient})
@@ -134,9 +125,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		Hasher: hasherClient,
 	})
 
-	// 就绪探针只探测数据库与缓存：它们决定请求能否被服务。
-	// 存储刻意不进来——它只影响上传类端点，让存储故障摘掉全部流量是过度反应；
-	// 而它在装配期已被 storage.Open 探过一次（见上）。
+	// 初始化健康就绪探针 Handler
 	systemHandler := system.NewHandler(
 		system.NewService(system.Deps{Database: databasePinger{db: db}, Cache: cacheClient}),
 		log,
@@ -208,15 +197,13 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	}, nil
 }
 
-// 编译期断言：这两个适配器一旦不再满足探针接口，构建就会失败在定义处，
-// 而不是等到别处的赋值语句才报错。
+// 编译期断言满足探针接口。
 var (
 	_ system.Pinger = databasePinger{}
 	_ system.Pinger = (*cache.Client)(nil)
 )
 
-// databasePinger 把 *bun.DB 适配成探针要求的 system.Pinger。
-// bun 暴露的是 PingContext，与接口差一个名字；在接线处补这一层，比让探针包依赖具体驱动更合适。
+// databasePinger 将 *bun.DB 适配为 system.Pinger。
 type databasePinger struct{ db *bun.DB }
 
 // Ping 实现 system.Pinger。
@@ -243,20 +230,16 @@ func logDatabaseReady(ctx context.Context, log *zerolog.Logger, db *bun.DB, cfg 
 	}
 }
 
-// teardown 累积已装配资源的释放动作，供装配中途失败时逆序调用。
-//
-// 手工装配下每个失败分支都要把先前打开的资源关掉，逐个手写会随依赖数量增长而漏掉某一个，
-// 而漏掉的后果是把连接留给 GC。把清单收在这里之后，失败分支只剩一行 td.fail(err)。
+// teardown 管理装配中途失败时的逆序资源清理。
 type teardown struct {
 	log     *zerolog.Logger
 	closers []func() error
 }
 
-// add 登记一个释放动作。装配成功的资源由 Application.Close 负责关闭，不必登记。
+// add 登记资源释放回调函数。
 func (t *teardown) add(closer func() error) { t.closers = append(t.closers, closer) }
 
-// fail 逆序释放已登记的资源，然后原样回传失败原因——释放自身的错误只进日志，
-// 不能盖掉"为什么装配失败"这个更重要的信息。
+// fail 逆序释放已登记资源并返回原始错误。
 func (t *teardown) fail(cause error) error {
 	for _, closer := range slices.Backward(t.closers) {
 		if err := closer(); err != nil {

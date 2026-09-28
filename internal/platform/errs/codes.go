@@ -22,10 +22,9 @@ const (
 	CodeIdempotencyConflict Code = "IDEMPOTENCY_CONFLICT"
 	CodeIdempotencyMismatch Code = "IDEMPOTENCY_MISMATCH"
 	CodeIdempotencyRequired Code = "IDEMPOTENCY_REQUIRED"
-	// CodeRequestTooLarge 对应请求体超过服务端上限（见 middleware.BodyLimit）。
-	// 单独成码而不是并入 BAD_REQUEST：调用方需要据此判断"重试无用、必须改小载荷"。
+	// CodeRequestTooLarge 请求体超过服务端上限。
 	CodeRequestTooLarge Code = "REQUEST_TOO_LARGE"
-	// CodeGatewayTimeout 对应上游数据库或外部依赖未在请求时限内响应。
+	// CodeGatewayTimeout 上游依赖或数据库未在时限内响应。
 	CodeGatewayTimeout     Code = "GATEWAY_TIMEOUT"
 	CodeServiceUnavailable Code = "SERVICE_UNAVAILABLE"
 	CodeInternal           Code = "INTERNAL_SERVER_ERROR"

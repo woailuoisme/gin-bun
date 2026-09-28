@@ -61,10 +61,7 @@ type Manager struct {
 
 // NewManager 初始化并构建基于 Watermill CQRS 的事件总线管理器。
 func NewManager(cfg config.EventBusConfig, zlog zerolog.Logger, opts ...Option) (*Manager, error) {
-	// 事件总线子系统使用独立于全局 LOG_LEVEL 的日志级别：Watermill 会在启动期输出大量
-	// 路由与处理器生命周期流水，默认仅在 warn 及以上输出；排查时设置 EVENTBUS_LOG_LEVEL=debug。
-	// 取值非法时同样回退 warn，保证降级方向始终是「更安静」；
-	// 未显式配置级别时沿用传入 logger 自身的级别。
+	// 事件总线子系统支持独立日志级别，默认降级为 warn 以减少启动期内部流水输出。
 	if cfg.LogLevel != "" {
 		lvl, err := zerolog.ParseLevel(cfg.LogLevel)
 		if err != nil {
@@ -86,7 +83,7 @@ func NewManager(cfg config.EventBusConfig, zlog zerolog.Logger, opts ...Option) 
 		return nil, fmt.Errorf("failed to create router: %w", err)
 	}
 
-	// 挂载生产级中间件管道：异常恢复、链路追踪、重试机制与超时控制
+	// 挂载中间件管道：异常恢复、关联标识、重试机制与超时控制。
 	retryMiddleware := middleware.Retry{
 		MaxRetries:          3,
 		InitialInterval:     100 * time.Millisecond,
@@ -279,8 +276,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.running = true
 	m.mu.Unlock()
 
-	// 无论路由器因何种原因返回都要复位运行标记：否则一次失败或一次优雅退出
-	// 就会把该实例永久锁死在 "already running"，无法重启。
+	// 复位运行标记，保证退出后实例可安全重启。
 	defer func() {
 		m.mu.Lock()
 		m.running = false
@@ -335,9 +331,6 @@ func defaultJSONMarshaler() cqrs.JSONMarshaler {
 			if n, ok := v.(Event); ok {
 				return n.EventName()
 			}
-			if n, ok := v.(interface{ EventName() string }); ok {
-				return n.EventName()
-			}
 			if n, ok := v.(interface{ Name() string }); ok {
 				return n.Name()
 			}
@@ -358,9 +351,7 @@ func injectEventMetadata(params cqrs.OnEventSendParams) error {
 func createPubSub(cfg config.EventBusConfig, logger watermill.LoggerAdapter) (*gochannel.GoChannel, error) {
 	switch cfg.Driver {
 	case DriverGoChannel, "":
-		// BlockPublishUntilSubscriberAck 必须为 false。
-		// 置 true 时 Publish 会阻塞至所有订阅者 ACK，从而导致发布端被消费端延迟拖垮。
-		// go_channel 本身无持久化能力（进程退出即丢失），因此在此换取确定性的低延迟与吞吐。
+		// 采用非阻塞发布，保证发布端不会因消费端耗时或阻塞而被拖垮。
 		return gochannel.NewGoChannel(gochannel.Config{
 			BlockPublishUntilSubscriberAck: false,
 		}, logger), nil

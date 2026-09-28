@@ -36,8 +36,7 @@ func (m *Middleware) extractValidationFields(c *gin.Context, err error) (map[str
 		lang = m.translator.Language(lang)
 	}
 
-	// 以语言包键表达的字段级校验错误：在渲染边界按请求语言翻译，
-	// 使业务代码不必硬编码面向用户的提示。
+	// 提取基于语言包键表达的字段级校验错误。
 	if fields, ok := m.translateFieldKeys(lang, err); ok {
 		return fields, true
 	}
@@ -64,8 +63,7 @@ func (m *Middleware) extractValidationFields(c *gin.Context, err error) (map[str
 	return fields, len(fields) > 0
 }
 
-// translateFieldKeys 把以语言包键表达的字段级校验错误渲染为指定语言的文案。
-// 语言包不可用或没有待翻译明细时返回 false，交由调用方继续其他分支。
+// translateFieldKeys 将业务错误中基于键的字段明细渲染为指定语言文案。
 func (m *Middleware) translateFieldKeys(lang string, err error) (map[string][]string, bool) {
 	if m.translator == nil {
 		return nil, false
@@ -90,8 +88,5 @@ func (m *Middleware) translateFieldKeys(lang string, err error) (map[string][]st
 			}
 		}
 	}
-	if len(fields) == 0 {
-		return nil, false
-	}
-	return fields, true
+	return fields, len(fields) > 0
 }

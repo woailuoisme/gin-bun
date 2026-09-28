@@ -42,9 +42,7 @@ func (s *UserSeeder) Seed(ctx context.Context, db *bun.DB) error {
 		cfg = loaded
 	}
 
-	// 演示数据携带固定弱口令且会污染真实统计，严禁进入生产环境。
-	// 生产环境的管理员由 AdminSeeder 依 SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD 幂等播种，
-	// 因此这里不再自建任何特权账号。
+	// 演示数据携带固定测试凭据，生产环境中直接跳过
 	if cfg.IsProduction() {
 		log.Warn().Msg("demo user seeding is disabled in production, skipped")
 		return nil

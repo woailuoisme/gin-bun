@@ -23,10 +23,7 @@ const FakeApplicationKey = "fake"
 // defaultApplicationKey 是单应用默认标识。
 const defaultApplicationKey = "default"
 
-// Manager 是 Resolver 的默认实现，持有启动期构造完成的全部渠道应用。
-//
-// 应用标识属基础设施概念：领域层只感知 PaymentChannel 与 PaymentScene，
-// 由 Manager 负责把场景翻译成具体应用。
+// Manager 负责管理已注册的支付渠道应用，并根据场景路由到具体 Provider。
 type Manager struct {
 	mu          sync.RWMutex
 	enabled     bool
@@ -35,9 +32,7 @@ type Manager struct {
 	order       []string
 }
 
-// NewManager 依据配置构造支付解析器。
-// 每个渠道应用都会在启动期完成凭据校验与客户端构造，任一项不合格都会让启动直接失败，
-// 避免把凭据问题推迟到第一笔真实收款时才暴露。
+// NewManager 依据配置构造支付管理器，并在启动期校验渠道凭据。
 func NewManager(cfg *config.Config, logger zerolog.Logger) (*Manager, error) {
 	manager := &Manager{
 		providers:   make(map[string]Provider),

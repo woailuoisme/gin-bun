@@ -1,6 +1,7 @@
 package jsonb
 
 import (
+	"bytes"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -58,11 +59,11 @@ func (j JSONB[T]) Value() (driver.Value, error) {
 			return nil, nil
 		}
 	}
-	bytes, err := json.Marshal(j.Data)
+	bytesData, err := json.Marshal(j.Data)
 	if err != nil {
 		return nil, fmt.Errorf("jsonb: marshal failed: %w", err)
 	}
-	return string(bytes), nil
+	return string(bytesData), nil
 }
 
 // Scan 实现 sql.Scanner 接口，从 PostgreSQL jsonb 字段反序列化到泛型容器。
@@ -83,7 +84,7 @@ func (j *JSONB[T]) Scan(src any) error {
 		return fmt.Errorf("%w: unsupported type %T", ErrInvalidJSONB, src)
 	}
 
-	if len(raw) == 0 || string(raw) == "null" {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
 		var zero T
 		j.Data = zero
 		return nil
@@ -102,7 +103,7 @@ func (j JSONB[T]) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON 实现 json.Unmarshaler 接口，将传入的 JSON 解析到底层数据。
 func (j *JSONB[T]) UnmarshalJSON(data []byte) error {
-	if len(data) == 0 || string(data) == "null" {
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
 		var zero T
 		j.Data = zero
 		return nil

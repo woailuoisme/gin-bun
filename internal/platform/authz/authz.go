@@ -1,5 +1,4 @@
-// Package authz 是基于 Casbin 的静态权限矩阵。
-// 策略随二进制发布、运行期不可修改，且不写 g 规则——角色归属以 user.role 为权威（见 ADR-0003）。
+// Package authz 提供基于 Casbin 的静态权限矩阵。
 package authz
 
 import (
@@ -12,7 +11,7 @@ import (
 	stringadapter "github.com/casbin/casbin/v3/persist/string-adapter"
 )
 
-// 权限码使用的资源名与动作名，供中间件与策略文件共用。
+// 常用资源与动作常量。
 const (
 	ResourceUsers = "users"
 
@@ -26,12 +25,12 @@ const (
 //go:embed rbac/model.conf rbac/policy.csv
 var rbacFS embed.FS
 
-// Enforcer 判断某个角色能否对某个资源执行某个动作。
+// Enforcer 判断角色对资源的操作权限。
 type Enforcer struct {
 	enforcer *casbin.Enforcer
 }
 
-// New 从内嵌的策略文件构造 Enforcer。资源已编译进二进制，装载失败属于打包错误。
+// New 从内嵌策略文件构造 Enforcer。
 func New() (*Enforcer, error) {
 	modelText, err := fs.ReadFile(rbacFS, "rbac/model.conf")
 	if err != nil {

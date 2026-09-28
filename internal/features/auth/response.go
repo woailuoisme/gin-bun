@@ -6,13 +6,7 @@ import (
 	"bgin/internal/models"
 )
 
-// 本文件负责认证端点的出参结构体定义与模型到响应体的投影转换。
-//
-// 刻意不引入 Laravel 式的运行时 transformer / Resource 接口：认证端点只有一种用户视图，
-// 哪个形状被返回完全由调用哪个投影函数在编译期决定，没有任何字段需要按请求条件出现。
-
-// UserProjection 是认证端点返回的用户投影。
-// 它与 user 域的自助/管理视图刻意不共用：三者关注点不同，见 ADR-0002 的领域边界。
+// UserProjection 是认证端点返回的用户档案投影。
 type UserProjection struct {
 	// 用户唯一标识
 	ID string `json:"id" example:"usr_01J9X4N8Y0ABCD"`
@@ -51,13 +45,12 @@ type SessionResponse struct {
 }
 
 // GetSessionResponse 是 GET /v1/auth/get-session 的响应体。
-// 本系统没有会话实体，因此只返回用户，见 ADR-0001 与 Q13。
 type GetSessionResponse struct {
 	// 当前登录用户身份资料投影
 	User UserProjection `json:"user"`
 }
 
-// StatusResponse 是"已受理但无实体返回"的统一响应体，语气对齐 Better-Auth。
+// StatusResponse 是通用布尔状态响应体。
 type StatusResponse struct {
 	// 请求是否已成功受理并处理完毕
 	Status bool `json:"status" example:"true"`

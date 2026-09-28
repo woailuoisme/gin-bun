@@ -48,9 +48,6 @@ func NewService(deps Deps) *Service {
 }
 
 // IssueToken 为指定用户签发直连 Centrifugo (WSS/SSE) 所需的 JWT 凭据。
-//
-// 角色以数据库当前值为准（与管理员续签保持一致）：访问令牌中的 role 只是签发时的快照，
-// 用户被降级后旧令牌仍能换到内嵌旧角色的实时凭据，因此不能直接采信。
 func (s *Service) IssueToken(ctx context.Context, userID, role string) (*TokenResponse, error) {
 	if s.gateway == nil || s.cfg == nil || !s.cfg.Realtime.Enabled {
 		return nil, errs.BadRequest("Realtime service is disabled")
@@ -83,13 +80,7 @@ func (s *Service) IssueToken(ctx context.Context, userID, role string) (*TokenRe
 	}, nil
 }
 
-// AuthorizeSubscribe 校验 Centrifugo 反向代理请求的签名，并裁定频道订阅权限。
-//
-// 签名校验与报文解析属于鉴权编排，放在这里而不是 Handler：Handler 只负责取原始体与
-// 签名头、把结果写回。
-//
-// 注意响应体的语义：被拒绝的订阅按 Centrifugo Proxy 协议表示为一个 200 响应里的
-// error 字段，而不是 HTTP 错误状态；只有签名不合法或报文无法解析才返回错误。
+// AuthorizeSubscribe 校验 Centrifugo 反向代理请求签名并裁定频道订阅权限。
 func (s *Service) AuthorizeSubscribe(
 	ctx context.Context,
 	body []byte,

@@ -16,24 +16,10 @@ import (
 	"bgin/internal/database/seeders"
 )
 
-// newDBCmd 组装数据库管理命令组。
-func newDBCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "db",
-		Short: "Database migrations, seeding, and management",
-	}
-
-	cmd.AddCommand(newDBMigrateCmd())
-	cmd.AddCommand(newDBSeedCmd())
-	cmd.AddCommand(newDBFreshCmd())
-
-	return cmd
-}
-
 // newDBMigrateCmd 委托 atlas 应用版本式迁移。
 func newDBMigrateCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "migrate",
+		Use:   "db:migrate",
 		Short: "Apply database migrations via Atlas (atlas migrate apply)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -47,7 +33,7 @@ func newDBSeedCmd() *cobra.Command {
 	var className string
 
 	cmd := &cobra.Command{
-		Use:   "seed",
+		Use:   "db:seed",
 		Short: "Seed database with records (default: DatabaseSeeder)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -95,7 +81,7 @@ func newDBFreshCmd() *cobra.Command {
 	var force bool
 
 	cmd := &cobra.Command{
-		Use:   "fresh",
+		Use:   "db:fresh",
 		Short: "Drop all tables, re-run migrations, and seed database (destructive)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -149,29 +135,6 @@ func newDBFreshCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&force, core.FlagForce, "f", false, core.UsageForceFlag)
 
 	return cmd
-}
-
-// 兼容老 Artisan 风格冒号别名命令构造工厂（设为 Hidden: true 保持帮助信息精简）。
-
-func newDBMigrateAliasCmd() *cobra.Command {
-	c := newDBMigrateCmd()
-	c.Use = "db:migrate"
-	c.Hidden = true
-	return c
-}
-
-func newDBSeedAliasCmd() *cobra.Command {
-	c := newDBSeedCmd()
-	c.Use = "db:seed"
-	c.Hidden = true
-	return c
-}
-
-func newDBFreshAliasCmd() *cobra.Command {
-	c := newDBFreshCmd()
-	c.Use = "db:fresh"
-	c.Hidden = true
-	return c
 }
 
 // runAtlas 以当前工作目录为基准调用 atlas 命令行工具，输出直接透传给用户。

@@ -28,7 +28,7 @@ func TestGenerateRandomSecret(t *testing.T) {
 
 // TestJWTSecretCommand_Show 验证 --show 参数在不改动文件的情况下正常运行并由 OutOrStdout 捕获。
 func TestJWTSecretCommand_Show(t *testing.T) {
-	t.Run("alias invocation (jwt:secret)", func(t *testing.T) {
+	t.Run("colon command (jwt:secret)", func(t *testing.T) {
 		cmd := console.NewRootCommand()
 		buf := new(bytes.Buffer)
 		cmd.SetOut(buf)
@@ -43,19 +43,12 @@ func TestJWTSecretCommand_Show(t *testing.T) {
 		assert.Len(t, decoded, 32)
 	})
 
-	t.Run("native tree invocation (jwt secret)", func(t *testing.T) {
+	t.Run("deprecated space-separated invocation is rejected", func(t *testing.T) {
 		cmd := console.NewRootCommand()
-		buf := new(bytes.Buffer)
-		cmd.SetOut(buf)
 		cmd.SetArgs([]string{"jwt", "secret", "--show"})
 		err := cmd.ExecuteContext(context.Background())
-		require.NoError(t, err)
-
-		secret := strings.TrimSpace(buf.String())
-		assert.NotEmpty(t, secret)
-		decoded, err := base64.StdEncoding.DecodeString(secret)
-		require.NoError(t, err)
-		assert.Len(t, decoded, 32)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `unknown command "jwt"`)
 	})
 }
 

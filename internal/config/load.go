@@ -28,11 +28,7 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// Default 返回一份最小可用配置，供「配置装载失败」时的自省类命令使用
-// （例如 route list 需要一份配置才能构建路由表）。
-//
-// 它既未经校验也不含任何真实连接信息，因此严禁用于启动服务；
-// 与 InspectEngine 的 nil 校验配合，避免出现"静默伪造配置"的隐性路径。
+// Default 返回一份最小可用默认配置，供配置装载失败时的路由自省类命令使用。
 func Default() *Config {
 	return &Config{
 		App: AppConfig{

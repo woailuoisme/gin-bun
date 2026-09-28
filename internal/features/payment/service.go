@@ -20,12 +20,9 @@ import (
 const (
 	// notifyLockTTL 是防止渠道并发通知重放的分布式锁持有时间。
 	notifyLockTTL = 30 * time.Second
-	// notifyDoneTTL 是已消费通知的去重标记保留时长。
-	// 渠道自带的阶梯重试可能跨越数小时甚至数天，标记必须比锁活得久，
-	// 否则超出锁有效期后的重放会再次进入业务状态机。
+	// notifyDoneTTL 是已消费通知的持久去重标记保留时长。
 	notifyDoneTTL = 7 * 24 * time.Hour
-	// errUnsupportedChannel 是渠道不合法时的统一对外口径。
-	// HTTP 边界（Handler）与服务层都做这项校验，共用同一文案以免两处措辞漂移。
+	// errUnsupportedChannel 是不支持支付渠道时的统一错误信息。
 	errUnsupportedChannel = "Unsupported payment channel"
 )
 
@@ -100,8 +97,6 @@ func (s *Service) HandleNotification(
 
 	channel := enums.PaymentChannel(channelStr)
 	if !channel.IsValid() {
-		// 此处刻意不重复打日志：HTTP 边界已就同一事件留下带渠道字段的告警，
-		// 服务层只负责对程序化调用方返回可判定的错误。
 		return platformPayment.FailureAck(channel), errs.BadRequest(errUnsupportedChannel)
 	}
 
@@ -128,8 +123,7 @@ func (s *Service) HandleNotification(
 	// 2. 幂等与并发防重放控制
 	tradeNo := s.extractTradeNo(notification)
 	if s.cache != nil && tradeNo != "" {
-		// 已消费过的通知直接回成功应答：通道会重放同一通知（超时重试、人工补发等），
-		// 此时再走一遍业务状态机会造成重复入账，回失败应答又会触发渠道无限重试。
+		// 已消费通知直接返回成功应答，防止重复入账。
 		doneKey := cache.Key("payment", "notify", "done", channel.String(), tradeNo)
 		if _, getErr := s.cache.Get(ctx, doneKey); getErr == nil {
 			log.Warn().
@@ -194,7 +188,7 @@ func (s *Service) HandleNotification(
 		Str("trade_no", tradeNo).
 		Msg("payment callback notification successfully processed")
 
-	// 5. 落持久去重标记：并发锁只覆盖处理窗口，标记覆盖渠道跨越数天的重试与人工补发。
+	// 5. 写入持久化去重标记
 	if s.cache != nil && tradeNo != "" {
 		doneKey := cache.Key("payment", "notify", "done", channel.String(), tradeNo)
 		if err := s.cache.Set(ctx, doneKey, "1", notifyDoneTTL); err != nil {

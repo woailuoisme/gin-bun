@@ -1,4 +1,4 @@
-// Package validator 封装请求绑定与校验，并把失败结果翻译为统一错误响应。
+// Package validator 封装基于 go-playground/validator 的请求数据校验与国际化错误转换。
 package validator
 
 import (

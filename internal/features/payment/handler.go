@@ -51,8 +51,7 @@ func (h *Handler) HandleNotification(c *gin.Context) {
 		_ = c.Error(err)
 	}
 
-	// 应答报文与状态码都由平台层按渠道协议给出：渠道靠报文内容判定本次投递成败并触发阶梯重试，
-	// 因此失败应答同样要以 200 返回、让渠道读到它。这里不再用报文内容反推语义。
+	// 渠道统一按渠道协议返回 200 及对应报文内容。
 	c.Data(http.StatusOK, ack.ContentType, []byte(ack.Body))
 }
 

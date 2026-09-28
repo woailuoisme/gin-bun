@@ -22,12 +22,17 @@ import (
 // mailpitBaseURL 是本地 Mailpit 的 HTTP 接口，用于取回真实投递的验证码。
 const mailpitBaseURL = "http://127.0.0.1:8025/api/v1"
 
-// TestHealthEndpoint 校验存活探针不触碰外部依赖。
+// TestHealthEndpoint 校验存活探针与根路径端点。
 func TestHealthEndpoint(t *testing.T) {
-	result := call(t, newEngine(t), http.MethodGet, "/healthz", "", "")
+	engine := newEngine(t)
 
+	result := call(t, engine, http.MethodGet, "/livez", "", "")
 	assert.Equal(t, http.StatusOK, result.Status)
 	assert.Equal(t, "ok", str(result.Body, "status"))
+
+	rootResult := call(t, engine, http.MethodGet, "/", "", "")
+	assert.Equal(t, http.StatusOK, rootResult.Status)
+	assert.Equal(t, "ok", str(rootResult.Body, "status"))
 }
 
 // TestGlobalRoutingAndErrorContract 校验未映射路由与未支持动词返回统一错误 JSON（api.md 5.2）。

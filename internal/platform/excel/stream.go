@@ -139,8 +139,7 @@ func StreamExport[T any](
 		return err
 	}
 
-	// yieldErr 记录被 yield 协议吞掉的失败原因：生成器只能以返回 false 中断迭代，
-	// 无法回传错误；若不在此捕获，写失败与上下文取消都会产出「残缺却成功」的导出文件。
+	// 记录生成器闭包内捕获的失败原因。
 	var yieldErr error
 
 	genErr := generator(func(item T) bool {
@@ -162,8 +161,7 @@ func StreamExport[T any](
 		return oops.Code("excel_generator_error").Wrap(genErr)
 	}
 	if yieldErr != nil {
-		// 上下文取消不是写失败：原样上抛，调用方可用 errors.Is(err, context.Canceled)
-		// 把「客户端断开」与「真实写错误」分开，只有后者需要告警。
+		// 上下文取消直接透传，方便调用方区分断开与错误。
 		if errors.Is(yieldErr, context.Canceled) || errors.Is(yieldErr, context.DeadlineExceeded) {
 			return yieldErr
 		}
@@ -200,7 +198,7 @@ func StreamExportCSV[T any](
 		}
 	}
 
-	// yieldErr 同 StreamExport：生成器无法回传错误，必须在闭包外捕获首个失败原因。
+	// 记录生成器闭包内捕获的失败原因。
 	var yieldErr error
 
 	genErr := generator(func(item T) bool {
@@ -233,14 +231,14 @@ func StreamExportCSV[T any](
 		return oops.Code("csv_generator_error").Wrap(genErr)
 	}
 	if yieldErr != nil {
-		// 同 StreamExport：取消与写失败必须对调用方可见地分开。
+		// 上下文取消直接透传，方便调用方区分断开与错误。
 		if errors.Is(yieldErr, context.Canceled) || errors.Is(yieldErr, context.DeadlineExceeded) {
 			return yieldErr
 		}
 		return oops.Code("csv_write_error").Wrap(yieldErr)
 	}
 
-	// csv.Writer 会把写失败延迟到 Flush 才暴露，因此必须显式 Flush 并检查 Error()。
+	// 刷新缓冲并检查写错误。
 	cw.Flush()
 	if err := cw.Error(); err != nil {
 		return oops.Code("csv_flush_error").Wrap(err)

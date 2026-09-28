@@ -1,5 +1,4 @@
-// Package identity 承载已认证请求的身份。
-// 身份全部来自令牌载荷，不查库——这是纯 JWT 方案的直接结果（见 ADR-0001）。
+// Package identity 承载已认证请求的上下文身份信息。
 package identity
 
 import (
@@ -7,11 +6,11 @@ import (
 	"time"
 )
 
-// Identity 是已认证请求的身份。
+// Identity 描述已认证请求的身份凭据与会话元数据。
 type Identity struct {
 	UserID string
 	Role   string
-	// TokenID 与 TokenExpiresAt 用于登出时把访问令牌写入撤销名单。
+	// TokenID 与 TokenExpiresAt 用于登出时将访问令牌加入黑名单。
 	TokenID        string
 	TokenExpiresAt time.Time
 }
@@ -19,12 +18,12 @@ type Identity struct {
 // ctxKey 是身份在 context 中的私有键。
 type ctxKey struct{}
 
-// With 把身份写入 context，由认证中间件调用。
+// With 将身份凭据注入 context。
 func With(ctx context.Context, id Identity) context.Context {
 	return context.WithValue(ctx, ctxKey{}, id)
 }
 
-// FromContext 取出身份；未认证请求返回 false。
+// FromContext 从上下文中提取身份凭据；未认证时返回 false。
 func FromContext(ctx context.Context) (Identity, bool) {
 	id, ok := ctx.Value(ctxKey{}).(Identity)
 	return id, ok

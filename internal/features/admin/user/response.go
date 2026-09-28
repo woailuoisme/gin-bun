@@ -11,10 +11,7 @@ import (
 // Profile 是共享内核档案视图的类型别名，供本模块的响应体与 Swagger 注解引用。
 type Profile = user.Profile
 
-// User 是管理视角的用户视图。
-//
-// 它在共有的档案视图之上追加封禁与登录审计字段：管理端要看的比前端多，
-// 但两者描述的是同一条记录的同几个列，因此档案部分共用而非各写一份。
+// User 是管理端视角的系统用户视图模型。
 type User struct {
 	Profile
 

@@ -12,23 +12,21 @@ import (
 	"bgin/internal/platform/logger"
 )
 
-// Tier 是限流档位，对应 api.md 7 描述的三级配额。
+// Tier 定义限流档位。
 type Tier string
 
-// 三个限流档位。
 const (
-	// TierAnonymous 面向未认证客户端，按 IP 计数。
+	// TierAnonymous 面向未认证客户端，按客户端 IP 计数。
 	TierAnonymous Tier = "anonymous"
-	// TierAuthenticated 面向已认证用户，按用户计数。
+	// TierAuthenticated 面向已认证用户，按用户 ID 计数。
 	TierAuthenticated Tier = "authenticated"
-	// TierSensitive 面向敏感认证端点，按 IP 计数且配额最严。
+	// TierSensitive 面向敏感认证端点，按客户端 IP 计数且配额最严。
 	TierSensitive Tier = "sensitive"
+
+	rateLimitWindow = time.Minute
 )
 
-// rateLimitWindow 是所有档位共用的固定窗口长度。
-const rateLimitWindow = time.Minute
-
-// RateLimit 执行固定窗口限流，超限返回 429 与 api.md 7 约定的配额响应头。
+// RateLimit 执行固定窗口限流，超限返回 429 及限流响应头。
 func (m *Middleware) RateLimit(tier Tier) gin.HandlerFunc {
 	limit := m.limitFor(tier)
 
@@ -40,7 +38,7 @@ func (m *Middleware) RateLimit(tier Tier) gin.HandlerFunc {
 
 		now := time.Now().UTC()
 		windowSeconds := int64(rateLimitWindow.Seconds())
-		// 把窗口编号编进键名，使统计天然按分钟隔离，无需再读一次 TTL。
+		// 按分钟计算窗口分桶及重置时间戳。
 		bucket := now.Unix() / windowSeconds
 		resetAt := (bucket + 1) * windowSeconds
 
@@ -48,7 +46,7 @@ func (m *Middleware) RateLimit(tier Tier) gin.HandlerFunc {
 
 		count, err := m.cache.Increment(c.Request.Context(), key, 2*rateLimitWindow)
 		if err != nil {
-			// 计数器不可用时放行并告警：宁可少拦，也不能让全站不可用。
+			// 计数器故障时降级放行并记录错误。
 			logger.FromContext(c.Request.Context()).Error().Err(err).Msg("rate limit counter failed, request allowed")
 			c.Next()
 			return
@@ -60,8 +58,7 @@ func (m *Middleware) RateLimit(tier Tier) gin.HandlerFunc {
 
 		if count > int64(limit) {
 			c.Header("Retry-After", strconv.FormatInt(max(resetAt-now.Unix(), 1), 10))
-			_ = c.Error(errs.RateLimited("Too many requests"))
-			c.Abort()
+			abortWithError(c, errs.RateLimited("Too many requests"))
 			return
 		}
 
@@ -69,7 +66,7 @@ func (m *Middleware) RateLimit(tier Tier) gin.HandlerFunc {
 	}
 }
 
-// limitFor 按档位取配额，未知档位退回未认证配额。
+// limitFor 按档位读取配额，未知档位回退至未认证配额。
 func (m *Middleware) limitFor(tier Tier) int {
 	switch tier {
 	case TierAuthenticated:
@@ -81,7 +78,7 @@ func (m *Middleware) limitFor(tier Tier) int {
 	}
 }
 
-// scopeKey 决定计数维度：已认证按用户，其余按客户端 IP。
+// scopeKey 确定限流维度：认证用户按 UserID，其余按客户端 IP。
 func (m *Middleware) scopeKey(tier Tier, c *gin.Context) string {
 	if tier == TierAuthenticated {
 		if id, ok := identity.FromContext(c.Request.Context()); ok {

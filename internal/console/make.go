@@ -16,156 +16,23 @@ const (
 	scopeClient = "client"
 )
 
-// newMakeCmd 组装代码生成相关的顶级命令 (bgin make)。
-func newMakeCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "make",
-		Short: "Scaffold and generate code modules",
-		Long:  "Commands for code generation and scaffolding (CRUD modules, boilerplate, etc.).",
-	}
-
-	cmd.AddCommand(newMakeCRUDCmd())
-	cmd.AddCommand(newMakeDestroyCmd())
-
-	return cmd
-}
-
-// newMakeCRUDCmd 构建 CRUD 模块生成子命令 (bgin make crud <name>)。
+// newMakeCRUDCmd 构建 CRUD 模块生成与删除回退命令 (bgin make:crud <name> [-d])。
 func newMakeCRUDCmd() *cobra.Command {
 	var (
 		client  bool
 		force   bool
 		dryRun  bool
+		del     bool
 		tag     string
 		chinese string
 	)
 
 	cmd := &cobra.Command{
-		Use:   "crud [name]",
-		Short: "Generate a complete CRUD feature slice",
-		Long: `Generate a complete production-grade CRUD feature slice following the Domain-First architecture.
-Generates:
-  - internal/features/[admin|client]/<name>/handler.go
-  - internal/features/[admin|client]/<name>/repository.go
-  - internal/features/[admin|client]/<name>/routes.go
-  - internal/features/[admin|client]/<name>/service.go
-  - internal/features/[admin|client]/<name>/request.go
-  - internal/features/[admin|client]/<name>/response.go
-  - internal/models/<name>.go (if not exists)
+		Use:   "make:crud [name]",
+		Short: "Generate a complete CRUD feature slice (or delete with -d)",
+		Long: `Generate or delete a complete production-grade CRUD feature slice following the Domain-First architecture.
 
-Examples:
-  bgin make crud article
-  bgin make crud article_category --tag "分类管理" --chinese "文章分类"
-  bgin make crud post --client
-  bgin make crud product --force
-  bgin make crud order --dry-run`,
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 && !core.IsInteractive() {
-				return errors.New("accepts 1 arg(s), received 0. Usage: bgin make crud <name>")
-			}
-			if len(args) > 1 {
-				return fmt.Errorf("accepts at most 1 arg(s), received %d", len(args))
-			}
-			return nil
-		},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			var (
-				name string
-				err  error
-			)
-
-			if len(args) > 0 {
-				name = strings.TrimSpace(args[0])
-			} else {
-				name, err = promptMakeCRUD(&client, &tag, &chinese)
-				if err != nil {
-					return err
-				}
-			}
-
-			opts := core.GeneratorOptions{
-				Name:        name,
-				IsAdmin:     !client,
-				TagName:     tag,
-				ChineseName: chinese,
-				Force:       force,
-				DryRun:      dryRun,
-			}
-
-			core.Title(cmd, fmt.Sprintf("Scaffolding CRUD module: %s (Admin=%v, DryRun=%v)", name, opts.IsAdmin, opts.DryRun))
-
-			results, err := core.GenerateCRUD(opts)
-			if err != nil {
-				return err
-			}
-
-			var created, overwritten, skipped, dryRuns int
-
-			for _, r := range results {
-				switch r.Action {
-				case core.ActionCreated:
-					created++
-					core.Success(cmd, "  + %-12s %s", r.Action, r.Path)
-				case core.ActionOverwritten:
-					overwritten++
-					core.Warn(cmd, "  ! %-12s %s", r.Action, r.Path)
-				case core.ActionSkipped:
-					skipped++
-					core.Info(cmd, "  - %-12s %s (%s)", r.Action, r.Path, r.Message)
-				case core.ActionDryRun:
-					dryRuns++
-					core.Info(cmd, "  ? %-12s %s (%s)", r.Action, r.Path, r.Message)
-				}
-			}
-
-			core.Info(cmd, "")
-			if dryRun {
-				core.Success(cmd, "Dry run completed: %d files planned.", dryRuns)
-				return nil
-			}
-
-			core.Success(cmd, "Scaffolding finished: %d created, %d overwritten, %d skipped.", created, overwritten, skipped)
-
-			core.Info(cmd, "\nNext steps:")
-			registerFn := "RegisterRoutes"
-			if opts.IsAdmin {
-				registerFn = "RegisterAdminRoutes"
-			}
-			core.Info(cmd, "  1. Register routes in internal/bootstrap/engine.go:")
-			data := core.BuildTemplateData(opts)
-			core.Info(cmd, "     %s.%s(v1, %sHandler, mw)", data.PackageName, registerFn, data.CamelName)
-			core.Info(cmd, "  2. Verify and format code:")
-			core.Info(cmd, "     rtk just check")
-			core.Info(cmd, "  3. Regenerate Swagger/OpenAPI documentation:")
-			core.Info(cmd, "     rtk just docs")
-
-			return nil
-		},
-	}
-
-	cmd.Flags().BoolVar(&client, "client", false, "Generate in client namespace instead of admin")
-	cmd.Flags().BoolVarP(&force, core.FlagForce, "f", false, "Force overwrite existing files")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Simulate generation without writing files")
-	cmd.Flags().StringVar(&tag, "tag", "", "Custom Swagger tag name")
-	cmd.Flags().StringVar(&chinese, "chinese", "", "Custom Chinese business description")
-
-	return cmd
-}
-
-// newMakeDestroyCmd 构建 CRUD 模块回退与清理子命令 (bgin make destroy <name>)。
-func newMakeDestroyCmd() *cobra.Command {
-	var (
-		client bool
-		force  bool
-		dryRun bool
-	)
-
-	cmd := &cobra.Command{
-		Use:     "destroy [name]",
-		Aliases: []string{"d", "rm"},
-		Short:   "Destroy and clean up a generated CRUD feature slice",
-		Long: `Revert and delete all files generated for a CRUD feature slice.
-Removes:
+Generates / Removes:
   - internal/features/[admin|client]/<name>/handler.go
   - internal/features/[admin|client]/<name>/repository.go
   - internal/features/[admin|client]/<name>/routes.go
@@ -173,16 +40,23 @@ Removes:
   - internal/features/[admin|client]/<name>/request.go
   - internal/features/[admin|client]/<name>/response.go
   - internal/models/<name>.go
-  - internal/features/[admin|client]/<name>/ (if directory is empty)
+  - internal/features/[admin|client]/<name>/ (if directory is empty on delete)
 
 Examples:
-  bgin make destroy article
-  bgin make destroy post --client
-  bgin make destroy product --force
-  bgin make destroy order --dry-run`,
+  bgin make:crud article
+  bgin make:crud article_category --tag "分类管理" --chinese "文章分类"
+  bgin make:crud post --client
+  bgin make:crud product --force
+  bgin make:crud order --dry-run
+  bgin make:crud article -d
+  bgin make:crud article --delete --force
+  bgin make:crud order -d --dry-run`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 && !core.IsInteractive() {
-				return errors.New("accepts 1 arg(s), received 0. Usage: bgin make destroy <name>")
+				if del {
+					return errors.New("accepts 1 arg(s), received 0. Usage: bgin make:crud <name> -d")
+				}
+				return errors.New("accepts 1 arg(s), received 0. Usage: bgin make:crud <name>")
 			}
 			if len(args) > 1 {
 				return fmt.Errorf("accepts at most 1 arg(s), received %d", len(args))
@@ -190,95 +64,165 @@ Examples:
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var (
-				name string
-				err  error
-			)
-
-			if len(args) > 0 {
-				name = strings.TrimSpace(args[0])
-			} else {
-				name, err = promptMakeDestroy(&client)
-				if err != nil {
-					return err
-				}
+			if del {
+				return runMakeCRUDDelete(cmd, args, client, force, dryRun)
 			}
-
-			if !force && !dryRun {
-				confirmed, err := core.Confirm(fmt.Sprintf("Are you sure you want to destroy CRUD module [%s]?", name),
-					"All scaffolded files and the feature directory will be permanently deleted.",
-					"Yes, destroy")
-				if err != nil {
-					return err
-				}
-				if !confirmed {
-					core.Warn(cmd, "Destroy operation cancelled.")
-					return core.ErrCanceled
-				}
-			}
-
-			opts := core.GeneratorOptions{
-				Name:    name,
-				IsAdmin: !client,
-				Force:   force,
-				DryRun:  dryRun,
-			}
-
-			core.Title(cmd, fmt.Sprintf("Destroying CRUD module: %s (Admin=%v, DryRun=%v)", name, opts.IsAdmin, opts.DryRun))
-
-			results, err := core.DestroyCRUD(opts)
-			if err != nil {
-				return err
-			}
-
-			var deleted, skipped, dryRuns int
-			for _, r := range results {
-				switch r.Action {
-				case core.ActionDeleted:
-					deleted++
-					core.Warn(cmd, "  - %-12s %s", r.Action, r.Path)
-				case core.ActionSkipped:
-					skipped++
-					core.Info(cmd, "  ~ %-12s %s (%s)", r.Action, r.Path, r.Message)
-				case core.ActionDryRun:
-					dryRuns++
-					core.Info(cmd, "  ? %-12s %s (%s)", r.Action, r.Path, r.Message)
-				}
-			}
-
-			core.Info(cmd, "")
-			if dryRun {
-				core.Success(cmd, "Dry run completed: %d files would be deleted.", dryRuns)
-				return nil
-			}
-
-			core.Success(cmd, "Scaffolding cleanup finished: %d deleted, %d skipped.", deleted, skipped)
-			core.Warn(cmd, "\nReminder: If routes were registered in internal/bootstrap/engine.go, please remove them manually.")
-			return nil
+			return runMakeCRUDCreate(cmd, args, client, force, dryRun, tag, chinese)
 		},
 	}
 
-	cmd.Flags().BoolVar(&client, "client", false, "Destroy from client namespace instead of admin")
-	cmd.Flags().BoolVarP(&force, core.FlagForce, "f", false, "Force delete without interactive confirmation")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Simulate deletion without removing files")
+	cmd.Flags().BoolVar(&client, "client", false, "Generate or delete in client namespace instead of admin")
+	cmd.Flags().BoolVarP(&force, core.FlagForce, "f", false, "Force overwrite existing files or delete without confirmation")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Simulate operation without writing or deleting files")
+	cmd.Flags().BoolVarP(&del, "delete", "d", false, "Delete and clean up a generated CRUD feature slice instead of creating it")
+	cmd.Flags().StringVar(&tag, "tag", "", "Custom Swagger tag name (creation only)")
+	cmd.Flags().StringVar(&chinese, "chinese", "", "Custom Chinese business description (creation only)")
 
 	return cmd
 }
 
-// newMakeCRUDAliasCmd 提供 Artisan 风格的 make:crud 别名。
-func newMakeCRUDAliasCmd() *cobra.Command {
-	cmd := newMakeCRUDCmd()
-	cmd.Use = "make:crud [name]"
-	cmd.Hidden = true
-	return cmd
+// runMakeCRUDDelete 执行 CRUD 模块回退与清理删除逻辑。
+func runMakeCRUDDelete(cmd *cobra.Command, args []string, client, force, dryRun bool) error {
+	var (
+		name string
+		err  error
+	)
+
+	if len(args) > 0 {
+		name = strings.TrimSpace(args[0])
+	} else {
+		name, err = promptMakeDestroy(&client)
+		if err != nil {
+			return err
+		}
+	}
+
+	if !force && !dryRun {
+		confirmed, confirmErr := core.Confirm(fmt.Sprintf("Are you sure you want to destroy CRUD module [%s]?", name),
+			"All scaffolded files and the feature directory will be permanently deleted.",
+			"Yes, destroy")
+		if confirmErr != nil {
+			return confirmErr
+		}
+		if !confirmed {
+			core.Warn(cmd, "Destroy operation cancelled.")
+			return core.ErrCanceled
+		}
+	}
+
+	opts := core.GeneratorOptions{
+		Name:    name,
+		IsAdmin: !client,
+		Force:   force,
+		DryRun:  dryRun,
+	}
+
+	core.Title(cmd, fmt.Sprintf("Destroying CRUD module: %s (Admin=%v, DryRun=%v)", name, opts.IsAdmin, opts.DryRun))
+
+	results, err := core.DestroyCRUD(opts)
+	if err != nil {
+		return err
+	}
+
+	var deleted, skipped, dryRuns int
+	for _, r := range results {
+		switch r.Action {
+		case core.ActionDeleted:
+			deleted++
+			core.Warn(cmd, "  - %-12s %s", r.Action, r.Path)
+		case core.ActionSkipped:
+			skipped++
+			core.Info(cmd, "  ~ %-12s %s (%s)", r.Action, r.Path, r.Message)
+		case core.ActionDryRun:
+			dryRuns++
+			core.Info(cmd, "  ? %-12s %s (%s)", r.Action, r.Path, r.Message)
+		}
+	}
+
+	core.Info(cmd, "")
+	if dryRun {
+		core.Success(cmd, "Dry run completed: %d files would be deleted.", dryRuns)
+		return nil
+	}
+
+	core.Success(cmd, "Scaffolding cleanup finished: %d deleted, %d skipped.", deleted, skipped)
+	core.Warn(cmd, "\nReminder: If routes were registered in internal/bootstrap/engine.go, please remove them manually.")
+	return nil
 }
 
-// newMakeDestroyAliasCmd 提供 Artisan 风格的 make:destroy 别名。
-func newMakeDestroyAliasCmd() *cobra.Command {
-	cmd := newMakeDestroyCmd()
-	cmd.Use = "make:destroy [name]"
-	cmd.Hidden = true
-	return cmd
+// runMakeCRUDCreate 执行 CRUD 模块脚手架代码生成逻辑。
+func runMakeCRUDCreate(cmd *cobra.Command, args []string, client, force, dryRun bool, tag, chinese string) error {
+	var (
+		name string
+		err  error
+	)
+
+	if len(args) > 0 {
+		name = strings.TrimSpace(args[0])
+	} else {
+		name, err = promptMakeCRUD(&client, &tag, &chinese)
+		if err != nil {
+			return err
+		}
+	}
+
+	opts := core.GeneratorOptions{
+		Name:        name,
+		IsAdmin:     !client,
+		TagName:     tag,
+		ChineseName: chinese,
+		Force:       force,
+		DryRun:      dryRun,
+	}
+
+	core.Title(cmd, fmt.Sprintf("Scaffolding CRUD module: %s (Admin=%v, DryRun=%v)", name, opts.IsAdmin, opts.DryRun))
+
+	results, err := core.GenerateCRUD(opts)
+	if err != nil {
+		return err
+	}
+
+	var created, overwritten, skipped, dryRuns int
+
+	for _, r := range results {
+		switch r.Action {
+		case core.ActionCreated:
+			created++
+			core.Success(cmd, "  + %-12s %s", r.Action, r.Path)
+		case core.ActionOverwritten:
+			overwritten++
+			core.Warn(cmd, "  ! %-12s %s", r.Action, r.Path)
+		case core.ActionSkipped:
+			skipped++
+			core.Info(cmd, "  - %-12s %s (%s)", r.Action, r.Path, r.Message)
+		case core.ActionDryRun:
+			dryRuns++
+			core.Info(cmd, "  ? %-12s %s (%s)", r.Action, r.Path, r.Message)
+		}
+	}
+
+	core.Info(cmd, "")
+	if dryRun {
+		core.Success(cmd, "Dry run completed: %d files planned.", dryRuns)
+		return nil
+	}
+
+	core.Success(cmd, "Scaffolding finished: %d created, %d overwritten, %d skipped.", created, overwritten, skipped)
+
+	core.Info(cmd, "\nNext steps:")
+	registerFn := "RegisterRoutes"
+	if opts.IsAdmin {
+		registerFn = "RegisterAdminRoutes"
+	}
+	core.Info(cmd, "  1. Register routes in internal/bootstrap/engine.go:")
+	data := core.BuildTemplateData(opts)
+	core.Info(cmd, "     %s.%s(v1, %sHandler, mw)", data.PackageName, registerFn, data.CamelName)
+	core.Info(cmd, "  2. Verify and format code:")
+	core.Info(cmd, "     rtk just check")
+	core.Info(cmd, "  3. Regenerate Swagger/OpenAPI documentation:")
+	core.Info(cmd, "     rtk just docs")
+
+	return nil
 }
 
 // promptMakeCRUD 在交互式终端下引导用户补全 CRUD 模块生成所需参数。

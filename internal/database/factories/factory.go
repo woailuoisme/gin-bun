@@ -29,8 +29,7 @@ type HookFunc[T any] func(ctx context.Context, item *T) error
 // ProgressFunc 定义批量持久化每批写入完成后的进度通知函数。
 type ProgressFunc func(current, total int)
 
-// Factory 是对齐 Laravel 设计的泛型模型工厂基座。
-// 原生支持不可变链式调用（Immutable Clone）、纯内存纳秒级构建以及分块事务持久化。
+// Factory 是泛型模型工厂基座，支持不可变链式调用、内存快速构建与分块事务持久化。
 type Factory[T any] struct {
 	db            bun.IDB
 	faker         *gofakeit.Faker

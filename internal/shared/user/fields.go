@@ -42,10 +42,7 @@ type ProfilePatch struct {
 	PhoneNumber     *string `json:"phoneNumber" validate:"omitempty,e164"`
 }
 
-// FieldSet 是两个域共有的可更新档案字段集合。
-//
-// 抽出来是为了让"哪些档案字段可改、各自怎么落库"只有一处定义：前端自助与后台管理
-// 对这几个字段的处理规则完全相同，各写一份必然漂移。
+// FieldSet 是客户端与后台管理共用的可更新档案字段集合。
 type FieldSet struct {
 	Name            optional.Optional[string]
 	Image           optional.Optional[string]

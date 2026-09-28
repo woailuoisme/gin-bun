@@ -28,14 +28,16 @@ const (
 	pgErrInvalidTextRepresentation = "22P02"
 )
 
-// Response 是 api.md 5.2 定义的错误响应体。所有错误共用这一种结构。
+// Response 是统一错误响应体。
 type Response struct {
 	Code    string              `json:"code"`
 	Message string              `json:"message"`
 	Errors  map[string][]string `json:"errors,omitempty"`
 }
 
-// Render 把任意 error 映射为统一错误响应并写回，同时按严重程度记日志。
+// Render 映射统一错误响应并写回客户端。
+//
+// 5xx 记录错误根因与调用堆栈；4xx 由外层 AccessLog 统一输出访问日志，避免重复告警。
 func Render(c *gin.Context, err error) {
 	if err == nil {
 		return
@@ -43,35 +45,28 @@ func Render(c *gin.Context, err error) {
 
 	status, resp := Map(err)
 	c.Set("error_code", resp.Code)
-	log := logger.FromContext(c.Request.Context())
+	if len(c.Errors) == 0 {
+		_ = c.Error(err)
+	}
+
 	if status >= http.StatusInternalServerError {
-		// 记录的是因由而不是包装体：*Error 的 Error() 返回的是那句对外文案
-		// （"An unexpected error occurred"），直接 .Err(err) 会把真正的根因
-		// ——oops 链里的驱动错误——丢掉，而 Stack() 只有调用帧、不含错误文本。
-		// 对外响应走的仍是 resp.Message，所以这里换错误对象不会泄漏内部细节。
+		// 5xx 记录底层根因与调用堆栈，避免对外统一文案遮蔽排错细节。
+		log := logger.FromContext(c.Request.Context())
 		log.Error().
 			Str("stack", Stack(err)).
 			Err(RootCause(err)).
 			Int("status", status).Str("code", resp.Code).Msg("request processing failed")
-	} else {
-		log.Warn().Err(err).
-			Int("status", status).Str("code", resp.Code).Msg("request rejected")
 	}
 
 	c.AbortWithStatusJSON(status, resp)
 }
 
-// RootCause 取出适合写进日志的错误。
-//
-// 对 *Error 而言，它包裹的 oops 错误的 Error() 是"对外文案: 根因"，正是排查 500 所需；
-// 其余错误原样返回，保留外层的上下文（如"连接数据库失败: ..."）。
+// RootCause 提取用于日志记录的底层真实错误。
 func RootCause(err error) error {
-	bizErr, ok := As(err)
-	if !ok {
-		return err
-	}
-	if inner := errors.Unwrap(bizErr); inner != nil {
-		return inner
+	if bizErr, ok := As(err); ok {
+		if inner := errors.Unwrap(bizErr); inner != nil {
+			return inner
+		}
 	}
 	return err
 }
@@ -111,7 +106,7 @@ func Map(err error) (int, Response) {
 		return http.StatusGatewayTimeout, Response{Code: string(CodeGatewayTimeout), Message: msgGatewayTimeout}
 	}
 
-	// 平台层直接抛出的、已在 statuses 登记过的 oops 错误。
+	// 识别已在 statuses 登记过的 oops 错误。
 	if oopsErr, ok := oops.AsOops(err); ok {
 		code := Code(fmt.Sprintf("%v", oopsErr.Code()))
 		if _, registered := statuses[code]; registered {
@@ -122,7 +117,7 @@ func Map(err error) (int, Response) {
 		}
 	}
 
-	// 兜底：未识别的错误一律 500，不向外泄漏任何内部细节。
+	// 兜底：未识别错误统一返回 500。
 	return http.StatusInternalServerError, Response{Code: string(CodeInternal), Message: msgInternal}
 }
 
@@ -151,7 +146,7 @@ func isBadRequestError(err error) bool {
 	return isNum || isSyntax || isType || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
-// mapPgError 把数据库约束错误翻译成业务语义，避免把 PgError 细节暴露出去。
+// mapPgError 将数据库约束错误映射为业务状态码与文案。
 func mapPgError(err *pgconn.PgError) (int, Response) {
 	switch err.Code {
 	case pgErrUniqueViolation, pgErrForeignKeyViolation, pgErrNotNullViolation:

@@ -18,21 +18,6 @@ import (
 	"bgin/internal/platform/queue"
 )
 
-// newQueueCmd 组装异步队列管理命令组。
-func newQueueCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "queue",
-		Short: "Queue and background worker management",
-	}
-
-	cmd.AddCommand(newQueueWorkCmd())
-	cmd.AddCommand(newQueueFailedCmd())
-	cmd.AddCommand(newQueueRetryCmd())
-	cmd.AddCommand(newQueueFlushCmd())
-
-	return cmd
-}
-
 // newQueueWorkCmd 启动 Asynq 统一工作协程与计划任务调度器。
 func newQueueWorkCmd() *cobra.Command {
 	var (
@@ -42,7 +27,7 @@ func newQueueWorkCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "work",
+		Use:   "queue:work",
 		Short: "Start processing jobs on the queue as a worker daemon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -101,7 +86,7 @@ func newQueueFailedCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "failed",
+		Use:   "queue:failed",
 		Short: "List all failed queue jobs",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -167,7 +152,7 @@ func newQueueFailedCmd() *cobra.Command {
 // newQueueRetryCmd 重新投递指定的失败任务或全部失败任务。
 func newQueueRetryCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "retry <id|all>",
+		Use:   "queue:retry <id|all>",
 		Short: "Retry a failed queue job by ID or 'all'",
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
@@ -215,7 +200,7 @@ func newQueueFlushCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "flush",
+		Use:   "queue:flush",
 		Short: "Flush all failed queue jobs",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -270,36 +255,6 @@ func newQueueFlushCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&force, core.FlagForce, "f", false, core.UsageForceFlag)
 
 	return cmd
-}
-
-// 兼容老 Artisan 风格冒号别名命令构造工厂（设为 Hidden: true 保持帮助信息精简）。
-
-func newQueueWorkAliasCmd() *cobra.Command {
-	c := newQueueWorkCmd()
-	c.Use = "queue:work"
-	c.Hidden = true
-	return c
-}
-
-func newQueueFailedAliasCmd() *cobra.Command {
-	c := newQueueFailedCmd()
-	c.Use = "queue:failed"
-	c.Hidden = true
-	return c
-}
-
-func newQueueRetryAliasCmd() *cobra.Command {
-	c := newQueueRetryCmd()
-	c.Use = "queue:retry"
-	c.Hidden = true
-	return c
-}
-
-func newQueueFlushAliasCmd() *cobra.Command {
-	c := newQueueFlushCmd()
-	c.Use = "queue:flush"
-	c.Hidden = true
-	return c
 }
 
 // ParseQueueWeights 解析队列权重参数字符串（如 "high:3,default:1" 或 "default"）。

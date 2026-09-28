@@ -21,20 +21,18 @@ import (
 	"bgin/internal/platform/logger"
 )
 
-// HeaderIdempotencyKey IETF / Stripe 标准幂等键标头名。
-const HeaderIdempotencyKey = "Idempotency-Key"
-
-// AltHeaderIdempotencyKey 传统备用幂等键标头名。
-const AltHeaderIdempotencyKey = "X-Idempotency-Key"
-
-// HeaderIdempotentReplayed 标记该响应是否由幂等缓存直接回放。
-const HeaderIdempotentReplayed = "Idempotent-Replayed"
-
-// DefaultIdempotencyLockTTL 默认并发锁定有效期（30秒）。
-const DefaultIdempotencyLockTTL = 30 * time.Second
-
-// DefaultIdempotencyCacheTTL 默认成功响应缓存保留有效期（24小时）。
-const DefaultIdempotencyCacheTTL = 24 * time.Hour
+const (
+	// HeaderIdempotencyKey IETF / Stripe 标准幂等键标头名。
+	HeaderIdempotencyKey = "Idempotency-Key"
+	// AltHeaderIdempotencyKey 传统备用幂等键标头名。
+	AltHeaderIdempotencyKey = "X-Idempotency-Key"
+	// HeaderIdempotentReplayed 标记响应是否由幂等缓存直接回放。
+	HeaderIdempotentReplayed = "Idempotent-Replayed"
+	// DefaultIdempotencyLockTTL 默认并发锁定有效期（30秒）。
+	DefaultIdempotencyLockTTL = 30 * time.Second
+	// DefaultIdempotencyCacheTTL 默认成功响应缓存保留有效期（24小时）。
+	DefaultIdempotencyCacheTTL = 24 * time.Hour
+)
 
 // IdempotencyConfig 定义请求幂等中间件配置选项。
 type IdempotencyConfig struct {
@@ -176,8 +174,7 @@ func NewIdempotency(store IdempotencyStore, opts ...IdempotencyOption) gin.Handl
 
 		bodyBytes, err := readAndRewindRequestBody(c)
 		if err != nil {
-			_ = c.Error(errs.BadRequest("Failed to read request body"))
-			c.Abort()
+			abortWithError(c, errs.BadRequest("Failed to read request body"))
 			return
 		}
 
@@ -223,16 +220,14 @@ func extractIdempotencyKey(c *gin.Context, cfg *IdempotencyConfig) (string, bool
 
 	if rawKey == "" {
 		if cfg.Enforce {
-			_ = c.Error(errs.IdempotencyRequired(""))
-			c.Abort()
+			abortWithError(c, errs.IdempotencyRequired(""))
 			return "", false
 		}
 		return "", true
 	}
 
 	if len(rawKey) > 128 {
-		_ = c.Error(errs.BadRequest("Idempotency key length exceeds 128 characters"))
-		c.Abort()
+		abortWithError(c, errs.BadRequest("Idempotency key length exceeds 128 characters"))
 		return "", false
 	}
 
@@ -296,14 +291,12 @@ func handleExistingRecord(c *gin.Context, existingVal, currentFingerprint string
 	}
 
 	if existingRec.Status == statusProcessing {
-		_ = c.Error(errs.IdempotencyConflict(""))
-		c.Abort()
+		abortWithError(c, errs.IdempotencyConflict(""))
 		return true
 	}
 
 	if existingRec.Fingerprint != currentFingerprint {
-		_ = c.Error(errs.IdempotencyMismatch(""))
-		c.Abort()
+		abortWithError(c, errs.IdempotencyMismatch(""))
 		return true
 	}
 
@@ -334,12 +327,7 @@ func handlePanicRelease(ctx context.Context, store IdempotencyStore, cacheKey st
 	}
 }
 
-// finishIdempotentRequest 评估状态码并沉淀成功缓存。
-//
-// 只沉淀 2xx：失败响应（4xx/5xx）一律释放锁，让客户端携带同一幂等键重试能够真正重放，
-// 而不是在 24 小时缓存期内反复拿到同一个失败快照（例如令牌过期产生的 401、限流产生的 429）。
-// 状态码为 0 表示响应体尚未写出（仅 c.Error + c.Abort，由后置 ErrorHandler 渲染），
-// 此刻无从判断成败，同样释放锁并跳过缓存，绝不能记成 200 后固化。
+// finishIdempotentRequest 仅持久化 2xx 成功响应缓存；非 2xx 或未写入响应则删除锁以允许客户端重试。
 func finishIdempotentRequest(ctx context.Context, store IdempotencyStore, cacheKey, fingerprint string, w *responseBufferWriter, ttl time.Duration) {
 	finalStatusCode := w.Status()
 	if finalStatusCode < http.StatusOK || finalStatusCode >= http.StatusMultipleChoices {
@@ -361,10 +349,11 @@ func finishIdempotentRequest(ctx context.Context, store IdempotencyStore, cacheK
 		CreatedAt:   time.Now().Unix(),
 	}
 	completedPayload, err := json.Marshal(completedRec)
-	if err == nil {
-		if err := store.Set(ctx, cacheKey, string(completedPayload), ttl); err != nil {
-			logger.FromContext(ctx).Warn().Err(err).Str("key", cacheKey).Msg("failed to persist completed idempotency record")
-		}
+	if err != nil {
+		return
+	}
+	if err := store.Set(ctx, cacheKey, string(completedPayload), ttl); err != nil {
+		logger.FromContext(ctx).Warn().Err(err).Str("key", cacheKey).Msg("failed to persist completed idempotency record")
 	}
 }
 
@@ -379,34 +368,19 @@ func computeRequestFingerprint(method, uri string, body []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// resolveIdempotencyScope 区分用户与客户端隔离作用域。
-//
-// 幂等中间件注册在全局链上，早于路由级鉴权执行，此刻 context 中尚无身份，
-// 因此不能只依赖 identity（那会让所有已认证请求退化成按 IP 共享缓存，
-// 同一 NAT 下的两个用户可能互相回放到对方的响应体）。
-//
-// 这里退一步以访问令牌的 sub 声明（用户标识）作为隔离维度，理由有两点：
-//   - 它只用于缓存命名空间分片，不承担任何鉴权职责，真正的鉴权仍由 RequireAuth 完成；
-//   - 用 sub 而不是整串凭据，访问令牌轮换后仍落在同一命名空间，
-//     同一幂等键的重试不会被当成新请求而重复执行（这正是幂等键的核心承诺）。
-//
-// 伪造 sub 需要同时掌握受害者的幂等键与请求指纹才可能命中其缓存，风险与按 IP 分片同级。
+// resolveIdempotencyScope 解析幂等缓存作用域（优先已认证 UserID，其次 JWT sub 哈希，兜底按客户端 IP 分片）。
 func resolveIdempotencyScope(c *gin.Context) string {
 	if id, ok := identity.FromContext(c.Request.Context()); ok && id.UserID != "" {
 		return "user:" + id.UserID
 	}
 	if subject := credentialSubject(c.GetHeader("Authorization")); subject != "" {
-		// 先哈希再入键：sub 属不可信输入，哈希可同时约束键长并把原始标识挡在缓存键之外。
 		sum := sha256.Sum256([]byte(subject))
 		return "subject:" + hex.EncodeToString(sum[:16])
 	}
 	return "ip:" + c.ClientIP()
 }
 
-// credentialSubject 从 Authorization 头的 JWT 载荷中取出 sub 声明。
-//
-// 刻意不校验签名：本函数的产出只用于缓存分区，校签属鉴权中间件的职责。
-// 解析失败（非 JWT、段数异常、载荷非 JSON、无 sub）时返回空串，调用方退回按 IP 分片。
+// credentialSubject 从未校验的 JWT 载荷中提取 sub 声明用于缓存命名空间隔离。
 func credentialSubject(header string) string {
 	credential := bearerCredential(header)
 	if credential == "" {

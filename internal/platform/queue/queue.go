@@ -3,6 +3,7 @@ package queue
 import (
 	"cmp"
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -18,11 +19,7 @@ const (
 	DefaultMaxRetries = 3
 )
 
-// Job 表示任意可执行的队列任务或计划任务。
-//
-// 执行约束通过可选协议自声明，Dispatch 负责补齐：QueueNameProvider 决定目标队列，
-// MaxRetriesProvider 决定重试预算（缺省 DefaultMaxRetries），TimeoutProvider 与
-// RetentionProvider 决定执行超时与结果保留（缺省沿用 Asynq 自身的默认值）。
+// Job 描述队列任务或定时任务的标准执行契约。
 type Job interface {
 	TaskName() string
 	Handle(ctx context.Context) error
@@ -64,10 +61,7 @@ type OverlappingLockProvider interface {
 // DefaultScheduleLockTTL 声明防并发重叠任务默认锁超时时长（10分钟）。
 const DefaultScheduleLockTTL = 10 * time.Minute
 
-// JobMeta 封装后台任务的标准元数据与执行约束。
-//
-// 这些字段是执行侧元数据而非业务数据：它们不参与载荷序列化（json:"-"），
-// 只随 Job 的构造器进入 worker 侧的实例，避免载荷里出现与 Asynq 选项重复的第二份真相。
+// JobMeta 封装后台任务执行元数据与调度约束（不参与载荷序列化）。
 type JobMeta struct {
 	Type           string        `json:"-"`
 	Queue          string        `json:"-"`
@@ -262,8 +256,5 @@ func GetCronEntries() []CronEntry {
 	defaultReg.mu.RLock()
 	defer defaultReg.mu.RUnlock()
 
-	entries := make([]CronEntry, len(defaultReg.cronEntries))
-	copy(entries, defaultReg.cronEntries)
-
-	return entries
+	return slices.Clone(defaultReg.cronEntries)
 }

@@ -1,5 +1,4 @@
-// Package response 实现 api.md 5.1 的成功响应契约。
-// 只有分页列表带信封，其余成功响应一律直接返回业务对象本身。
+// Package response 实现统一 HTTP 成功响应与分页信封封装。
 package response
 
 import (

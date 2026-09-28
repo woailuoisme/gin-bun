@@ -8,13 +8,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// allowedRequestHeaders 是预检时允许客户端携带的请求头。
-const allowedRequestHeaders = "Authorization, Content-Type, Accept, x-request-id, Idempotency-Key"
+const (
+	// allowedRequestHeaders 跨域预检允许携带的请求头。
+	allowedRequestHeaders = "Authorization, Content-Type, Accept, x-request-id, Idempotency-Key"
+	// exposedResponseHeaders 允许浏览器脚本读取的响应头。
+	exposedResponseHeaders = "x-request-id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After"
+)
 
-// exposedResponseHeaders 是允许浏览器脚本读取的响应头。
-const exposedResponseHeaders = "x-request-id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After"
-
-// CORS 处理跨域预检与响应头。允许来源含 * 时放开全部来源，但按规范不得同时允许携带凭证。
+// CORS 处理跨域预检与响应头配置。
 func (m *Middleware) CORS() gin.HandlerFunc {
 	allowAll := slices.Contains(m.cors.AllowedOrigins, "*")
 	allowed := make(map[string]struct{}, len(m.cors.AllowedOrigins))
@@ -34,16 +35,12 @@ func (m *Middleware) CORS() gin.HandlerFunc {
 		_, listed := allowed[strings.ToLower(origin)]
 		switch {
 		case listed:
-			// 白名单命中：回显具体来源，这样可以同时允许携带凭证。
+			// 白名单来源：回显具体来源、允许凭证并追加 Vary 头。
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Access-Control-Allow-Credentials", "true")
-			// 同一 URL 的响应随 Origin 而变，必须声明，否则会被共享缓存串用。
-			// 用 Add 而非 Set：上游中间件可能已写入其他 Vary 维度，覆盖会丢掉它们。
 			c.Writer.Header().Add("Vary", "Origin")
 		case allowAll:
-			// 通配放开：只能回 *，且规范禁止它与 Allow-Credentials 同时出现。
-			// 回显任意来源 + 允许凭证，等于让任何站点都能带凭证跨域读响应（CWE-942）：
-			// 当前鉴权是纯 Bearer 尚且收得住，一旦改用 Cookie 会话就是账号接管。
+			// 通配符来源：仅回显通配符，规范禁止携带凭证。
 			c.Header("Access-Control-Allow-Origin", "*")
 		}
 

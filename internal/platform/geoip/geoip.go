@@ -1,4 +1,4 @@
-// Package geoip 提供基于 lionsoul2014/ip2region 的离线 IP 归属地极速检索服务、无锁热重载与优雅降级保障。
+// Package geoip 提供基于 ip2region 的离线 IP 归属地极速检索、无锁热重载与安全降级服务。
 package geoip
 
 import (
@@ -16,8 +16,7 @@ import (
 	"bgin/internal/config"
 )
 
-// fallbackLogger 是 geoip 包在装配期未注入日志器时的兜底输出。
-// 显式复用包级实例而非 zerolog 全局单例，避免绕过应用配置的日志通道。
+// fallbackLogger 是装配期未注入日志器时的兜底输出。
 var fallbackLogger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 
 const (
@@ -372,8 +371,6 @@ func (n *noopService) LookupAddr(addr netip.Addr) (*Location, error) {
 		return &internalLocation, nil
 	case addrKindIPv6:
 		return &ipv6Location, nil
-	case addrKindPublicIPv4:
-		return &unknownLocationModel, nil
 	default:
 		return &unknownLocationModel, nil
 	}

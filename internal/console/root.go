@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"bgin/internal/config"
+	"bgin/internal/console/core"
 )
 
 // 构建元信息，由链接期 -X 注入。
@@ -62,78 +63,97 @@ func NewRootCommand() *cobra.Command {
 		},
 	}
 
-	// 注册四大业务命令分类组（Cobra Group）
-	groupServer := &cobra.Group{
-		ID:    "server",
-		Title: "Server & Worker Commands:",
-	}
+	// 注册色彩丰富且对齐严密的终端帮助与用法模板
+	core.SetupColoredHelp(cmd)
+
+	// 注册以命名空间命名的业务命令分类组（Laravel Artisan 风格分组）
 	groupDB := &cobra.Group{
-		ID:    "database",
-		Title: "Database Commands:",
+		ID:    "db",
+		Title: "db",
 	}
-	groupSearch := &cobra.Group{
-		ID:    "search",
-		Title: "Search Engine Commands:",
-	}
-	groupSecurity := &cobra.Group{
-		ID:    "security",
-		Title: "Security & Utility Commands:",
+	groupJWT := &cobra.Group{
+		ID:    "jwt",
+		Title: "jwt",
 	}
 	groupMake := &cobra.Group{
 		ID:    "make",
-		Title: "Code Generation Commands:",
+		Title: "make",
+	}
+	groupQueue := &cobra.Group{
+		ID:    "queue",
+		Title: "queue",
+	}
+	groupRoute := &cobra.Group{
+		ID:    "route",
+		Title: "route",
+	}
+	groupScout := &cobra.Group{
+		ID:    "scout",
+		Title: "scout",
 	}
 
-	cmd.AddGroup(groupServer, groupDB, groupSearch, groupSecurity, groupMake)
+	cmd.AddGroup(groupDB, groupJWT, groupMake, groupQueue, groupRoute, groupScout)
 
-	// 构建领域一级命令并分配分组
+	// 通用与基础服务命令（无前缀，归属于根级 Available commands）
 	serveCmd := newServeCmd()
-	serveCmd.GroupID = groupServer.ID
 
-	queueCmd := newQueueCmd()
-	queueCmd.GroupID = groupServer.ID
+	// 数据库命令（db:migrate, db:seed, db:fresh）
+	dbMigrateCmd := newDBMigrateCmd()
+	dbMigrateCmd.GroupID = groupDB.ID
 
-	routeCmd := newRouteCmd()
-	routeCmd.GroupID = groupServer.ID
+	dbSeedCmd := newDBSeedCmd()
+	dbSeedCmd.GroupID = groupDB.ID
 
-	dbCmd := newDBCmd()
-	dbCmd.GroupID = groupDB.ID
+	dbFreshCmd := newDBFreshCmd()
+	dbFreshCmd.GroupID = groupDB.ID
 
-	scoutCmd := newScoutCmd()
-	scoutCmd.GroupID = groupSearch.ID
+	// JWT 安全凭据命令（jwt:secret）
+	jwtSecretCmd := newJWTSecretCmd()
+	jwtSecretCmd.GroupID = groupJWT.ID
 
-	jwtCmd := newJWTCmd()
-	jwtCmd.GroupID = groupSecurity.ID
+	// 代码生成命令（make:crud）
+	makeCRUDCmd := newMakeCRUDCmd()
+	makeCRUDCmd.GroupID = groupMake.ID
 
-	makeCmd := newMakeCmd()
-	makeCmd.GroupID = groupMake.ID
+	// 异步队列命令（queue:work, queue:failed, queue:retry, queue:flush）
+	queueWorkCmd := newQueueWorkCmd()
+	queueWorkCmd.GroupID = groupQueue.ID
 
-	// 挂载现代层级子命令
+	queueFailedCmd := newQueueFailedCmd()
+	queueFailedCmd.GroupID = groupQueue.ID
+
+	queueRetryCmd := newQueueRetryCmd()
+	queueRetryCmd.GroupID = groupQueue.ID
+
+	queueFlushCmd := newQueueFlushCmd()
+	queueFlushCmd.GroupID = groupQueue.ID
+
+	// 路由诊断命令（route:list）
+	routeListCmd := newRouteListCmd()
+	routeListCmd.GroupID = groupRoute.ID
+
+	// 搜索引擎命令（scout:import, scout:flush）
+	scoutImportCmd := newScoutImportCmd()
+	scoutImportCmd.GroupID = groupScout.ID
+
+	scoutFlushCmd := newScoutFlushCmd()
+	scoutFlushCmd.GroupID = groupScout.ID
+
+	// 挂载纯冒号 Artisan 风格一等公民命令
 	cmd.AddCommand(
 		serveCmd,
-		queueCmd,
-		routeCmd,
-		dbCmd,
-		scoutCmd,
-		jwtCmd,
-		makeCmd,
-	)
-
-	// 挂载隐藏的顶层冒号命令别名（兼容 Artisan / 老脚本调用习惯）
-	cmd.AddCommand(
-		newRouteListAliasCmd(),
-		newJWTSecretAliasCmd(),
-		newDBMigrateAliasCmd(),
-		newDBSeedAliasCmd(),
-		newDBFreshAliasCmd(),
-		newQueueWorkAliasCmd(),
-		newQueueFailedAliasCmd(),
-		newQueueRetryAliasCmd(),
-		newQueueFlushAliasCmd(),
-		newScoutImportAliasCmd(),
-		newScoutFlushAliasCmd(),
-		newMakeCRUDAliasCmd(),
-		newMakeDestroyAliasCmd(),
+		dbMigrateCmd,
+		dbSeedCmd,
+		dbFreshCmd,
+		jwtSecretCmd,
+		makeCRUDCmd,
+		queueWorkCmd,
+		queueFailedCmd,
+		queueRetryCmd,
+		queueFlushCmd,
+		routeListCmd,
+		scoutImportCmd,
+		scoutFlushCmd,
 	)
 
 	return cmd

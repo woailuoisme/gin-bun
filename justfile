@@ -9,7 +9,7 @@ default:
 
 # 开发模式：使用 concurrently 同时启动 API 服务与 Worker (均支持 Air 热重载)
 dev: free-port
-    concurrently -n "api,worker" -c "bgBlue.bold,bgMagenta.bold" --kill-others \
+    concurrently -n "api,worker" -c "bgCyan.black.bold,bgYellow.black.bold" --kill-others \
         "just dev-api" \
         "just dev-worker"
 
@@ -30,7 +30,7 @@ run *ARGS:
 work *ARGS:
     go run ./cmd/api queue:work {{ARGS}}
 
-# 运行 CLI 控制台命令 (如 just cli route list, just cli make:feature blog)
+# 运行 CLI 控制台命令 (如 just cli route:list, just cli make:crud blog)
 cli *ARGS:
     go run ./cmd/api {{ARGS}}
 
@@ -92,7 +92,7 @@ check: fmt-check lint test
 ci: fmt-check lint test-all
 
 # HTTP 接口基准压测 (wrk)
-bench path="/healthz" *args="":
+bench path="/livez" *args="":
     wrk -t4 -c200 -d30s --latency {{args}} "http://localhost:${APP_PORT:-3300}{{path}}"
 
 alias wrk := bench

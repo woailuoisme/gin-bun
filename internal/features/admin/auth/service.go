@@ -188,8 +188,7 @@ func (s *Service) SignOut(ctx context.Context, id identity.Identity, req SignOut
 	return nil
 }
 
-// parseRefreshToken 尽力解析刷新令牌。解析失败返回 nil 而不返回 error，
-// 登出场景下令牌本就无效不算失败，静默跳过即可。
+// parseRefreshToken 解析刷新令牌，失败时返回 nil。
 func (s *Service) parseRefreshToken(raw string) *token.Claims {
 	claims, err := s.tokens.Parse(raw, token.TypeRefresh)
 	if err != nil {

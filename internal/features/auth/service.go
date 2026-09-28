@@ -131,8 +131,7 @@ func (s *Service) SignOut(ctx context.Context, id identity.Identity, req SignOut
 	return nil
 }
 
-// parseRefreshToken 尽力解析刷新令牌。解析失败返回 nil 而不返回 error，
-// 因为在登出场景下"令牌本就无效"不算失败，调用方据此静默跳过即可。
+// parseRefreshToken 解析刷新令牌，失败时返回 nil。
 func (s *Service) parseRefreshToken(raw string) *token.Claims {
 	claims, err := s.tokens.Parse(raw, token.TypeRefresh)
 	if err != nil {
@@ -187,7 +186,6 @@ func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (Session
 }
 
 // ChangePassword 校验当前口令后写入新口令。
-// 已签发的令牌不会因此失效——这是 ADR-0001 明确记录的取舍。
 func (s *Service) ChangePassword(ctx context.Context, userID string, req ChangePasswordRequest) error {
 	if err := validator.PasswordStrength("newPassword", req.NewPassword); err != nil {
 		return err
@@ -227,8 +225,7 @@ func (s *Service) ForgetPassword(ctx context.Context, language string, req Forge
 	return s.sendResetCredential(ctx, language, purposeResetLink, req.Email)
 }
 
-// RequestPasswordReset 发送 6 位重置验证码。它与 ForgetPassword 是两条不同的路径：
-// 前者产出可点击的链接，后者产出需用户抄回的短码（见 CONTEXT.md）。
+// RequestPasswordReset 发送 6 位重置验证码。
 func (s *Service) RequestPasswordReset(ctx context.Context, language string, req RequestPasswordResetRequest) (StatusResponse, error) {
 	return s.sendResetCredential(ctx, language, purposeResetOTP, req.Email)
 }
@@ -470,13 +467,13 @@ func (s *Service) sendMail(ctx context.Context, language string, user *models.Us
 	return s.mailer.Send(ctx, mailer.Message{To: user.Email, Subject: subject, Body: body})
 }
 
-// resetLink 拼接前端重置页面地址；邮箱必须一并带上，否则无法定位凭据。
+// resetLink 拼接前端重置页面完整地址。
 func (s *Service) resetLink(email, token string) string {
 	query := url.Values{"token": {token}, "email": {email}}
 	return strings.TrimRight(s.cfg.App.URL, "/") + "/reset-password?" + query.Encode()
 }
 
-// assignUsername 写入规范化后的用户名。字符集与保留字已在校验层把关，此处只做大小写归一。
+// assignUsername 写入规范化后的用户名。
 func assignUsername(user *models.User, username *string) {
 	if username == nil {
 		return

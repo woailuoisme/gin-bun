@@ -15,7 +15,7 @@ import (
 // defaultBatchSize 默认批量检索导入批次大小。
 const defaultBatchSize = 100
 
-// CountUsersForSearch 统计当前 User 实体的总记录数。
+// CountUsersForSearch 统计 User 实体的总记录数。
 func CountUsersForSearch(ctx context.Context, db bun.IDB) (int64, error) {
 	if db == nil {
 		return 0, errors.New("invalid bun database instance provided for user count")
@@ -24,12 +24,12 @@ func CountUsersForSearch(ctx context.Context, db bun.IDB) (int64, error) {
 	return int64(count), err
 }
 
-// RegisterUserIndexer 向全局搜索注册表注册 User 模型的导入器与元数据。
+// RegisterUserIndexer 向全局检索注册表注册 User 模型的导入器与元数据。
 func RegisterUserIndexer() {
 	search.RegisterModel("user", "users", ImportUsersForSearch, CountUsersForSearch)
 }
 
-// ImportUsersForSearch 流式分批从数据库加载用户数据并转换为搜索文档字典。
+// ImportUsersForSearch 分批从数据库读取用户数据并转换为检索文档字典。
 func ImportUsersForSearch(ctx context.Context, db bun.IDB, batchSize int, handler search.ChunkHandler) (int64, error) {
 	if db == nil {
 		return 0, errors.New("invalid bun database instance provided for search import")

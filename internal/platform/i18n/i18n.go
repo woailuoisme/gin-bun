@@ -75,10 +75,6 @@ var (
 )
 
 // SetDefault 注册全局默认翻译器。
-//
-// 装配树里的调用方直接持有 Translator，本入口是给拿不到装配依赖的调用方准备的：
-// PDF 文档模版的 Build 只收到 ctx 与 Builder，无法从签名上取到翻译器。
-// 形态与 pdf.RegisterPDF / pdf.DefaultService 保持一致。
 func SetDefault(translator *Translator) {
 	defaultMu.Lock()
 	defer defaultMu.Unlock()
@@ -189,10 +185,7 @@ func (t *Translator) Mail(language, key string, vars map[string]string) (subject
 	return subject, body
 }
 
-// Invoice 渲染一条发票/结算凭据的展示文案；键或语言缺失时回退默认语言。
-//
-// 它是 invoice 分节的取值入口，与 Mail 同构：PDF 模板只声明键，
-// 展示文案一律留在 lang/<语言>/invoice.toml，模板里不留硬编码文案。
+// Invoice 渲染发票与结算凭据的展示文案；键或语言缺失时回退默认语言。
 func (t *Translator) Invoice(language, key string, vars map[string]string) string {
 	return render(t.template(language, sectionInvoice, key), vars)
 }

@@ -11,33 +11,28 @@ import (
 	"bgin/internal/platform/token"
 )
 
-// RequireAuth 校验 Bearer 访问令牌与撤销名单，并把身份写入请求 context。
-// 刻意不查库：身份完全来自令牌载荷，这是纯 JWT 方案的直接结果（ADR-0001）。
+// RequireAuth 校验 Bearer 访问令牌与黑名单状态，并将身份载荷注入请求上下文。
 func (m *Middleware) RequireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw, err := bearerToken(c)
 		if err != nil {
-			_ = c.Error(err)
-			c.Abort()
+			abortWithError(c, err)
 			return
 		}
 
 		claims, err := m.tokens.Parse(raw, token.TypeAccess)
 		if err != nil {
-			_ = c.Error(err)
-			c.Abort()
+			abortWithError(c, err)
 			return
 		}
 
 		revoked, err := m.tokens.IsRevoked(c.Request.Context(), claims.ID)
 		if err != nil {
-			_ = c.Error(errs.Internal(err))
-			c.Abort()
+			abortWithError(c, errs.Internal(err))
 			return
 		}
 		if revoked {
-			_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenRevoked, "The token has been revoked"))
-			c.Abort()
+			abortWithError(c, errs.Unauthorized(errs.CodeAuthTokenRevoked, "The token has been revoked"))
 			return
 		}
 
@@ -57,26 +52,22 @@ func (m *Middleware) RequireAuth() gin.HandlerFunc {
 	}
 }
 
-// RequirePermission 依据令牌中的角色判定权限码，未授权返回 403。
-// 角色不由数据库实时查询决定，因此改角色必须重新登录才生效（ADR-0001、ADR-0003）。
+// RequirePermission 基于令牌角色执行 Casbin RBAC 权限校验。
 func (m *Middleware) RequirePermission(resource, action string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := identity.FromContext(c.Request.Context())
 		if !ok {
-			_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
-			c.Abort()
+			abortWithError(c, errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
 			return
 		}
 
 		allowed, err := m.authz.Can(id.Role, resource, action)
 		if err != nil {
-			_ = c.Error(errs.Internal(err))
-			c.Abort()
+			abortWithError(c, errs.Internal(err))
 			return
 		}
 		if !allowed {
-			_ = c.Error(errs.Forbidden("You are not allowed to perform this action"))
-			c.Abort()
+			abortWithError(c, errs.Forbidden("You are not allowed to perform this action"))
 			return
 		}
 		c.Next()

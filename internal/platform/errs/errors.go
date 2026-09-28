@@ -7,7 +7,7 @@ import (
 	"github.com/samber/oops"
 )
 
-// 面向调用方的固定文案。api.md 5.2 已明确规定前两条，不得随意改写。
+// 面向调用方的固定描述文案。
 const (
 	msgValidationFailed = "Validation failed"
 	msgInternal         = "An unexpected error occurred"
@@ -22,10 +22,7 @@ const (
 	msgInvalidLogin     = "Invalid email or password"
 )
 
-// Error 是携带机器可读错误码与可选字段级明细的业务错误。
-//
-// 字段级明细有两种表达：fields 保存已渲染好的文案，fieldKeys 保存待翻译的文案键
-// （见 ValidationKeys），渲染层按请求语言择一使用。
+// Error 是携带结构化错误码与可选字段级校验明细的业务错误。
 type Error struct {
 	code      Code
 	message   string
@@ -155,17 +152,15 @@ func Validation(fields map[string][]string) *Error {
 	return e
 }
 
-// MessageKey 描述一条待按请求语言渲染的字段级校验文案。
-// 业务代码只声明"哪个字段违反了哪条规则"，用户可见文案统一留在 lang/<语言>/validation.toml。
+// MessageKey 描述一条基于语言包键待渲染的字段级校验提示。
 type MessageKey struct {
-	// Key 是语言包 validation 分节中的键名。
+	// Key 语言包 validation 节中的键名。
 	Key string
-	// Param 是模板 {{.Param}} 的取值，无参时留空。
+	// Param 模板参数，无参时留空。
 	Param string
 }
 
-// ValidationKeys 构造 422 校验错误，字段明细交由渲染层按 Accept-Language 翻译。
-// 相比 Validation，它避免把面向用户的提示硬编码进业务代码。
+// ValidationKeys 构造 422 校验错误，字段明细交由中间件按客户端语言进行翻译。
 func ValidationKeys(fields map[string][]MessageKey) *Error {
 	e := New(CodeValidationFailed, msgValidationFailed)
 	e.fieldKeys = fields

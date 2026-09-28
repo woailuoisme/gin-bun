@@ -17,19 +17,6 @@ import (
 	"bgin/internal/platform/search"
 )
 
-// newScoutCmd 组装搜索引擎管理命令组。
-func newScoutCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "scout",
-		Short: "Search engine index management",
-	}
-
-	cmd.AddCommand(newScoutImportCmd())
-	cmd.AddCommand(newScoutFlushCmd())
-
-	return cmd
-}
-
 // newScoutImportCmd 将指定模型或全部可搜索模型的数据批量导入搜索引擎。
 func newScoutImportCmd() *cobra.Command {
 	var (
@@ -38,7 +25,7 @@ func newScoutImportCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "import [model]",
+		Use:   "scout:import [model]",
 		Short: "Import model records into the search index",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if !all && (len(args) == 0 || strings.TrimSpace(args[0]) == "") {
@@ -112,7 +99,7 @@ func newScoutFlushCmd() *cobra.Command {
 	var force bool
 
 	cmd := &cobra.Command{
-		Use:   "flush <model>",
+		Use:   "scout:flush <model>",
 		Short: "Flush all of the model's records from the search index",
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
@@ -170,22 +157,6 @@ func newScoutFlushCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&force, core.FlagForce, "f", false, core.UsageForceFlag)
 
 	return cmd
-}
-
-// 兼容老 Artisan 风格冒号别名命令构造工厂（设为 Hidden: true 保持帮助信息精简）。
-
-func newScoutImportAliasCmd() *cobra.Command {
-	c := newScoutImportCmd()
-	c.Use = "scout:import"
-	c.Hidden = true
-	return c
-}
-
-func newScoutFlushAliasCmd() *cobra.Command {
-	c := newScoutFlushCmd()
-	c.Use = "scout:flush"
-	c.Hidden = true
-	return c
 }
 
 // getSearchableModelNames 获取所有已注册的唯一可搜索模型名称列表。

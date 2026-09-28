@@ -1,5 +1,4 @@
-// Package token 负责访问令牌与刷新令牌的签发、校验与撤销。
-// 签名固定 HS256，撤销名单落 Redis（见 ADR-0001）。
+// Package token 负责访问令牌与刷新令牌的签发、校验与基于黑名单的撤销。
 package token
 
 import (

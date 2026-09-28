@@ -17,25 +17,13 @@ import (
 // jwtSecretRegexp 匹配 .env 中已存在的 JWT_SECRET 配置行。
 var jwtSecretRegexp = regexp.MustCompile(`(?m)^JWT_SECRET=(.*)$`)
 
-// newJWTCmd 组装 JWT 管理命令组。
-func newJWTCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "jwt",
-		Short: "JWT token secret key management",
-	}
-
-	cmd.AddCommand(newJWTSecretCmd())
-
-	return cmd
-}
-
 // newJWTSecretCmd 创建或更新 .env 中的 JWT_SECRET 签名密钥（仿照 Laravel artisan jwt:secret）。
 func newJWTSecretCmd() *cobra.Command {
 	var show bool
 	var force bool
 
 	cmd := &cobra.Command{
-		Use:   "secret",
+		Use:   "jwt:secret",
 		Short: "Set the JWT secret key in .env file",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -101,14 +89,6 @@ func newJWTSecretCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&force, core.FlagForce, "f", false, "Skip confirmation prompt when overwriting an existing key")
 
 	return cmd
-}
-
-// newJWTSecretAliasCmd 兼容老 Artisan 风格冒号别名命令构造工厂（设为 Hidden: true 保持帮助信息精简）。
-func newJWTSecretAliasCmd() *cobra.Command {
-	c := newJWTSecretCmd()
-	c.Use = "jwt:secret"
-	c.Hidden = true
-	return c
 }
 
 // GenerateRandomSecret 生成指定字节长度的高强度随机密钥，以标准 base64 字符串形式返回。

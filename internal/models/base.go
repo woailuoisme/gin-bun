@@ -18,8 +18,6 @@ type Base struct {
 }
 
 // UTCPtr 返回时间指针的 UTC 形式，nil 时返回 nil。
-// pgx 把 timestamptz 解码成 time.Local（瞬时正确、偏移是服务器本地时区），
-// 而 api.md 2.2 要求响应体里的时间统一为 UTC 并以 Z 结尾，因此投影时必须过一遍这里。
 func UTCPtr(value *time.Time) *time.Time {
 	if value == nil {
 		return nil

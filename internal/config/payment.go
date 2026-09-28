@@ -9,31 +9,25 @@ import (
 // defaultPaymentAppKey 是单应用便捷配置展开后的应用标识。
 const defaultPaymentAppKey = "default"
 
-// PaymentConfig 定义支付渠道配置。
-// 每个渠道维护一组 Channel Application（可注册多个应用），下单时按「渠道 + 场景」解析到唯一应用。
-// 渠道遵循「配置即启用」原则：配置了任一应用即生效，不存在独立启用开关；
-// 沙箱与生产通过运行环境切换，不在同一份配置内并存两套字段。
+// PaymentConfig 定义支付渠道配置，按「渠道 + 场景」解析应用凭据。
 type PaymentConfig struct {
-	// FakeEnabled 在非生产环境注册进程内 Fake 渠道，用于本地开发与端到端演练。
-	// 显式开关而非按环境隐式回退，避免「未配置」与「已降级」在运行期难以区分。
+	// FakeEnabled 在非生产环境启用内存 Mock 渠道，用于本地测试。
 	FakeEnabled bool `env:"PAYMENT_FAKE_ENABLED" envDefault:"false"`
-	// CertsDir 支付凭据与证书文件的存放根目录。证书路径若为相对路径，将以该目录为基准解析。
+	// CertsDir 支付凭据与证书文件的存放根目录。
 	CertsDir string `env:"PAYMENT_CERTS_DIR" envDefault:"./storage/app/certs"`
 	Wechat   WechatPaymentChannelConfig
 	Alipay   AlipayPaymentChannelConfig
 }
 
 // WechatPaymentChannelConfig 定义微信支付渠道配置。
-// Default 承载单应用场景下的扁平环境变量；ApplicationsJSON 用于声明多个微信支付应用。
 type WechatPaymentChannelConfig struct {
-	// ApplicationsJSON 以 JSON 对象描述多个微信支付应用，键为应用标识，值为 WechatPaymentAppConfig。
+	// ApplicationsJSON 以 JSON 对象描述多个微信支付应用。
 	ApplicationsJSON string `env:"WECHAT_PAY_APPS_JSON"`
 	// Default 单应用便捷配置：未提供 ApplicationsJSON 时作为唯一应用生效。
 	Default WechatPaymentAppConfig
 }
 
-// WechatPaymentAppConfig 定义单个微信支付应用的凭据、证书路径与可承载场景。
-// 商户私钥与平台公钥只配置文件路径，PEM 内容由基础设施层在启动时读入内存。
+// WechatPaymentAppConfig 定义单个微信支付应用的凭据、证书路径与支付场景。
 type WechatPaymentAppConfig struct {
 	// AppID 直连商户申请的公众号、小程序或开放平台移动应用 appid。
 	AppID string `env:"WECHAT_PAY_APP_ID" json:"app_id"`
@@ -57,14 +51,13 @@ type WechatPaymentAppConfig struct {
 
 // AlipayPaymentChannelConfig 定义支付宝渠道配置。
 type AlipayPaymentChannelConfig struct {
-	// ApplicationsJSON 以 JSON 对象描述多个支付宝应用，键为应用标识，值为 AlipayPaymentAppConfig。
+	// ApplicationsJSON 以 JSON 对象描述多个支付宝应用。
 	ApplicationsJSON string `env:"ALIPAY_APPS_JSON"`
 	// Default 单应用便捷配置：未提供 ApplicationsJSON 时作为唯一应用生效。
 	Default AlipayPaymentAppConfig
 }
 
-// AlipayPaymentAppConfig 定义单个支付宝应用的凭据、证书路径与可承载场景。
-// 支付宝 v3 仅支持公钥证书模式，三本证书缺一不可，否则响应验签会被静默跳过。
+// AlipayPaymentAppConfig 定义单个支付宝应用的凭据、证书路径与支付场景。
 type AlipayPaymentAppConfig struct {
 	// AppID 支付宝应用 ID。
 	AppID string `env:"ALIPAY_APP_ID" json:"app_id"`
@@ -84,9 +77,7 @@ type AlipayPaymentAppConfig struct {
 	Scenes []string `env:"ALIPAY_SCENES" json:"scenes"`
 }
 
-// resolveApplications 解析渠道的最终应用集合，两个渠道共用同一套规则。
-// 未提供 ApplicationsJSON 时使用扁平环境变量描述的单应用，键固定为 default。
-// jsonVarName 只用于错误信息，让报错点名具体的环境变量。
+// resolveApplications 解析渠道的最终应用映射表，优先使用 ApplicationsJSON，未配置时回退至 Default。
 func resolveApplications[T any](
 	applicationsJSON string,
 	defaultApp T,

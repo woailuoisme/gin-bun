@@ -13,8 +13,7 @@ const (
 	defaultPage     = 1
 	defaultPageSize = 20
 	maxPageSize     = 100
-	// maxPage 是页码硬上限：超大页码会退化为巨额 OFFSET 扫描，
-	// 且 (page-1)*pageSize 在极端取值下会溢出为负数。
+	// maxPage 是页码硬上限，防止深度翻页引发性能退化。
 	maxPage = 1_000_000
 )
 
@@ -43,7 +42,6 @@ type CreateUserRequest struct {
 }
 
 // UpdateUserRequest 是 PATCH /v1/admin/users/:id 的请求体。
-// 在自助可改字段之外追加角色、状态与封禁信息；邮箱与口令一律不在此处修改（Q27）。
 type UpdateUserRequest struct {
 	// 用户展示昵称
 	Name optional.Optional[string] `json:"name" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
@@ -69,8 +67,7 @@ type UpdateUserRequest struct {
 	BanExpires optional.Optional[time.Time] `json:"banExpires" swaggertype:"string" extensions:"x-nullable" example:"2026-10-01T00:00:00Z"`
 }
 
-// fieldSet 把请求中的档案字段投影成共有的字段集。
-// 管理端请求比档案字段集多出角色、状态与封禁字段，因此必须显式构造，无法像自助请求那样直接转换。
+// fieldSet 将请求中的档案字段投影为共享内核字段集。
 func (r UpdateUserRequest) fieldSet() user.FieldSet {
 	return user.FieldSet{
 		Name:            r.Name,

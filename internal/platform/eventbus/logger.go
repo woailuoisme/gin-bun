@@ -36,8 +36,7 @@ func (a *ZerologLoggerAdapter) Error(msg string, err error, fields watermill.Log
 	a.log(a.logger.Error().Err(err), msg, fields)
 }
 
-// Info 记录信息级别日志。Watermill 的 Info 多为路由与处理器的生命周期流水，
-// 是否输出由事件总线子系统自身的日志级别决定。
+// Info 记录信息级别日志。
 func (a *ZerologLoggerAdapter) Info(msg string, fields watermill.LogFields) {
 	a.log(a.logger.Info(), msg, fields)
 }

@@ -16,8 +16,7 @@ var ErrPgxConnUnavailable = errors.New("factory: underlying connection is not a 
 // RowMapper 定义将实体对象映射为 COPY 协议值切片的函数。
 type RowMapper[T any] func(item *T) []any
 
-// CopyFromSlice 利用 pgx 原生二进制/流式 COPY 协议将切片批量写入 PostgreSQL 数据库。
-// 该方法绕过标准 SQL INSERT 解析与参数序列化开销，适用于数万至百万级海量测试数据的高性能秒级播种。
+// CopyFromSlice 利用 pgx 原生 COPY 协议将切片数据批量流式写入 PostgreSQL。
 func CopyFromSlice[T any](
 	ctx context.Context,
 	db *bun.DB,

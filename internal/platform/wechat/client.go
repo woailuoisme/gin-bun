@@ -1,21 +1,4 @@
-// Package wechat 提供微信开放平台（公众平台 / 小程序）服务端 API 的客户端。
-//
-// 本包只访问 api.weixin.qq.com，与 internal/infra/payment 下的微信支付客户端
-// （api.mch.weixin.qq.com）是两套完全独立的体系：凭据不同（appid/secret 对商户证书）、
-// 认证方式不同（直连或 access_token 对商户证书签名）、错误语义相同但错误码互不相通。
-// 两者不可互相替代，也不应共用客户端实例。
-//
-// 本包与 resty 的默认范式有一处根本冲突：微信开放平台在业务失败时**同样返回 HTTP 200**，
-// 判据是响应体中的 errcode。因此这里不使用 resty 的状态码判定与自动错误处理，
-// 一律先解出响应体再按 errcode 分派。
-//
-// 已接入能力：
-//   - Client.Code2Session：小程序登录换取 openid / unionid，不经过 access_token；
-//   - Client.GetPhoneNumber：手机号快速验证，需要 access_token；
-//   - Client.GetUnlimitedCode：获取数量不限的小程序码，需要 access_token。
-//
-// 尚未接入的能力（见 docs/adr/0010）各自都还缺前置设施：订阅消息需要消息推送回调
-// （服务器配置校验 + EncodingAESKey 加解密 + 结果重投），内容安全审核的异步版本同样依赖回调。
+// Package wechat 提供微信开放平台（公众平台 / 小程序）服务端 API 客户端实现。
 package wechat
 
 import (

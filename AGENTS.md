@@ -35,7 +35,7 @@
 | | `just dev-worker` | 仅启动 Worker 服务的 Air 热重载（基于 `.air.worker.toml`）。 |
 | | `just run [ARGS]` | 直接运行 API 服务（如 `just run --port 3400`）。 |
 | | `just work [ARGS]` | 直接运行 Worker 服务（如 `just work -q high:3,default:1`）。 |
-| | `just cli [ARGS]` | 运行 CLI 控制台命令（如 `just cli route list` 或 `just cli make:feature blog`，支持别名 `just artisan`）。 |
+| | `just cli [ARGS]` | 运行 CLI 控制台命令（如 `just cli route:list` 或 `just cli make:crud blog`，支持别名 `just artisan`）。 |
 | | `just build` | 编译可执行文件至 `bin/bgin`，自动注入 version/commit/date 元数据。 |
 | **静态检查与格式化** | `just fmt` | 代码自动格式化并就地改写文件（基于 `golangci-lint fmt`）。 |
 | | `just fmt-check` | 仅检查格式是否规范，不改写文件。 |
@@ -72,7 +72,7 @@ internal/
 │   ├── admin/user/             # 管理端用户管理（routes, handler, service, request, response）
 │   ├── auth/                   # 认证中心（登录/注册/密码重置/会话撤销）
 │   ├── client/profile/         # 客户端个人资料
-│   └── system/                 # 系统探针与元信息（healthz, readyz）
+│   └── system/                 # 系统探针与元信息（livez, readyz）
 ├── middleware/                 # 全局与路由级 HTTP 中间件（认证、限流、CORS、监控）
 ├── platform/                   # 横切基础设施与跨切片基座（纯原子组件）
 │   ├── authz/                  # Casbin RBAC 静态策略与权限校验

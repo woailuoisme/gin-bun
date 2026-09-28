@@ -1,12 +1,4 @@
-// Package storage 提供对象存储的统一入口：一个 Disk 抽象与两个驱动——本地文件系统与
-// S3 兼容对象存储。
-//
-// 设计上刻意保持薄：不做多磁盘路由、不引入依赖注入框架，也没有内存与假实现——测试需要
-// 替身时用 local 驱动指向 t.TempDir() 即可。驱动由配置单选（config.StorageConfig.Driver），
-// 不会出现"配了 s3 却因为本地目录存在而静默改走本地"这类歧义。
-//
-// S3 客户端只用 github.com/minio/minio-go/v7：同一份实现可对接 AWS S3、MinIO、Garage、
-// Cloudflare R2 与阿里云 OSS，无需再引入 aws-sdk-go。
+// Package storage 提供统一对象存储抽象（Disk）及本地文件系统与 S3 驱动实现。
 package storage
 
 import (
@@ -29,24 +21,13 @@ const msgFileNotFound = "The requested file does not exist"
 // 驱动能力的边界用哨兵错误表达，便于调用方 errors.Is 判断，而不是靠匹配字符串。
 var (
 	// ErrNoPublicURL 表示没有配置公开访问地址，因此给不出永久链接。
-	// 这是配置缺口而非运行故障：调用方应改用 TemporaryURL（仅 s3 支持），
-	// 或由部署方在配置里补上公开地址前缀。
 	ErrNoPublicURL = errors.New("storage: no public URL configured")
 
-	// ErrPresignUnsupported 表示该驱动没有预签名机制，目前只有 local 会返回它。
-	//
-	// 本地文件没有服务端签名可言：与其返回一个带 expires 参数、看似受控实则谁都能访问的
-	// 链接，不如明确拒绝，逼调用方改用 s3 或自行实现路由与访问校验。
+	// ErrPresignUnsupported 表示当前驱动不支持生成预签名 URL。
 	ErrPresignUnsupported = errors.New("storage: driver does not support presigned URLs")
 )
 
-// Disk 是对外暴露的存储契约。
-//
-// path 是相对键（例如 "users/42/avatar.webp"），两个驱动按同一条键定位对象；前导斜杠会被
-// 规整掉。除 URL 外的每个方法都会尊重 ctx 的取消与超时。
-//
-// 对象不存在时统一返回 NOT_FOUND；其余底层失败收敛为 INTERNAL_SERVER_ERROR，原始原因只进
-// 日志。用 errs.As 可从错误链里取出错误码。
+// Disk 定义对象存储通用操作契约。
 type Disk interface {
 	// Put 覆盖写入整个对象。
 	Put(ctx context.Context, path string, contents []byte) error
@@ -78,8 +59,7 @@ type Disk interface {
 	HealthCheck(ctx context.Context) error
 }
 
-// Open 按配置构造驱动并立即探测一次可用性：存储不可用时启动就失败，
-// 而不是等到第一次真正读写才发现（与 database.Open、cache.Open 的处理一致）。
+// Open 根据配置构造存储驱动并执行可用性健康探测。
 func Open(ctx context.Context, cfg config.StorageConfig) (Disk, error) {
 	var (
 		disk Disk

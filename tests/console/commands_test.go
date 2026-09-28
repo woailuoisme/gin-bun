@@ -12,74 +12,73 @@ import (
 	"bgin/internal/console"
 )
 
-// TestRootCommand_Registration 验证所有预期的 CLI 命令均已在根命令中注册（包括层级子树与隐藏别名）。
+// TestRootCommand_Registration 验证所有预期的 CLI 命令均已按纯冒号方式注册，并正确分配到对应的命名空间分组。
 func TestRootCommand_Registration(t *testing.T) {
 	cmd := console.NewRootCommand()
 	require.NotNil(t, cmd)
 
-	// 1. 验证现代树状一级命令
-	expectedTopCommands := []string{
+	// 1. 验证全部一等公民命令（纯冒号命令体系 + serve）
+	expectedCommands := []string{
 		"serve",
-		"queue",
-		"route",
-		"db",
-		"scout",
-		"jwt",
-		"make",
+		"db:migrate",
+		"db:seed",
+		"db:fresh",
+		"jwt:secret",
+		"make:crud",
+		"queue:work",
+		"queue:failed",
+		"queue:retry",
+		"queue:flush",
+		"route:list",
+		"scout:import",
+		"scout:flush",
 	}
 
 	commandNames := lo.Map(cmd.Commands(), func(c *cobra.Command, _ int) string {
 		return c.Name()
 	})
 
-	for _, expected := range expectedTopCommands {
-		assert.Contains(t, commandNames, expected, "Root command should contain top-level command: "+expected)
+	for _, expected := range expectedCommands {
+		assert.Contains(t, commandNames, expected, "Root command should contain colon-only command: "+expected)
 	}
 
-	// 2. 验证各个子命令树的挂载完整性
-	assertSubcommandExists(t, cmd, "route", []string{"list"})
-	assertSubcommandExists(t, cmd, "db", []string{"migrate", "seed", "fresh"})
-	assertSubcommandExists(t, cmd, "queue", []string{"work", "failed", "retry", "flush"})
-	assertSubcommandExists(t, cmd, "scout", []string{"import", "flush"})
-	assertSubcommandExists(t, cmd, "jwt", []string{"secret"})
-	assertSubcommandExists(t, cmd, "make", []string{"crud", "destroy"})
-
-	// 3. 验证向后兼容的老 Artisan 冒号别名命令（Hidden: true）
-	expectedColonAliases := []string{
-		"route:list",
-		"db:migrate",
-		"db:seed",
-		"db:fresh",
-		"queue:work",
-		"queue:failed",
-		"queue:retry",
-		"queue:flush",
-		"scout:import",
-		"scout:flush",
-		"jwt:secret",
-		"make:crud",
+	// 2. 验证空格层级父命令及已废除的 make:destroy 不再作为命令存在
+	deprecatedTopCommands := []string{
+		"queue",
+		"route",
+		"db",
+		"scout",
+		"jwt",
+		"make",
 		"make:destroy",
 	}
-
-	for _, alias := range expectedColonAliases {
-		assert.Contains(t, commandNames, alias, "Root command should contain hidden alias: "+alias)
+	for _, deprecated := range deprecatedTopCommands {
+		assert.NotContains(t, commandNames, deprecated, "Deprecated command should not exist: "+deprecated)
 	}
-}
 
-// assertSubcommandExists 辅助校验父命令下的子命令集合。
-func assertSubcommandExists(t *testing.T, root *cobra.Command, parentName string, expectedSubs []string) {
-	t.Helper()
-	parentCmd, _, err := root.Find([]string{parentName})
-	require.NoError(t, err)
-	require.NotNil(t, parentCmd)
+	// 3. 验证命名空间分组注册完整性与 GroupID 正确映射
+	groupIDs := lo.Map(cmd.Groups(), func(g *cobra.Group, _ int) string {
+		return g.ID
+	})
+	assert.ElementsMatch(t, []string{"db", "jwt", "make", "queue", "route", "scout"}, groupIDs)
 
-	subNames := lo.Map(parentCmd.Commands(), func(c *cobra.Command, _ int) string {
+	cmdMap := lo.KeyBy(cmd.Commands(), func(c *cobra.Command) string {
 		return c.Name()
 	})
 
-	for _, sub := range expectedSubs {
-		assert.Contains(t, subNames, sub, parentName+" should contain subcommand: "+sub)
-	}
+	assert.Empty(t, cmdMap["serve"].GroupID, "serve should have no group (root Available commands)")
+	assert.Equal(t, "db", cmdMap["db:migrate"].GroupID)
+	assert.Equal(t, "db", cmdMap["db:seed"].GroupID)
+	assert.Equal(t, "db", cmdMap["db:fresh"].GroupID)
+	assert.Equal(t, "jwt", cmdMap["jwt:secret"].GroupID)
+	assert.Equal(t, "make", cmdMap["make:crud"].GroupID)
+	assert.Equal(t, "queue", cmdMap["queue:work"].GroupID)
+	assert.Equal(t, "queue", cmdMap["queue:failed"].GroupID)
+	assert.Equal(t, "queue", cmdMap["queue:retry"].GroupID)
+	assert.Equal(t, "queue", cmdMap["queue:flush"].GroupID)
+	assert.Equal(t, "route", cmdMap["route:list"].GroupID)
+	assert.Equal(t, "scout", cmdMap["scout:import"].GroupID)
+	assert.Equal(t, "scout", cmdMap["scout:flush"].GroupID)
 }
 
 // TestParseQueueWeights 验证队列权重参数解析。
@@ -128,7 +127,7 @@ func TestParseQueueWeights(t *testing.T) {
 func TestCommand_ValidationErrors(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("queue:retry without arg (alias)", func(t *testing.T) {
+	t.Run("queue:retry without arg", func(t *testing.T) {
 		cmd := console.NewRootCommand()
 		cmd.SetArgs([]string{"queue:retry"})
 		err := cmd.ExecuteContext(ctx)
@@ -136,15 +135,7 @@ func TestCommand_ValidationErrors(t *testing.T) {
 		assert.Contains(t, err.Error(), "please provide a job ID or 'all'")
 	})
 
-	t.Run("queue retry without arg (native tree)", func(t *testing.T) {
-		cmd := console.NewRootCommand()
-		cmd.SetArgs([]string{"queue", "retry"})
-		err := cmd.ExecuteContext(ctx)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "please provide a job ID or 'all'")
-	})
-
-	t.Run("scout:import without model or --all (alias)", func(t *testing.T) {
+	t.Run("scout:import without model or --all", func(t *testing.T) {
 		cmd := console.NewRootCommand()
 		cmd.SetArgs([]string{"scout:import"})
 		err := cmd.ExecuteContext(ctx)
@@ -152,15 +143,7 @@ func TestCommand_ValidationErrors(t *testing.T) {
 		assert.Contains(t, err.Error(), "please specify a model name or use --all")
 	})
 
-	t.Run("scout import without model or --all (native tree)", func(t *testing.T) {
-		cmd := console.NewRootCommand()
-		cmd.SetArgs([]string{"scout", "import"})
-		err := cmd.ExecuteContext(ctx)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "please specify a model name or use --all")
-	})
-
-	t.Run("scout:flush without model (alias)", func(t *testing.T) {
+	t.Run("scout:flush without model", func(t *testing.T) {
 		cmd := console.NewRootCommand()
 		cmd.SetArgs([]string{"scout:flush"})
 		err := cmd.ExecuteContext(ctx)
@@ -168,11 +151,11 @@ func TestCommand_ValidationErrors(t *testing.T) {
 		assert.Contains(t, err.Error(), "please provide a model name to flush")
 	})
 
-	t.Run("scout flush without model (native tree)", func(t *testing.T) {
+	t.Run("deprecated space-separated invocation is rejected", func(t *testing.T) {
 		cmd := console.NewRootCommand()
-		cmd.SetArgs([]string{"scout", "flush"})
+		cmd.SetArgs([]string{"queue", "retry"})
 		err := cmd.ExecuteContext(ctx)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "please provide a model name to flush")
+		assert.Contains(t, err.Error(), `unknown command "queue"`)
 	})
 }

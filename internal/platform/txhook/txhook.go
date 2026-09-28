@@ -1,4 +1,4 @@
-// Package txhook 提供通用的事务提交后生命周期钩子容器，保证事务成功后安全分发异步副作用。
+// Package txhook 提供通用的事务提交后生命周期钩子容器，保证事务提交后安全执行副作用。
 package txhook
 
 import (
@@ -16,8 +16,7 @@ type hookContainer struct {
 	hooks []func()
 }
 
-// AfterCommit 注册在事务提交后执行的钩子；若上下文中未注入事务钩子机制，则立即执行。
-// 内部使用互斥锁保护回调切片，彻底杜绝多协程并发注册时的数据竞态。
+// AfterCommit 注册在事务提交后执行的钩子；若未处于事务上下文则立即执行。
 func AfterCommit(ctx context.Context, fn func()) {
 	if fn == nil {
 		return

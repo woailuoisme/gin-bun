@@ -15,10 +15,7 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// zhTrueToken 是中文表格里表示布尔真值的输入标记，即汉字「是」（U+662F）。
-//
-// 它是需要兼容的用户输入数据，不是面向用户的文案；用转义写法而非裸汉字，
-// 既满足「代码内字符串字面量不出现中文」的约定，又由注释说明其确切含义。
+// zhTrueToken 中文「是」（U+662F）的转义表示，用于兼容布尔真值解析。
 const zhTrueToken = "\u662f"
 
 type structFieldInfo struct {
