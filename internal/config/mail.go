@@ -8,28 +8,28 @@ import (
 // MailConfig 描述邮件发信服务配置，严格仅支持 mailpit 与 resend 驱动。
 type MailConfig struct {
 	// Driver 邮件发送驱动 (mailpit: 本地开发与测试, resend: 现代化云端发信)
-	Driver string `env:"MAIL_DRIVER" envDefault:"mailpit"`
+	Driver string `mapstructure:"mail_driver"`
 	// FromAddress 发件人邮箱地址
-	FromAddress string `env:"MAIL_FROM_ADDRESS" envDefault:"no-reply@bgin.local"`
+	FromAddress string `mapstructure:"mail_from_address"`
 	// FromName 发件人展示名称
-	FromName string `env:"MAIL_FROM_NAME" envDefault:"bgin"`
+	FromName string `mapstructure:"mail_from_name"`
 
 	// Mailpit 驱动配置 (本地开发)
-	Mailpit MailpitConfig
+	Mailpit MailpitConfig `mapstructure:",squash"`
 	// Resend 驱动配置 (云端发信)
-	Resend ResendConfig
+	Resend ResendConfig `mapstructure:",squash"`
 }
 
 // MailpitConfig 描述 Mailpit 驱动连接参数。
 type MailpitConfig struct {
-	Host string `env:"MAILPIT_HOST" envDefault:"127.0.0.1"`
-	Port int    `env:"MAILPIT_PORT" envDefault:"1025"`
+	Host string `mapstructure:"mailpit_host"`
+	Port int    `mapstructure:"mailpit_port"`
 }
 
 // ResendConfig 描述 Resend API 驱动配置。
 type ResendConfig struct {
-	APIKey  string `env:"RESEND_API_KEY"`
-	BaseURL string `env:"RESEND_BASE_URL" envDefault:"https://api.resend.com"`
+	APIKey  string `mapstructure:"resend_api_key"`
+	BaseURL string `mapstructure:"resend_base_url"`
 }
 
 // Validate 检查邮件配置合法性。

@@ -44,6 +44,8 @@ type Driver struct {
 	client *resty.Client
 }
 
+var _ sms.Driver = (*Driver)(nil)
+
 // NewDriver 创建阿里云短信驱动实例。
 func NewDriver(cfg Config) (*Driver, error) {
 	if cfg.AccessKeyID == "" || cfg.AccessKeySecret == "" {
@@ -104,12 +106,12 @@ func (d *Driver) Send(ctx context.Context, msg *sms.Message) error {
 		return oops.Code(errs.CodeBadRequest).Errorf("aliyun sms: phone number is required")
 	}
 
-	signName := cmp.Or(msg.SignName, d.cfg.SignName)
+	signName := msg.ResolveSign(d.Name(), d.cfg.SignName)
 	if signName == "" {
 		return oops.Code(errs.CodeBadRequest).Errorf("aliyun sms: sign_name is required")
 	}
 
-	templateCode := cmp.Or(msg.TemplateCode, d.cfg.TemplateCode)
+	templateCode := msg.ResolveTemplate(d.Name(), d.cfg.TemplateCode)
 	if templateCode == "" {
 		return oops.Code(errs.CodeBadRequest).Errorf("aliyun sms: template_code is required")
 	}
@@ -156,13 +158,13 @@ func (d *Driver) Send(ctx context.Context, msg *sms.Message) error {
 	}
 
 	if resp.IsError() {
-		return oops.Code("aliyun_http_error").
+		return oops.Code(errs.CodeAliyunHTTPError).
 			With("status", resp.StatusCode()).
 			Errorf("aliyun sms http request failed with status: %d", resp.StatusCode())
 	}
 
 	if res.Code != "OK" {
-		return oops.Code("aliyun_api_error").
+		return oops.Code(errs.CodeAliyunAPIError).
 			With("code", res.Code).
 			With("message", res.Message).
 			With("request_id", res.RequestID).

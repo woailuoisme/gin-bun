@@ -45,17 +45,20 @@ type UnlimitedCodeParams struct {
 	IsHyaline bool
 }
 
-// GetUnlimitedCode 生成数量不限的小程序码，返回 JPEG 字节流。
-//
-// 只返回字节流、不落盘：小程序码是永久有效的，预生成、去重与分发属于业务语义
-// （哪些 scene 需要预生成、复用键怎么定、放到哪个 CDN 路径），由调用方决定；
-// 把存储塞进本包会让 infra 层反向依赖对象存储，也会把复用策略变成包内的隐式行为。
-// 注意上游限 5000 次/分钟，且同一 scene 重复生成会得到内容相同但字节不同的多份图，
-// 因此调用方应复用既有产物而不是每次现生成。
-func (c *Client) GetUnlimitedCode(ctx context.Context, params UnlimitedCodeParams) ([]byte, error) {
-	const operation = "wechat.GetUnlimitedCode"
+// wxaCodeService 实现 WxaCodeService 接口。
+type wxaCodeService struct {
+	client *Client
+}
 
-	if c == nil || c.http == nil {
+var _ WxaCodeService = (*wxaCodeService)(nil)
+
+// GetUnlimited 生成数量不限的小程序码，返回 JPEG 字节流。
+//
+// 只返回字节流、不落盘：小程序码是永久有效的，预生成、去重与分发属于业务语义，由调用方决定。
+func (s *wxaCodeService) GetUnlimited(ctx context.Context, params UnlimitedCodeParams) ([]byte, error) {
+	const operation = "wechat.wxacode.GetUnlimited"
+
+	if s == nil || s.client == nil || s.client.http == nil {
 		return nil, errs.ServiceUnavailable("wechat miniprogram client is not configured")
 	}
 
@@ -80,19 +83,18 @@ func (c *Client) GetUnlimitedCode(ctx context.Context, params UnlimitedCodeParam
 
 	var code []byte
 
-	err := c.withAccessToken(ctx, func(callCtx context.Context, token string) (int, error) {
+	err := s.client.withAccessToken(ctx, func(callCtx context.Context, token string) (int, error) {
 		code = nil
 
-		response, requestErr := c.http.R().
+		response, requestErr := s.client.http.R().
 			SetContext(callCtx).
 			SetQueryParam("access_token", token).
 			SetBody(body).
 			Post(unlimitedCodePath)
 		if requestErr != nil {
-			return 0, errs.ServiceUnavailable("wechat getwxacodeunlimit request failed: " + c.redactError(requestErr))
+			return 0, errs.ServiceUnavailable("wechat getwxacodeunlimit request failed: " + s.client.redactError(requestErr))
 		}
 
-		// 成功返回 JPEG 字节流、失败才返回 JSON 错误报文，因此先按报文形态分流。
 		if !isJSONResponse(response) {
 			code = response.Body()
 
@@ -110,7 +112,6 @@ func (c *Client) GetUnlimitedCode(ctx context.Context, params UnlimitedCodeParam
 		return nil, err
 	}
 
-	// 上游以 200 + 空字节流应答时不能当成一张图交出去。
 	if len(code) == 0 {
 		return nil, errs.Internal(errors.New("wechat getwxacodeunlimit succeeded without image body"))
 	}
@@ -127,9 +128,6 @@ func (p UnlimitedCodeParams) Normalize() UnlimitedCodeParams {
 }
 
 // Validate 在本地拦截注定被上游拒绝的参数。
-//
-// 这些约束（字符数、字符集、前导斜杠、页面已发布）都在微信侧才报错，
-// 而每一次失败调用都要先取一次凭据并占用接口配额，本地拦下能省掉整轮往返。
 func (p UnlimitedCodeParams) Validate() error {
 	if p.Scene == "" {
 		return errs.BadRequest("scene is required")
@@ -145,8 +143,6 @@ func (p UnlimitedCodeParams) Validate() error {
 		}
 	}
 
-	// 带前导斜杠的页面路径会被上游以 41030 拒绝，且该错误与「页面不存在」共用一个码，
-	// 本地拦下可以让调用方一眼看出是格式问题。
 	if strings.HasPrefix(p.Page, "/") {
 		return errs.BadRequest("page must not start with a slash")
 	}
@@ -178,8 +174,6 @@ func (v EnvVersion) IsValid() bool {
 }
 
 // isJSONResponse 判断响应是否为 JSON 报文。
-// 判据取「声明的 Content-Type」与「报文体首字符」的并集：
-// 上游在错误路径上的 Content-Type 并不总是规范，只看任一者都会误判。
 func isJSONResponse(response *resty.Response) bool {
 	if strings.Contains(response.Header().Get("Content-Type"), "json") {
 		return true

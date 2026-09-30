@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/samber/oops"
+	"go.uber.org/zap"
 
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/logger"
@@ -53,13 +54,13 @@ func RegisterJobs(reg queue.Registry, m mailer.Mailer) {
 // Handle 任务执行入口，由 Asynq Worker 协程池调用。
 func (j *WelcomeEmailJob) Handle(ctx context.Context) error {
 	log := logger.FromContext(ctx)
-	log.Info().
-		Str("email", j.Email).
-		Str("name", j.Name).
-		Msg("processing welcome email task")
+	log.Info("processing welcome email task",
+		zap.String("email", j.Email),
+		zap.String("name", j.Name),
+	)
 
 	if j.mailer == nil {
-		log.Warn().Msg("mailer dependency is not injected, skipped welcome email task")
+		log.Warn("mailer dependency is not injected, skipped welcome email task")
 		return nil
 	}
 
@@ -77,8 +78,8 @@ func (j *WelcomeEmailJob) Handle(ctx context.Context) error {
 			Wrap(err)
 	}
 
-	log.Info().
-		Str("email", j.Email).
-		Msg("welcome email sent successfully")
+	log.Info("welcome email sent successfully",
+		zap.String("email", j.Email),
+	)
 	return nil
 }

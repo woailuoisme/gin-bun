@@ -6,19 +6,23 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 
 	"github.com/samber/lo"
 	"github.com/samber/oops"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	"bgin/internal/platform/errs"
 	"bgin/internal/platform/logger"
 	"bgin/internal/platform/notification/async"
 	"bgin/internal/platform/notification/channel/chat"
-	"bgin/internal/platform/notification/channel/database"
 	"bgin/internal/platform/notification/channel/mail"
 	"bgin/internal/platform/notification/channel/realtime"
 	"bgin/internal/platform/notification/channel/sms"
+	"bgin/internal/platform/notification/contract"
+	"bgin/internal/platform/queue"
 )
 
 // defaultParallelTargets 是并行投递单个通知时的最大并发接收者数。
@@ -29,6 +33,8 @@ type Notifier struct {
 	mu              sync.RWMutex
 	channels        map[string]Channel
 	asyncPool       *async.Pool
+	queueDispatcher queue.Dispatcher
+	middlewares     []Middleware
 	parallelTargets int
 }
 
@@ -42,6 +48,22 @@ func NewNotifier(workers, queueSize int) *Notifier {
 		asyncPool:       async.New(workers, queueSize),
 		parallelTargets: defaultParallelTargets,
 	}
+}
+
+// WithQueue 注入持久化队列分发器（符合 DIP 原则）。
+func (n *Notifier) WithQueue(dispatcher queue.Dispatcher) *Notifier {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.queueDispatcher = dispatcher
+	return n
+}
+
+// Use 注册通知发送管道中间件（支持洋葱圈模式）。
+func (n *Notifier) Use(mw ...Middleware) *Notifier {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.middlewares = append(n.middlewares, mw...)
+	return n
 }
 
 // Extend 注册自定义渠道。
@@ -95,12 +117,6 @@ func (n *Notifier) SMS() *sms.Channel {
 // Chat 返回即时通讯渠道专用实例。
 func (n *Notifier) Chat() *chat.Channel {
 	ch, _ := n.Channel("chat").(*chat.Channel)
-	return ch
-}
-
-// Database 返回数据库通知渠道专用实例。
-func (n *Notifier) Database() *database.Channel {
-	ch, _ := n.Channel("database").(*database.Channel)
 	return ch
 }
 
@@ -181,26 +197,63 @@ func (n *Notifier) Send(ctx context.Context, notifiables any, notif Notification
 	return n.sendSync(ctx, targets, notif, &so)
 }
 
-// tryDispatchAsync 尝试提交给异步协程池处理；若成功提交返回 true，否则返回 false 并降级为同步处理。
+// dispatchQueueJob 尝试将实现了 queue.Job 的通知直接派发至持久化队列。
+func dispatchQueueJob(ctx context.Context, q queue.Dispatcher, notif Notification) bool {
+	job, ok := notif.(queue.Job)
+	if !ok {
+		return false
+	}
+
+	var dispatchOpts []queue.DispatchOption
+	if sqo, ok := notif.(contract.ShouldQueueWithOptions); ok {
+		if queueName := sqo.QueueName(); queueName != "" {
+			dispatchOpts = append(dispatchOpts, queue.WithQueue(queueName))
+		}
+		if retries := sqo.MaxRetries(); retries > 0 {
+			dispatchOpts = append(dispatchOpts, queue.WithRetries(retries))
+		}
+		if delay := sqo.Delay(); delay > 0 {
+			dispatchOpts = append(dispatchOpts, queue.WithDelay(delay))
+		}
+	}
+
+	err := q.Dispatch(ctx, job, dispatchOpts...)
+	if err == nil {
+		return true
+	}
+
+	logger.FromContext(ctx).Warn("failed to dispatch notification to queue, falling back to pool",
+		zap.Error(err),
+		zap.String("notification", fmt.Sprintf("%T", notif)))
+	return false
+}
+
+// tryDispatchAsync 尝试优先提交给持久化队列处理；若未配置或失败则降级提交给协程池；若均不可用则返回 false 回退为同步处理。
 func (n *Notifier) tryDispatchAsync(ctx context.Context, notif Notification, task func(asyncCtx context.Context) error) bool {
+	n.mu.RLock()
+	q := n.queueDispatcher
+	n.mu.RUnlock()
+
+	if q != nil && dispatchQueueJob(ctx, q, notif) {
+		return true
+	}
+
 	if n.asyncPool == nil {
 		return false
 	}
 	submitErr := n.asyncPool.Submit(ctx, func(asyncCtx context.Context) {
 		if err := task(asyncCtx); err != nil {
-			logger.FromContext(asyncCtx).Error().
-				Err(err).
-				Str("notification", fmt.Sprintf("%T", notif)).
-				Msg("failed to deliver async notification")
+			logger.FromContext(asyncCtx).Error("failed to deliver async notification",
+				zap.Error(err),
+				zap.String("notification", fmt.Sprintf("%T", notif)))
 		}
 	})
 	if submitErr == nil {
 		return true
 	}
-	logger.FromContext(ctx).Warn().
-		Err(submitErr).
-		Bool("queue_full", errors.Is(submitErr, async.ErrQueueFull)).
-		Msg("async notification pool unavailable, falling back to synchronous delivery")
+	logger.FromContext(ctx).Warn("async notification pool unavailable, falling back to synchronous delivery",
+		zap.Error(submitErr),
+		zap.Bool("queue_full", errors.Is(submitErr, async.ErrQueueFull)))
 	return false
 }
 
@@ -212,32 +265,41 @@ func resolveChannels(notif Notification, target any, so *SendOptions) []string {
 	return notif.Via(target)
 }
 
-// dispatchToChannel 针对单一渠道格式化并投递通知载荷。
+// dispatchToChannel 针对单一渠道格式化并投递通知载荷，经由注册的中间件管道处理。
 func (n *Notifier) dispatchToChannel(ctx context.Context, target any, notif Notification, chName string) error {
-	ch := n.Channel(chName)
-	if ch == nil {
-		return oops.Code("notification_channel_not_found").
-			With("channel", chName).
-			Errorf("unsupported notification channel: %s", chName)
-	}
+	baseSend := func(innerCtx context.Context, innerTarget any, innerNotif contract.Notification, innerChannel string) error {
+		ch := n.Channel(innerChannel)
+		if ch == nil {
+			return oops.Code(errs.CodeNotificationChannelNotFound).
+				With("channel", innerChannel).
+				Errorf("unsupported notification channel: %s", innerChannel)
+		}
 
-	var message any = notif
-	if formatter, ok := ch.(Formatter); ok {
-		var err error
-		message, err = formatter.Format(notif, target)
-		if err != nil {
-			return oops.Code("notification_format_failed").
-				With("channel", chName).
+		var message any = innerNotif
+		if formatter, ok := ch.(Formatter); ok {
+			var err error
+			message, err = formatter.Format(innerNotif, innerTarget)
+			if err != nil {
+				return oops.Code(errs.CodeNotificationFormatFailed).
+					With("channel", innerChannel).
+					Wrap(err)
+			}
+		}
+
+		if err := ch.Send(innerCtx, innerTarget, message); err != nil {
+			return oops.Code(errs.CodeNotificationSendFailed).
+				With("channel", innerChannel).
 				Wrap(err)
 		}
+		return nil
 	}
 
-	if err := ch.Send(ctx, target, message); err != nil {
-		return oops.Code("notification_send_failed").
-			With("channel", chName).
-			Wrap(err)
-	}
-	return nil
+	n.mu.RLock()
+	mws := slices.Clone(n.middlewares)
+	n.mu.RUnlock()
+
+	pipeline := WrapMiddleware(baseSend, mws...)
+	return pipeline(ctx, target, notif, chName)
 }
 
 // sendSync 内部同步执行投递循环。
@@ -279,11 +341,9 @@ func (n *Notifier) sendParallelSync(ctx context.Context, targets []any, notif No
 	g.SetLimit(n.parallelLimit())
 
 	for _, target := range targets {
-		t := target
-		for _, chName := range resolveChannels(notif, t, so) {
-			name := chName
+		for _, chName := range resolveChannels(notif, target, so) {
 			g.Go(func() error {
-				return n.dispatchToChannel(gCtx, t, notif, name)
+				return n.dispatchToChannel(gCtx, target, notif, chName)
 			})
 		}
 	}

@@ -4,7 +4,27 @@ package realtime
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/centrifugal/gocent/v3"
 )
+
+// Publication 代表频道历史消息记录项（解耦底层 gocent 类型）。
+type Publication = gocent.Publication
+
+// ClientInfo 代表频道活跃客户端信息（解耦底层 gocent 类型）。
+type ClientInfo = gocent.ClientInfo
+
+// PresenceStatsResult 代表在线统计聚合结果（解耦底层 gocent 类型）。
+type PresenceStatsResult = gocent.PresenceStatsResult
+
+// Client 代表底层实时传输客户端（解耦底层 gocent 类型）。
+type Client = gocent.Client
+
+// EventMessage 结构化实时事件载荷，消除 map[string]any 动态堆分配。
+type EventMessage struct {
+	Event string `json:"event"`
+	Data  any    `json:"data"`
+}
 
 // Centrifugo Proxy 错误码常量定义
 const (
@@ -33,6 +53,7 @@ type DisconnectCommand struct {
 // User 表示实时通信中解析出的通用用户信息。
 type User struct {
 	ID        string         `json:"id"`
+	Role      string         `json:"role,omitempty"`
 	GuardName string         `json:"guardName,omitempty"`
 	Info      map[string]any `json:"info,omitempty"`
 }

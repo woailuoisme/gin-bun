@@ -23,6 +23,25 @@ func TestVector_Basic(t *testing.T) {
 	assert.Equal(t, []float32{1.0, 2.0, 3.0}, v.Slice())
 	assert.Equal(t, "[1,2,3]", v.String())
 
+	// 验证 At(i) 元素分量读取与越界防护
+	assert.InDelta(t, 1.0, float64(v.At(0)), 1e-6)
+	assert.InDelta(t, 2.0, float64(v.At(1)), 1e-6)
+	assert.InDelta(t, 3.0, float64(v.At(2)), 1e-6)
+	assert.Panics(t, func() { v.At(3) })
+	assert.Panics(t, func() { v.At(-1) })
+
+	// 验证 Get(i) 安全访问器与边界防守
+	val, ok := v.Get(0)
+	assert.True(t, ok)
+	assert.InDelta(t, 1.0, float64(val), 1e-6)
+	val, ok = v.Get(2)
+	assert.True(t, ok)
+	assert.InDelta(t, 3.0, float64(val), 1e-6)
+	_, ok = v.Get(3)
+	assert.False(t, ok)
+	_, ok = v.Get(-1)
+	assert.False(t, ok)
+
 	// 从 float64 构造
 	v64 := vector.NewVectorFromFloat64([]float64{1.1, 2.2})
 	assert.Equal(t, 2, v64.Dim())
@@ -43,7 +62,18 @@ func TestVector_Basic(t *testing.T) {
 
 	// 非法文本解析
 	_, err = vector.Parse("invalid-vector")
-	assert.Error(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vector: parse failed")
+
+	// 验证 Uber Go Style Guide 防御性拷贝隔离
+	orig := []float32{10.0, 20.0}
+	vDef := vector.NewVector(orig)
+	orig[0] = 999.0
+	assert.InDelta(t, float32(10.0), vDef.Slice()[0], 1e-6, "修改原始入参切片不应影响 Vector 内部状态")
+
+	exported := vDef.Slice()
+	exported[0] = 888.0
+	assert.InDelta(t, float32(10.0), vDef.Slice()[0], 1e-6, "修改导出的 Slice 切片不应影响 Vector 内部状态")
 }
 
 // TestVector_ScannerValuer 验证与 PostgreSQL 数据库驱动的接口交互。
@@ -95,6 +125,12 @@ func TestVector_JSON(t *testing.T) {
 	err = json.Unmarshal([]byte("null"), &nullVec)
 	require.NoError(t, err)
 	assert.True(t, nullVec.IsEmpty())
+
+	// 反序列化空数组 "[]" 及带空格数组
+	var emptyArrVec vector.Vector
+	err = json.Unmarshal([]byte("  []  "), &emptyArrVec)
+	require.NoError(t, err)
+	assert.True(t, emptyArrVec.IsEmpty())
 }
 
 // TestVector_Calc 验证纯 Go 内存向量距离与相似度数学真值。
@@ -172,6 +208,18 @@ func TestVector_BunQuery(t *testing.T) {
 	sqlStr1 := q1.String()
 	assert.Contains(t, sqlStr1, `("embedding" <=> '[0.1,0.2,0.3]') ASC`)
 
+	// 1.1 验证自解释排序别名辅助函数
+	q1Asc := db.NewSelect().Model((*Item)(nil))
+	vector.OrderByDistanceAsc(q1Asc, "embedding", queryVec, vector.MetricCosine)
+	assert.Contains(t, q1Asc.String(), `("embedding" <=> '[0.1,0.2,0.3]') ASC`)
+
+	q1Desc := db.NewSelect().Model((*Item)(nil))
+	vector.OrderByDistanceDesc(q1Desc, "embedding", queryVec, vector.MetricCosine)
+	assert.Contains(t, q1Desc.String(), `("embedding" <=> '[0.1,0.2,0.3]') DESC`)
+
+	assert.Nil(t, vector.OrderByDistanceAsc(nil, "embedding", queryVec, vector.MetricCosine))
+	assert.Nil(t, vector.OrderByDistanceDesc(nil, "embedding", queryVec, vector.MetricCosine))
+
 	// 2. WhereDistanceWithin 距离阈值截断
 	q2 := db.NewSelect().Model((*Item)(nil))
 	vector.WhereDistanceWithin(q2, "embedding", queryVec, vector.MetricL2, 0.5)
@@ -197,6 +245,27 @@ func TestVector_BunQuery(t *testing.T) {
 	assert.Nil(t, vector.ColumnSimilarity(nil, "embedding", queryVec, "score"))
 }
 
+// TestVector_BinaryAndIsZero 验证二进制编码/解码与 IsZero 判定。
+func TestVector_BinaryAndIsZero(t *testing.T) {
+	v := vector.NewVector([]float32{1.0, 2.5, -3.25})
+	assert.False(t, v.IsZero())
+
+	var empty vector.Vector
+	assert.True(t, empty.IsZero())
+
+	// 二进制编码
+	buf, err := v.EncodeBinary(nil)
+	require.NoError(t, err)
+	assert.NotEmpty(t, buf)
+
+	// 二进制解码
+	var decoded vector.Vector
+	err = decoded.DecodeBinary(buf)
+	require.NoError(t, err)
+	assert.Equal(t, 3, decoded.Dim())
+	assert.Equal(t, []float32{1.0, 2.5, -3.25}, decoded.Slice())
+}
+
 // 确保符合 sql.Scanner, driver.Valuer, json.Marshaler, json.Unmarshaler 契约的编译期检查
 var (
 	_ sql.Scanner      = (*vector.Vector)(nil)
@@ -204,3 +273,59 @@ var (
 	_ json.Marshaler   = (*vector.Vector)(nil)
 	_ json.Unmarshaler = (*vector.Vector)(nil)
 )
+
+func BenchmarkCosineSimilarity(b *testing.B) {
+	v1 := vector.NewVector(make([]float32, 1536))
+	v2 := vector.NewVector(make([]float32, 1536))
+	s1 := v1.Slice()
+	s2 := v2.Slice()
+	for i := range s1 {
+		s1[i] = float32(i) * 0.001
+		s2[i] = float32(i) * 0.002
+	}
+	v1 = vector.NewVector(s1)
+	v2 = vector.NewVector(s2)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = vector.CosineSimilarity(v1, v2)
+	}
+}
+
+func BenchmarkNewVectorFromFloat64(b *testing.B) {
+	floats := make([]float64, 1536)
+	for i := range floats {
+		floats[i] = float64(i) * 0.001
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = vector.NewVectorFromFloat64(floats)
+	}
+}
+
+func BenchmarkVector_At(b *testing.B) {
+	v := vector.NewVector(make([]float32, 1536))
+	b.ResetTimer()
+	b.ReportAllocs()
+	var sum float32
+	for b.Loop() {
+		sum += v.At(500)
+	}
+	_ = sum
+}
+
+func BenchmarkVector_Get(b *testing.B) {
+	v := vector.NewVector(make([]float32, 1536))
+	b.ResetTimer()
+	b.ReportAllocs()
+	var sum float32
+	for b.Loop() {
+		if val, ok := v.Get(500); ok {
+			sum += val
+		}
+	}
+	_ = sum
+}

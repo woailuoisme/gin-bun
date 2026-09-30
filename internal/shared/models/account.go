@@ -4,11 +4,13 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
+
+	"bgin/internal/shared/enums"
 )
 
 // ProviderCredential 是本地密码账号的 provider_id。
 // 一个 User 可以有多个 Account，但本地密码只能有一条。
-const ProviderCredential = "credential"
+const ProviderCredential = string(enums.ProviderCredential)
 
 // Account 对应 "account" 表：一个 User 的一条登录途径。
 type Account struct {

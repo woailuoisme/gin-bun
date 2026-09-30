@@ -34,9 +34,22 @@ func (j *JSONB[T]) Set(data T) {
 }
 
 // IsZero 判定底层数据是否为 Go 的零值或空。
+// 优先走 IsZero 契约与快速指针判断，消除热路径上 reflect.DeepEqual 的堆逃逸与 CPU 开销。
 func (j JSONB[T]) IsZero() bool {
-	var zero T
-	return reflect.DeepEqual(j.Data, zero)
+	var anyData any = j.Data
+	if anyData == nil {
+		return true
+	}
+	if z, ok := anyData.(interface{ IsZero() bool }); ok {
+		return z.IsZero()
+	}
+	val := reflect.ValueOf(anyData)
+	switch val.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Interface, reflect.Func, reflect.Chan:
+		return val.IsNil()
+	default:
+		return val.IsZero()
+	}
 }
 
 // String 返回序列化后的 JSON 字符串；若序列化失败则返回空字符串。
@@ -52,10 +65,14 @@ func (j JSONB[T]) String() string {
 //
 //nolint:nilnil // driver.Valuer returns (nil, nil) for SQL NULL
 func (j JSONB[T]) Value() (driver.Value, error) {
-	if j.IsZero() {
-		// 对零值，如果 T 是指针或切片/Map，输出 SQL NULL
-		val := reflect.ValueOf(j.Data)
-		if !val.IsValid() || ((val.Kind() == reflect.Pointer || val.Kind() == reflect.Slice || val.Kind() == reflect.Map) && val.IsNil()) {
+	var anyData any = j.Data
+	if anyData == nil {
+		return nil, nil
+	}
+	val := reflect.ValueOf(anyData)
+	switch val.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map:
+		if val.IsNil() {
 			return nil, nil
 		}
 	}

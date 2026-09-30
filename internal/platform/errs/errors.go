@@ -20,6 +20,7 @@ const (
 	msgRequestTooLarge  = "The request body is too large"
 	msgGatewayTimeout   = "The request timed out while waiting for a response"
 	msgInvalidLogin     = "Invalid email or password"
+	msgUnauthorized     = "Authentication is required"
 )
 
 // Error 是携带结构化错误码与可选字段级校验明细的业务错误。

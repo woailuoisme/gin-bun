@@ -16,8 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/config"
-	"bgin/internal/platform/identity"
+	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/realtime"
+	"bgin/internal/shared/enums"
 )
 
 const testSecret = "centrifugo-test-secret-key-12345"
@@ -64,6 +65,42 @@ func TestTokenGenerationAndValidation(t *testing.T) {
 	_, err = realtime.GenerateConnectionToken("", "user_101", exp, nil, nil)
 	require.Error(t, err)
 	_, err = realtime.ValidateConnectionToken("", tok)
+	require.Error(t, err)
+}
+
+// TestSubscriptionTokenGenerationAndValidation 验证 Centrifugo 频道订阅令牌签发与验签。
+func TestSubscriptionTokenGenerationAndValidation(t *testing.T) {
+	exp := time.Now().UTC().Add(30 * time.Minute).Truncate(time.Second)
+
+	tok, err := realtime.GenerateSubscriptionToken(
+		testSecret,
+		"user_202",
+		"private:chat.room42",
+		exp,
+		realtime.WithSubscriptionInfo(map[string]any{"device": "ios"}),
+		realtime.WithSubscriptionClient("client-abc"),
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, tok)
+
+	claims, err := realtime.ValidateSubscriptionToken(testSecret, tok)
+	require.NoError(t, err)
+	require.NotNil(t, claims)
+
+	assert.Equal(t, "user_202", claims.Subject)
+	assert.Equal(t, "private:chat.room42", claims.Channel)
+	assert.Equal(t, "client-abc", claims.Client)
+	assert.Equal(t, exp.Unix(), claims.ExpiresAt.Unix())
+	assert.Equal(t, "ios", claims.Info["device"])
+
+	// 错误密钥验证失败
+	_, err = realtime.ValidateSubscriptionToken("invalid-secret", tok)
+	require.Error(t, err)
+
+	// 空密钥与空频道失败
+	_, err = realtime.GenerateSubscriptionToken("", "user_202", "ch", exp)
+	require.Error(t, err)
+	_, err = realtime.GenerateSubscriptionToken(testSecret, "user_202", "", exp)
 	require.Error(t, err)
 }
 
@@ -119,7 +156,12 @@ func TestRegistryChannelAuthorization(t *testing.T) {
 	err = reg.Authorize(ctx, realtime.User{ID: "1"}, "private:secret_room")
 	require.Error(t, err)
 
-	// 普通公共频道未注册时默认允许
+	// 未白名单注册的普通频道同样遵循全局严格 Fail-Closed 阻断
+	err = reg.Authorize(ctx, realtime.User{ID: "1"}, "news.weather")
+	require.Error(t, err)
+
+	// 显式白名单注册的公开广播频道允许订阅
+	realtime.AllowPublic(reg, "news.*")
 	err = reg.Authorize(ctx, realtime.User{ID: "1"}, "news.weather")
 	require.NoError(t, err)
 }
@@ -172,9 +214,9 @@ func TestDSLHelpers(t *testing.T) {
 		return actor != nil && actor.GetAuthIdentifier() == id
 	})
 
-	ctx := identity.With(context.Background(), identity.Identity{
+	ctx := authentication.With(context.Background(), authentication.Identity{
 		UserID: "100",
-		Role:   "user",
+		Role:   string(enums.RoleUser),
 	})
 
 	err := reg.Authorize(ctx, realtime.User{}, "orders.100")
@@ -187,6 +229,18 @@ func TestDSLHelpers(t *testing.T) {
 	realtime.ChannelGuard(reg, "admin.*", "admin")
 	require.NoError(t, reg.Authorize(context.Background(), realtime.User{GuardName: "admin"}, "admin.metrics"))
 	require.Error(t, reg.Authorize(context.Background(), realtime.User{GuardName: "api"}, "admin.metrics"))
+
+	// AllowUser 高阶助手
+	realtime.AllowUser(reg, "private:users.{id}")
+	require.NoError(t, reg.Authorize(ctx, realtime.User{}, "private:users.100"))
+	require.Error(t, reg.Authorize(ctx, realtime.User{}, "private:users.200"))
+
+	// AllowRole 高阶助手
+	realtime.AllowRole(reg, "internal:reports", "admin", "super_admin")
+	adminCtx := authentication.With(context.Background(), authentication.Identity{UserID: "admin_1", Role: "admin"})
+	userCtx := authentication.With(context.Background(), authentication.Identity{UserID: "user_1", Role: "user"})
+	require.NoError(t, reg.Authorize(adminCtx, realtime.User{}, "internal:reports"))
+	require.Error(t, reg.Authorize(userCtx, realtime.User{}, "internal:reports"))
 }
 
 // TestManagerWithMockServer 针对 Centrifugo HTTP 模拟服务验证 Manager 核心动作。
@@ -239,74 +293,45 @@ func TestManagerWithMockServer(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodPost, receivedMethod)
 
-	// 3. Disconnect
+	// 3. PublishRaw / BroadcastRaw
+	err = mgr.PublishRaw(ctx, "chat.room1", []byte(`{"raw":true}`))
+	require.NoError(t, err)
+	err = mgr.BroadcastRaw(ctx, []string{"room1"}, []byte(`{"raw":true}`))
+	require.NoError(t, err)
+
+	// 4. Disconnect
 	err = mgr.Disconnect(ctx, "user_42")
 	require.NoError(t, err)
 
-	// 4. Unsubscribe
+	// 5. Unsubscribe
 	err = mgr.Unsubscribe(ctx, "user_42", "room1")
 	require.NoError(t, err)
 
-	// 5. Token
+	// 6. Token
 	tok, err := mgr.Token("user_42", time.Now().Add(time.Hour), nil, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, tok)
 
-	// 6. 验证已禁用 Manager 的行为
+	// 7. SubscriptionToken
+	subTok, err := mgr.GenerateSubscriptionToken("user_42", "chat.room1", time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	require.NotEmpty(t, subTok)
+
+	// 8. 验证已禁用 Manager 的行为
 	disabledMgr := realtime.NewManager(&config.CentrifugoConfig{Enabled: false})
-	require.NoError(t, disabledMgr.Dispatch("channel", "event", nil))
-	require.NoError(t, disabledMgr.Broadcast([]string{"ch"}, "event", nil))
+	require.NoError(t, disabledMgr.DispatchContext(ctx, "channel", "event", nil))
+	require.NoError(t, disabledMgr.BroadcastContext(ctx, []string{"ch"}, "event", nil))
+	require.NoError(t, disabledMgr.PublishRaw(ctx, "ch", nil))
+	require.NoError(t, disabledMgr.BroadcastRaw(ctx, []string{"ch"}, nil))
 	require.NoError(t, disabledMgr.Disconnect(ctx, "u"))
 	require.NoError(t, disabledMgr.Unsubscribe(ctx, "u", "ch"))
 
-	// 7. Gateway 适配与向后兼容构造
-	gw := realtime.NewGateway(nil, nil, testSecret)
+	// 9. Gateway 别名必须与 Manager 同源（统一门面）
+	var gw realtime.Gateway = mgr
 	require.NotNil(t, gw)
-
-	wrapped := realtime.NewGateway(mgr, nil, "")
-	require.Equal(t, mgr, wrapped)
 
 	// 请求必须打到 Centrifugo 的 HTTP API 端点，落到别处即意味着地址拼装有问题。
 	assert.Equal(t, "/api", receivedPath)
-}
-
-// TestAfterCommitHooks 验证事务提交后派发机制。
-func TestAfterCommitHooks(t *testing.T) {
-	executed := false
-	hookHandler := func(_ context.Context, fn func()) {
-		executed = true
-		fn()
-	}
-
-	cfg := &config.CentrifugoConfig{
-		Enabled: true,
-		URL:     "http://127.0.0.1:9999",
-		APIKey:  "key",
-	}
-
-	mgr := realtime.NewManager(cfg, realtime.WithAfterCommitHandler(hookHandler))
-
-	ctx := context.Background()
-	err := mgr.DispatchAfterCommit(ctx, "ch", "ev", "data")
-	require.NoError(t, err)
-	assert.True(t, executed, "自定义提交后钩子应被触发")
-
-	// 验证 context 内置 WithAfterCommit 容器
-	txCtx, commit := realtime.WithAfterCommit(context.Background())
-	ran := false
-	realtime.AfterCommit(txCtx, func() {
-		ran = true
-	})
-	assert.False(t, ran, "未 commit 前不应执行")
-	commit()
-	assert.True(t, ran, "commit 后应执行")
-
-	// 非事务 context 立即执行
-	immediateRan := false
-	realtime.AfterCommit(context.Background(), func() {
-		immediateRan = true
-	})
-	assert.True(t, immediateRan)
 }
 
 // TestPackageHelperFunctions 验证 package.go 顶层注册工厂。

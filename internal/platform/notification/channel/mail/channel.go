@@ -22,6 +22,8 @@ type Channel struct {
 	defaultDriver string
 }
 
+var _ contract.Channel = (*Channel)(nil)
+
 // NewChannel 创建邮件通知渠道实例。
 func NewChannel(m mailer.Mailer) *Channel {
 	return &Channel{
@@ -74,7 +76,7 @@ func (c *Channel) Format(n contract.Notification, notifiable any) (any, error) {
 		}
 	}
 
-	return nil, oops.Code("notification_unsupported_mail").
+	return nil, oops.Code(errs.CodeNotificationUnsupportedMail).
 		With("notification", n).
 		Errorf("notification does not implement mail.Notification or ChannelFormatter")
 }
@@ -109,12 +111,12 @@ func (c *Channel) Send(ctx context.Context, notifiable any, message any) error {
 // sendMailable 发送 Mailable 模板邮件。
 func (c *Channel) sendMailable(ctx context.Context, recipientEmail string, mailable mailer.Mailable) error {
 	if recipientEmail == "" {
-		return oops.Code("mail_missing_recipient").Errorf("mail: could not determine email address for notifiable")
+		return oops.Code(errs.CodeMailMissingRecipient).Errorf("mail: could not determine email address for notifiable")
 	}
 	if c.mailer != nil {
 		return c.mailer.SendMailable(ctx, recipientEmail, mailable)
 	}
-	return oops.Code("mail_driver_not_found").Errorf("mail: mailer is not configured")
+	return oops.Code(errs.CodeMailDriverNotFound).Errorf("mail: mailer is not configured")
 }
 
 // sendDirectMessage 发送直接构建的邮件消息。
@@ -123,7 +125,7 @@ func (c *Channel) sendDirectMessage(ctx context.Context, recipientEmail string, 
 		msg.To = recipientEmail
 	}
 	if msg.To == "" {
-		return oops.Code("mail_missing_recipient").Errorf("mail: could not determine email address for notifiable")
+		return oops.Code(errs.CodeMailMissingRecipient).Errorf("mail: could not determine email address for notifiable")
 	}
 	if c.mailer != nil {
 		return c.mailer.Send(ctx, *msg)
@@ -131,7 +133,7 @@ func (c *Channel) sendDirectMessage(ctx context.Context, recipientEmail string, 
 	if drv := c.Driver(); drv != nil {
 		return drv.Send(ctx, toChannelMailMessage(msg))
 	}
-	return oops.Code("mail_driver_not_found").Errorf("mail: mailer is not configured")
+	return oops.Code(errs.CodeMailDriverNotFound).Errorf("mail: mailer is not configured")
 }
 
 // resolveRecipientEmail 解析通知对象的邮箱目标。

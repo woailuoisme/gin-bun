@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/features/system"
+	"bgin/internal/platform/logger"
 )
 
 // errInternal 模拟底层驱动的真实报错：它带着目标地址与凭据，这类内容绝不能出现在响应体里。
@@ -50,13 +50,17 @@ func newProbe(t *testing.T, database, cache system.Pinger) (*gin.Engine, *bytes.
 	gin.SetMode(gin.TestMode)
 
 	logs := &bytes.Buffer{}
-	logger := zerolog.New(logs)
+	l := logger.NewWithOptions(
+		logger.WithLevel("debug"),
+		logger.WithChannel("json"),
+		logger.WithWriter(logs),
+	)
 
 	engine := gin.New()
 	system.RegisterRoutes(engine, system.NewHandler(system.NewService(system.Deps{
 		Database: database,
 		Cache:    cache,
-	}), &logger))
+	}), l))
 	return engine, logs
 }
 
@@ -209,7 +213,11 @@ func (s stubComponent) Enabled() bool {
 func TestReadinessWithExtendedComponents(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logs := &bytes.Buffer{}
-	logger := zerolog.New(logs)
+	l := logger.NewWithOptions(
+		logger.WithLevel("debug"),
+		logger.WithChannel("json"),
+		logger.WithWriter(logs),
+	)
 
 	engine := gin.New()
 	svc := system.NewService(system.Deps{
@@ -220,7 +228,7 @@ func TestReadinessWithExtendedComponents(t *testing.T) {
 		Realtime: stubComponent{driver: "centrifugo", enabled: false},
 		Imgproxy: stubComponent{driver: "imgproxy", enabled: false},
 	})
-	system.RegisterRoutes(engine, system.NewHandler(svc, &logger))
+	system.RegisterRoutes(engine, system.NewHandler(svc, l))
 
 	status, body := get(t, engine, "/readyz")
 	require.Equal(t, http.StatusOK, status)
@@ -262,7 +270,11 @@ func TestReadinessWithExtendedComponents(t *testing.T) {
 func TestReadinessDegradedWhenExtendedComponentFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logs := &bytes.Buffer{}
-	logger := zerolog.New(logs)
+	l := logger.NewWithOptions(
+		logger.WithLevel("debug"),
+		logger.WithChannel("json"),
+		logger.WithWriter(logs),
+	)
 
 	engine := gin.New()
 	svc := system.NewService(system.Deps{
@@ -271,7 +283,7 @@ func TestReadinessDegradedWhenExtendedComponentFails(t *testing.T) {
 		Storage:  stubComponent{driver: "garage", enabled: true},
 		Imgproxy: stubComponent{driver: "imgproxy", enabled: true, err: errors.New("imgproxy connection refused")},
 	})
-	system.RegisterRoutes(engine, system.NewHandler(svc, &logger))
+	system.RegisterRoutes(engine, system.NewHandler(svc, l))
 
 	status, body := get(t, engine, "/readyz")
 	require.Equal(t, http.StatusOK, status)

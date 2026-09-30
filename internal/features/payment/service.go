@@ -3,18 +3,20 @@ package payment
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
 	"github.com/samber/oops"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/errs"
+	"bgin/internal/platform/eventbus"
 	"bgin/internal/platform/logger"
 	platformPayment "bgin/internal/platform/payment"
 	"bgin/internal/platform/payment/enums"
+	"bgin/internal/shared/events"
 )
 
 const (
@@ -28,6 +30,10 @@ const (
 
 // CallbackHandler 是支付与退款业务消费钩子接口。
 // 业务切片或聚合根通过实现此接口接收成功状态并推进领域状态机。
+//
+// 实现方必须自行完成订单归属与金额核对：result.PaidAmount / result.RefundAmount
+// 来自渠道报文，未与本系统订单金额比对前不得直接置为已支付/已退款。
+// 验签只能证明报文来自渠道，不能证明金额与本地订单一致。
 type CallbackHandler interface {
 	// OnPaymentSuccess 处理支付成功回调通知。返回 nil 代表业务成功消费，由网关向渠道返回成功 ACK。
 	OnPaymentSuccess(ctx context.Context, result *platformPayment.PaymentResult) error
@@ -35,49 +41,65 @@ type CallbackHandler interface {
 	OnRefundSuccess(ctx context.Context, result *platformPayment.RefundResult) error
 }
 
-// defaultCallbackHandler 是默认的空操作业务处理器，记录日志并返回成功。
+// defaultCallbackHandler 是未接入业务处理器时的兜底实现。
+//
+// 它刻意不回执成功：静默 ACK 会让渠道停止重试，订单永远停留在未支付状态且无人察觉；
+// 返回失败会触发渠道重试，让"支付模块未接线"这件事在监控上暴露出来。
 type defaultCallbackHandler struct{}
 
-func (d *defaultCallbackHandler) OnPaymentSuccess(ctx context.Context, result *platformPayment.PaymentResult) error {
-	log := logger.FromContext(ctx)
-	log.Info().
-		Str("out_trade_no", result.OutTradeNo).
-		Str("channel_trade_no", result.ChannelTradeNo).
-		Int64("paid_amount", result.PaidAmount).
-		Msg("payment success callback received (using default noop handler)")
+var _ CallbackHandler = (*defaultCallbackHandler)(nil)
 
-	return nil
+func (d *defaultCallbackHandler) OnPaymentSuccess(ctx context.Context, result *platformPayment.PaymentResult) error {
+	logger.FromContext(ctx).Error("payment success callback received without a registered handler",
+		zap.String("out_trade_no", result.OutTradeNo),
+		zap.String("channel_trade_no", result.ChannelTradeNo),
+		zap.Int64("paid_amount", result.PaidAmount),
+	)
+	return oops.Code(string(errs.CodeInternal)).Errorf("payment callback handler is not configured")
 }
 
 func (d *defaultCallbackHandler) OnRefundSuccess(ctx context.Context, result *platformPayment.RefundResult) error {
-	log := logger.FromContext(ctx)
-	log.Info().
-		Str("out_trade_no", result.OutTradeNo).
-		Str("out_refund_no", result.OutRefundNo).
-		Str("channel_refund_no", result.ChannelRefundNo).
-		Int64("refund_amount", result.RefundAmount).
-		Str("status", string(result.Status)).
-		Msg("refund callback received (using default noop handler)")
-
-	return nil
+	logger.FromContext(ctx).Error("refund callback received without a registered handler",
+		zap.String("out_trade_no", result.OutTradeNo),
+		zap.String("out_refund_no", result.OutRefundNo),
+		zap.String("channel_refund_no", result.ChannelRefundNo),
+		zap.Int64("refund_amount", result.RefundAmount),
+		zap.String("status", string(result.Status)),
+	)
+	return oops.Code(string(errs.CodeInternal)).Errorf("payment callback handler is not configured")
 }
 
-// Service 负责协调支付回调的验签、分布式幂等防重与业务事件分发。
+// Service 负责协调支付回调的分布式幂等防重与业务事件分发。
 type Service struct {
-	paymentMgr *platformPayment.Manager
-	cache      *cache.Client
-	cfg        *config.Config
-	handler    CallbackHandler
+	gateway   platformPayment.Gateway
+	cache     *cache.Client
+	cfg       *config.Config
+	publisher eventbus.Publisher
+	handler   CallbackHandler
 }
 
-// NewService 构造支付回调协调服务。
-func NewService(paymentMgr *platformPayment.Manager, cacheClient *cache.Client, cfg *config.Config) *Service {
+// NewService 构造支付回调协调服务。publisher 允许为 nil，表示不向外广播领域事件。
+func NewService(
+	gateway platformPayment.Gateway,
+	cacheClient *cache.Client,
+	cfg *config.Config,
+	publisher eventbus.Publisher,
+) *Service {
 	return &Service{
-		paymentMgr: paymentMgr,
-		cache:      cacheClient,
-		cfg:        cfg,
-		handler:    &defaultCallbackHandler{},
+		gateway:   gateway,
+		cache:     cacheClient,
+		cfg:       cfg,
+		publisher: publisher,
+		handler:   &defaultCallbackHandler{},
 	}
+}
+
+// Gateway 暴露底层支付网关接口。
+func (s *Service) Gateway() platformPayment.Gateway {
+	if s == nil {
+		return nil
+	}
+	return s.gateway
 }
 
 // SetCallbackHandler 注册业务消费钩子实现。
@@ -87,120 +109,167 @@ func (s *Service) SetCallbackHandler(handler CallbackHandler) {
 	}
 }
 
-// HandleNotification 统一处理微信与支付宝的异步通知回调。
-func (s *Service) HandleNotification(
+// ProcessNotification 统一处理已通过传输层验签解析的支付/退款异步通知。
+func (s *Service) ProcessNotification(
 	ctx context.Context,
-	channelStr, appKey string,
-	req *http.Request,
+	channel enums.PaymentChannel,
+	notification *platformPayment.Notification,
 ) (platformPayment.NotificationAck, error) {
 	log := logger.FromContext(ctx)
 
-	channel := enums.PaymentChannel(channelStr)
 	if !channel.IsValid() {
 		return platformPayment.FailureAck(channel), errs.BadRequest(errUnsupportedChannel)
 	}
-
-	if s.paymentMgr == nil {
-		return platformPayment.FailureAck(channel), errs.ServiceUnavailable("payment gateway is not initialized")
+	if notification == nil {
+		return platformPayment.FailureAck(channel), errs.BadRequest("notification payload is nil")
 	}
 
-	// 1. 严格验签并解析报文 (微信商户证书/微信平台证书/支付宝公钥证书)
-	notification, err := s.paymentMgr.ParseNotification(ctx, channel, appKey, req)
-	if err != nil {
-		log.Warn().
-			Err(err).
-			Str("channel", channel.String()).
-			Str("app_key", appKey).
-			Msg("payment callback verification or parsing failed")
-
-		return platformPayment.FailureAck(channel), oops.
-			Code(string(errs.CodeBadRequest)).
-			With("channel", channel.String()).
-			With("app_key", appKey).
-			Wrap(err)
+	key := notificationKey{
+		channel: channel,
+		kind:    notification.Kind.String(),
+		tradeNo: s.extractTradeNo(notification),
 	}
 
-	// 2. 幂等与并发防重放控制
-	tradeNo := s.extractTradeNo(notification)
-	if s.cache != nil && tradeNo != "" {
-		// 已消费通知直接返回成功应答，防止重复入账。
-		doneKey := cache.Key("payment", "notify", "done", channel.String(), tradeNo)
-		if _, getErr := s.cache.Get(ctx, doneKey); getErr == nil {
-			log.Warn().
-				Str("channel", channel.String()).
-				Str("trade_no", tradeNo).
-				Msg("callback notification already consumed, acknowledged without reprocessing")
-
-			return platformPayment.SuccessAck(channel), nil
-		}
-
-		lockKey := cache.Key("payment", "notify", "lock", channel.String(), tradeNo)
-		acquired, lockErr := s.cache.SetNX(ctx, lockKey, "1", notifyLockTTL)
-		if lockErr == nil && !acquired {
-			log.Warn().
-				Str("channel", channel.String()).
-				Str("trade_no", tradeNo).
-				Msg("concurrent callback notification detected, skipping duplicate processing")
-
-			return platformPayment.FailureAck(channel), errs.Conflict("duplicate notification in progress")
-		}
+	// 1. 幂等与并发防重放控制（按"渠道 + 通知类型 + 单号"三段去重：
+	//    同一订单的支付与退款通知必须各算一次，否则退款会被支付的去重标记吞掉）
+	consumed, lockErr := s.acquireLockOrConsumed(ctx, key)
+	if lockErr != nil {
+		return platformPayment.FailureAck(channel), lockErr
+	}
+	if consumed {
+		return platformPayment.SuccessAck(channel), nil
 	}
 
-	// 3. 分发到具体业务处理器执行状态流转
-	var handleErr error
-	switch notification.Kind {
-	case enums.PaymentNotificationKindPayment:
-		if notification.Payment == nil {
-			return platformPayment.FailureAck(channel), errs.BadRequest("payment notification payload is missing")
-		}
-		handleErr = s.handler.OnPaymentSuccess(ctx, notification.Payment)
-
-	case enums.PaymentNotificationKindRefund:
-		if notification.Refund == nil {
-			return platformPayment.FailureAck(channel), errs.BadRequest("refund notification payload is missing")
-		}
-		handleErr = s.handler.OnRefundSuccess(ctx, notification.Refund)
-
-	default:
-		return platformPayment.FailureAck(channel), errs.BadRequest("unsupported payment notification kind: " + notification.Kind.String())
-	}
-
-	// 4. 业务处理失败时，向渠道返回 Failure 触发渠道自带的阶梯重试机制
+	// 2. 分发到具体业务处理器与发布领域事件
+	handleErr := s.dispatchNotification(ctx, channel, notification)
 	if handleErr != nil {
-		log.Error().
-			Err(handleErr).
-			Str("channel", channel.String()).
-			Str("kind", notification.Kind.String()).
-			Str("trade_no", tradeNo).
-			Msg("payment callback consumption failed, returning failure ack for retry")
-
 		return platformPayment.FailureAck(channel), oops.
 			Code(string(errs.CodeInternal)).
-			With("channel", channel.String()).
-			With("kind", notification.Kind.String()).
-			With("trade_no", tradeNo).
+			With("channel", key.channel.String()).
+			With("kind", key.kind).
+			With("trade_no", key.tradeNo).
 			Wrap(handleErr)
 	}
 
-	log.Info().
-		Str("channel", channel.String()).
-		Str("kind", notification.Kind.String()).
-		Str("trade_no", tradeNo).
-		Msg("payment callback notification successfully processed")
+	log.Info("payment callback notification successfully processed", key.logFields()...)
 
-	// 5. 写入持久化去重标记
-	if s.cache != nil && tradeNo != "" {
-		doneKey := cache.Key("payment", "notify", "done", channel.String(), tradeNo)
-		if err := s.cache.Set(ctx, doneKey, "1", notifyDoneTTL); err != nil {
-			log.Warn().Err(err).Str("trade_no", tradeNo).Msg("failed to persist payment notification dedup marker")
-		}
-	}
+	// 3. 写入持久化去重标记
+	s.recordConsumed(ctx, key)
 
 	return platformPayment.SuccessAck(channel), nil
 }
 
+// notificationKey 是支付通知的三段幂等标识：渠道 + 通知类型 + 单号。
+//
+// 三者总是一起出行（缓存键、日志、错误上下文），因此收进一个类型，
+// 避免每个下游 helper 都摊开三个参数、且任何一处漏传一段就退化成串号。
+type notificationKey struct {
+	channel enums.PaymentChannel
+	kind    string
+	tradeNo string
+}
+
+// notificationKeyPurpose 是幂等缓存键的用途维度：已消费标记与处理中锁必须分键，否则会互相覆盖。
+type notificationKeyPurpose string
+
+const (
+	purposeConsumed notificationKeyPurpose = "done"
+	purposeLock     notificationKeyPurpose = "lock"
+)
+
+// cacheKey 返回指定用途的幂等缓存键，三段标识的拼装只此一处。
+func (k notificationKey) cacheKey(purpose notificationKeyPurpose) string {
+	return cache.Key("payment", "notify", string(purpose), k.channel.String(), k.kind, k.tradeNo)
+}
+
+// logFields 返回统一的日志字段，保证幂等键在日志里始终三段齐全。
+func (k notificationKey) logFields() []zap.Field {
+	return []zap.Field{
+		zap.String("channel", k.channel.String()),
+		zap.String("kind", k.kind),
+		zap.String("trade_no", k.tradeNo),
+	}
+}
+
+// acquireLockOrConsumed 检查通知是否已消费并尝试加分布式防重放锁。
+func (s *Service) acquireLockOrConsumed(ctx context.Context, key notificationKey) (bool, error) {
+	if s.cache == nil || key.tradeNo == "" {
+		return false, nil
+	}
+	log := logger.FromContext(ctx)
+
+	doneKey := key.cacheKey(purposeConsumed)
+	if _, getErr := s.cache.Get(ctx, doneKey); getErr == nil {
+		log.Warn("callback notification already consumed, acknowledged without reprocessing",
+			key.logFields()...,
+		)
+		return true, nil
+	}
+
+	lockKey := key.cacheKey(purposeLock)
+	acquired, lockErr := s.cache.SetNX(ctx, lockKey, "1", notifyLockTTL)
+	if lockErr == nil && !acquired {
+		return false, errs.Conflict("duplicate notification in progress")
+	}
+
+	return false, nil
+}
+
+// dispatchNotification 将通知派发给业务处理器并向事件总线广播领域事件。
+func (s *Service) dispatchNotification(ctx context.Context, channel enums.PaymentChannel, n *platformPayment.Notification) error {
+	switch n.Kind {
+	case enums.PaymentNotificationKindPayment:
+		if n.Payment == nil {
+			return errs.BadRequest("payment notification payload is missing")
+		}
+		if err := s.handler.OnPaymentSuccess(ctx, n.Payment); err != nil {
+			return err
+		}
+		if s.publisher != nil {
+			_ = s.publisher.Publish(ctx, events.PaymentSucceededEvent{
+				Channel:   channel,
+				Payment:   n.Payment,
+				Timestamp: time.Now(),
+			})
+		}
+		return nil
+
+	case enums.PaymentNotificationKindRefund:
+		if n.Refund == nil {
+			return errs.BadRequest("refund notification payload is missing")
+		}
+		if err := s.handler.OnRefundSuccess(ctx, n.Refund); err != nil {
+			return err
+		}
+		if s.publisher != nil {
+			_ = s.publisher.Publish(ctx, events.PaymentRefundedEvent{
+				Channel:   channel,
+				Refund:    n.Refund,
+				Timestamp: time.Now(),
+			})
+		}
+		return nil
+
+	default:
+		return errs.BadRequest("unsupported payment notification kind: " + n.Kind.String())
+	}
+}
+
+// recordConsumed 写入持久化去重标记。
+func (s *Service) recordConsumed(ctx context.Context, key notificationKey) {
+	if s.cache == nil || key.tradeNo == "" {
+		return
+	}
+	doneKey := key.cacheKey(purposeConsumed)
+	if err := s.cache.Set(ctx, doneKey, "1", notifyDoneTTL); err != nil {
+		logger.FromContext(ctx).Warn("failed to persist payment notification dedup marker",
+			zap.Error(err),
+			zap.String("trade_no", key.tradeNo),
+		)
+	}
+}
+
 // FailureRedirectURL 返回支付失败后引导用户回到的订单结果页地址。
-// 由 Service 统一拼装，Handler 只负责跳转，避免在 HTTP 层读取服务内部配置。
 func (s *Service) FailureRedirectURL() string {
 	if s == nil || s.cfg == nil {
 		return "/orders?status=failed"
@@ -208,40 +277,13 @@ func (s *Service) FailureRedirectURL() string {
 	return strings.TrimRight(s.cfg.App.URL, "/") + "/orders?status=failed"
 }
 
-// HandleAlipayReturn 处理支付宝前端同步重定向 (return_url)。
-// 该接口仅供浏览器跳转导流，不能作为最终支付成功的凭据，实际结果严格以异步通知为准。
-func (s *Service) HandleAlipayReturn(ctx context.Context, req *http.Request) (string, error) {
-	log := logger.FromContext(ctx)
-
-	if s.paymentMgr == nil {
-		return "", errs.ServiceUnavailable("payment gateway is not initialized")
+// BuildAlipayReturnURL 构造支付宝同步跳转成功后的前端页面完整地址。
+func (s *Service) BuildAlipayReturnURL(outTradeNo string) string {
+	if s == nil || s.cfg == nil {
+		return fmt.Sprintf("/orders/%s?status=success", outTradeNo)
 	}
-
-	// 对 URL Query 参数进行支付宝公钥验签
-	notification, err := s.paymentMgr.ParseNotification(ctx, enums.PaymentChannelAlipay, "", req)
-	if err != nil {
-		log.Warn().Err(err).Msg("alipay return callback verification failed")
-		return "", oops.Code(string(errs.CodeBadRequest)).Wrap(err)
-	}
-
-	outTradeNo := ""
-	if notification.Payment != nil {
-		outTradeNo = notification.Payment.OutTradeNo
-	}
-	if outTradeNo == "" {
-		outTradeNo = req.URL.Query().Get("out_trade_no")
-	}
-
-	// 构造前端重定向目标地址
 	baseURL := strings.TrimRight(s.cfg.App.URL, "/")
-	redirectURL := fmt.Sprintf("%s/orders/%s?status=success", baseURL, outTradeNo)
-
-	log.Info().
-		Str("out_trade_no", outTradeNo).
-		Str("redirect_url", redirectURL).
-		Msg("alipay return callback verified, redirecting to frontend")
-
-	return redirectURL, nil
+	return fmt.Sprintf("%s/orders/%s?status=success", baseURL, outTradeNo)
 }
 
 // extractTradeNo 提取用于并发排重的交易标识号。

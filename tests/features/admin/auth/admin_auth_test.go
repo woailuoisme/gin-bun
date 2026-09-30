@@ -13,9 +13,9 @@ import (
 
 	"bgin/internal/config"
 	adminauth "bgin/internal/features/admin/auth"
+	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/hasher"
-	"bgin/internal/platform/token"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
 	"bgin/internal/shared/models"
@@ -39,6 +39,25 @@ func newMockRepo() *mockRepo {
 		users:    make(map[string]*models.User),
 		accounts: make(map[string]*models.Account),
 	}
+}
+
+func (m *mockRepo) FindByCredentials(ctx context.Context, creds authentication.Credentials) (*models.User, error) {
+	return m.FindByEmail(ctx, creds.Account)
+}
+
+func (m *mockRepo) FindCredentialPassword(_ context.Context, userID string) (*string, error) {
+	if a, ok := m.accounts[userID]; ok {
+		return a.Password, nil
+	}
+	return nil, sql.ErrNoRows
+}
+
+func (m *mockRepo) ValidateCredentials(_ context.Context, u *models.User, creds authentication.Credentials) (bool, error) {
+	if a, ok := m.accounts[u.ID]; ok && a.Password != nil {
+		h := hasher.New()
+		return h.Check(*a.Password, creds.Password)
+	}
+	return false, nil
 }
 
 func (m *mockRepo) FindByEmail(_ context.Context, email string) (*models.User, error) {
@@ -77,9 +96,9 @@ func (m *mockRepo) RecordLogin(_ context.Context, userID, _ string) error {
 	return nil
 }
 
-func setupService(repo adminauth.Repository) (*adminauth.Service, *token.Issuer) {
+func setupService(repo adminauth.Repository) (*adminauth.Service, *authentication.TokenIssuer) {
 	h := hasher.New()
-	tokens := token.New(config.JWTConfig{
+	tokens := authentication.NewTokenIssuer(config.JWTConfig{
 		Secret:     testJWTSecret,
 		Issuer:     "bgin-test",
 		AccessTTL:  15 * time.Minute,

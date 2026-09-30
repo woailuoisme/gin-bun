@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,8 +12,8 @@ import (
 
 	"github.com/adhocore/gronx"
 	"github.com/hibiken/asynq"
-	"github.com/rs/zerolog"
 	"github.com/samber/lo"
+	"go.uber.org/zap"
 )
 
 // Schedule 集中管理和编排周期性定时调度任务（类似 Laravel Console Kernel Schedule）。
@@ -50,9 +51,7 @@ func (s *Schedule) Entries() []*ScheduleEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	result := make([]*ScheduleEntry, len(s.entries))
-	copy(result, s.entries)
-	return result
+	return slices.Clone(s.entries)
 }
 
 // Register 将所有已编排的调度规则正式编译并挂载到底层队列注册表中。
@@ -63,15 +62,21 @@ func (s *Schedule) Register() {
 		defer s.mu.Unlock()
 
 		for _, entry := range s.entries {
-			if entry.spec == "" || entry.job == nil {
+			if entry.job == nil {
+				continue
+			}
+			if entry.spec == "" {
+				// 未配置执行频率的条目（例如忘了链式调用 Daily/EveryXxx）：留痕而非静默跳过。
+				// 非法时间/表达式已在配置阶段报错，走不到这里。
+				fallbackLog().Warn("schedule entry has no frequency, skipped",
+					zap.String("task", entry.job.TaskName()))
 				continue
 			}
 
 			if !gronx.IsValid(entry.spec) {
-				fallbackLogger.Error().
-					Str("task", entry.job.TaskName()).
-					Str("spec", entry.spec).
-					Msg("invalid cron expression, skipped schedule entry")
+				fallbackLog().Error("invalid cron expression, skipped schedule entry",
+					zap.String("task", entry.job.TaskName()),
+					zap.String("spec", entry.spec))
 				continue
 			}
 
@@ -141,10 +146,10 @@ func (e *ScheduleEntry) Hourly() *ScheduleEntry {
 	return e.Cron("0 * * * *")
 }
 
-// HourlyAt 配置为每小时指定分钟执行（如 HourlyAt(15) 表示每小时第 15 分钟）。
+// HourlyAt 配置为每小时指定分钟执行（如 HourlyAt(15) 表示每小时第 15 分钟）。越界视为配置错误。
 func (e *ScheduleEntry) HourlyAt(minute int) *ScheduleEntry {
 	if minute < 0 || minute > 59 {
-		minute = 0
+		return e.invalidSpec("HourlyAt", strconv.Itoa(minute))
 	}
 	return e.Cron(fmt.Sprintf("%d * * * *", minute))
 }
@@ -154,9 +159,12 @@ func (e *ScheduleEntry) Daily() *ScheduleEntry {
 	return e.Cron("0 0 * * *")
 }
 
-// DailyAt 配置为每天指定时间执行（入参格式支持 "HH:MM"，如 "02:00", "14:30"）。
+// DailyAt 配置为每天指定时间执行（入参格式支持 "HH:MM"，如 "02:00", "14:30"）。格式非法视为配置错误。
 func (e *ScheduleEntry) DailyAt(timeStr string) *ScheduleEntry {
-	hour, minute := parseTimeHM(timeStr)
+	hour, minute, ok := parseTimeHM(timeStr)
+	if !ok {
+		return e.invalidSpec("DailyAt", timeStr)
+	}
 	return e.Cron(fmt.Sprintf("%d %d * * *", minute, hour))
 }
 
@@ -165,20 +173,16 @@ func (e *ScheduleEntry) Weekly() *ScheduleEntry {
 	return e.Cron("0 0 * * 0")
 }
 
-// WeeklyOn 配置为每周指定星期几与时间执行（支持 int 0-6 或 time.Weekday，0 为周日）。
-func (e *ScheduleEntry) WeeklyOn(day any, timeStr ...string) *ScheduleEntry {
-	dayInt := 0
-	switch d := day.(type) {
-	case int:
-		dayInt = d
-	case time.Weekday:
-		dayInt = int(d)
+// WeeklyOn 配置为每周指定星期几执行；at 可省略（默认 00:00，格式 "HH:MM"）。星期与时间非法均视为配置错误。
+func (e *ScheduleEntry) WeeklyOn(day time.Weekday, at ...string) *ScheduleEntry {
+	if day < time.Sunday || day > time.Saturday {
+		return e.invalidSpec("WeeklyOn", strconv.Itoa(int(day)))
 	}
-	if dayInt < 0 || dayInt > 6 {
-		dayInt = 0
+	hour, minute, ok := parseOptionalTimeHM(at...)
+	if !ok {
+		return e.invalidSpec("WeeklyOn", lo.FirstOrEmpty(at))
 	}
-	hour, minute := parseOptionalTimeHM(timeStr...)
-	return e.Cron(fmt.Sprintf("%d %d * * %d", minute, hour, dayInt))
+	return e.Cron(fmt.Sprintf("%d %d * * %d", minute, hour, day))
 }
 
 // Monthly 配置为每月 1 号午夜 00:00 执行一次（"0 0 1 * *"）。
@@ -186,12 +190,15 @@ func (e *ScheduleEntry) Monthly() *ScheduleEntry {
 	return e.Cron("0 0 1 * *")
 }
 
-// MonthlyOn 配置为每月指定日期与时间执行（day 取值 1-31）。
-func (e *ScheduleEntry) MonthlyOn(day int, timeStr ...string) *ScheduleEntry {
+// MonthlyOn 配置为每月指定日期执行（day 取值 1-31，越界视为配置错误）；at 可省略（默认 00:00）。
+func (e *ScheduleEntry) MonthlyOn(day int, at ...string) *ScheduleEntry {
 	if day < 1 || day > 31 {
-		day = 1
+		return e.invalidSpec("MonthlyOn", strconv.Itoa(day))
 	}
-	hour, minute := parseOptionalTimeHM(timeStr...)
+	hour, minute, ok := parseOptionalTimeHM(at...)
+	if !ok {
+		return e.invalidSpec("MonthlyOn", lo.FirstOrEmpty(at))
+	}
 	return e.Cron(fmt.Sprintf("%d %d %d * *", minute, hour, day))
 }
 
@@ -258,7 +265,7 @@ type overlappingJobWrapper struct {
 	inner   Job
 	lockTTL time.Duration
 	locker  Locker
-	logger  *zerolog.Logger
+	logger  *zap.Logger
 }
 
 var _ Job = (*overlappingJobWrapper)(nil)
@@ -270,7 +277,7 @@ func WrapOverlappingJob(job Job, ttl time.Duration, locker Locker) Job {
 }
 
 // WrapOverlappingJobWithLogger 同上，并显式注入结构性日志器，避免绕过调用方的日志通道。
-func WrapOverlappingJobWithLogger(l *zerolog.Logger, job Job, ttl time.Duration, locker Locker) Job {
+func WrapOverlappingJobWithLogger(l *zap.Logger, job Job, ttl time.Duration, locker Locker) Job {
 	return &overlappingJobWrapper{
 		inner:   job,
 		lockTTL: cmp.Or(ttl, DefaultScheduleLockTTL),
@@ -280,11 +287,11 @@ func WrapOverlappingJobWithLogger(l *zerolog.Logger, job Job, ttl time.Duration,
 }
 
 // log 返回注入的日志器，未注入时退回包级兜底实例。
-func (w *overlappingJobWrapper) log() *zerolog.Logger {
+func (w *overlappingJobWrapper) log() *zap.Logger {
 	if w.logger != nil {
 		return w.logger
 	}
-	return &fallbackLogger
+	return fallbackLog()
 }
 
 // TaskName 返回被包装任务的唯一标识名。
@@ -318,33 +325,54 @@ func (w *overlappingJobWrapper) Handle(ctx context.Context) error {
 		return err
 	}
 	if !acquired {
-		w.log().Warn().
-			Str("task", w.inner.TaskName()).
-			Str("lock_key", lockKey).
-			Msg("scheduled task skipped due to active overlap lock")
+		w.log().Warn("scheduled task skipped due to active overlap lock",
+			zap.String("task", w.inner.TaskName()),
+			zap.String("lock_key", lockKey),
+		)
 		return nil
 	}
 
 	return nil
 }
 
-// parseOptionalTimeHM 解析可选的 "HH:MM" 时间格式，未提供或解析失败返回 (0, 0)。
-func parseOptionalTimeHM(timeStr ...string) (int, int) {
-	return parseTimeHM(lo.FirstOrEmpty(timeStr))
+// parseOptionalTimeHM 解析可选的 "HH:MM"。
+// 未提供（或空串）视为"使用默认零点"并返回 ok=true；提供了但格式非法返回 ok=false。
+func parseOptionalTimeHM(at ...string) (hour, min int, ok bool) {
+	if len(at) == 0 || strings.TrimSpace(at[0]) == "" {
+		return 0, 0, true
+	}
+	return parseTimeHM(at[0])
 }
 
-// parseTimeHM 解析 "HH:MM" 格式的时间字符串，返回小时和分钟（越界时默认返回 0, 0）。
-func parseTimeHM(timeStr string) (int, int) {
-	parts := strings.Split(timeStr, ":")
+// parseTimeHM 解析 "HH:MM" 格式的时间字符串。
+// ok=false 表示格式非法或越界——调用方必须据此拒绝该调度，而不是退化成 00:00。
+func parseTimeHM(timeStr string) (hour, min int, ok bool) {
+	parts := strings.Split(strings.TrimSpace(timeStr), ":")
 	if len(parts) != 2 {
-		return 0, 0
+		return 0, 0, false
 	}
 
-	hour, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
-	min, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if err1 != nil || err2 != nil || hour < 0 || hour > 23 || min < 0 || min > 59 {
-		return 0, 0
+	parsedHour, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+	parsedMin, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err1 != nil || err2 != nil || parsedHour < 0 || parsedHour > 23 || parsedMin < 0 || parsedMin > 59 {
+		return 0, 0, false
 	}
 
-	return hour, min
+	return parsedHour, parsedMin, true
+}
+
+// invalidSpec 把配置错误的调度条目置为"不可注册"并当场告警。
+//
+// 空 spec 会被 Register 跳过，因此非法入参既不会在错误时间执行任务，也不会静默消失：
+// 配置阶段就有一条可见的告警指出哪个 API 收到了什么非法值。
+//
+// 该状态不粘滞：之后任何一次成功的调度配置调用（Cron/EveryXxx）都会覆盖 spec，
+// 那属于调用方显式重新指定，先前的告警已如实记录过一次失败。
+func (e *ScheduleEntry) invalidSpec(api, value string) *ScheduleEntry {
+	e.spec = ""
+	fallbackLog().Error("invalid schedule time, entry will not be registered",
+		zap.String("api", api),
+		zap.String("value", value),
+	)
+	return e
 }

@@ -11,6 +11,15 @@ import (
 
 const defaultAuthOTPExpiry = 10 * time.Minute
 
+// authOTPTemplate 生成认证类验证码邮件的模板名与变量，供注册与找回密码复用。
+func authOTPTemplate(name, code string, expiresIn time.Duration) (string, map[string]any) {
+	return "auth_otp", map[string]any{
+		"Name":      cmp.Or(strings.TrimSpace(name), "User"),
+		"Code":      code,
+		"ExpiresIn": int(expiresIn.Minutes()),
+	}
+}
+
 // SignupVerificationNotification 用户注册邮箱激活验证码通知。
 type SignupVerificationNotification struct {
 	Name      string
@@ -39,12 +48,7 @@ func (n *SignupVerificationNotification) Subject() string {
 
 // Template 返回注册邮件模板名称与变量（实现 mailer.Mailable）。
 func (n *SignupVerificationNotification) Template() (string, map[string]any) {
-	displayName := cmp.Or(strings.TrimSpace(n.Name), "User")
-	return "auth_otp", map[string]any{
-		"Name":      displayName,
-		"Code":      n.Code,
-		"ExpiresIn": int(n.ExpiresIn.Minutes()),
-	}
+	return authOTPTemplate(n.Name, n.Code, n.ExpiresIn)
 }
 
 // ToMail 生成邮件格式内容（实现 notification.MailNotification）。
@@ -80,12 +84,7 @@ func (n *PasswordResetNotification) Subject() string {
 
 // Template 返回找回密码邮件模板名称与变量（实现 mailer.Mailable）。
 func (n *PasswordResetNotification) Template() (string, map[string]any) {
-	displayName := cmp.Or(strings.TrimSpace(n.Name), "User")
-	return "auth_otp", map[string]any{
-		"Name":      displayName,
-		"Code":      n.Code,
-		"ExpiresIn": int(n.ExpiresIn.Minutes()),
-	}
+	return authOTPTemplate(n.Name, n.Code, n.ExpiresIn)
 }
 
 // ToMail 生成邮件格式内容（实现 notification.MailNotification）。

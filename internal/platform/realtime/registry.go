@@ -4,7 +4,6 @@ package realtime
 import (
 	"context"
 	"encoding/json"
-	"regexp"
 	"strings"
 	"sync"
 
@@ -20,21 +19,15 @@ type ChannelPublishPolicy func(ctx context.Context, user User, channel string, d
 // RPCHandler 定义客户端通过 WebSocket/SSE 发起 RPC 调用的处理函数签名。
 type RPCHandler func(ctx context.Context, user User, data json.RawMessage) (any, error)
 
-type routeEntry[T any] struct {
-	pattern string
-	names   []string
-	re      *regexp.Regexp
-	handler T
-}
-
 type routeTable[T any] struct {
-	exact    map[string]T
-	patterns []routeEntry[T]
+	exact map[string]T
+	trie  *trie[T]
 }
 
 func newRouteTable[T any]() *routeTable[T] {
 	return &routeTable[T]{
 		exact: make(map[string]T),
+		trie:  newTrie[T](),
 	}
 }
 
@@ -43,27 +36,18 @@ func (t *routeTable[T]) add(pattern string, handler T) {
 		t.exact[pattern] = handler
 		return
 	}
-	names, re := compilePatternRegex(pattern)
-	t.patterns = append(t.patterns, routeEntry[T]{
-		pattern: pattern,
-		names:   names,
-		re:      re,
-		handler: handler,
-	})
+	t.trie.insert(pattern, handler)
 }
 
 func (t *routeTable[T]) find(channel string) (T, map[string]string, bool) {
 	if h, ok := t.exact[channel]; ok {
 		return h, nil, true
 	}
-	for _, entry := range t.patterns {
-		matches := entry.re.FindStringSubmatch(channel)
-		if matches != nil {
-			return entry.handler, extractParams(entry.names, matches), true
-		}
-	}
-	var zero T
-	return zero, nil, false
+	return t.trie.match(channel)
+}
+
+func isStaticPattern(pattern string) bool {
+	return !strings.Contains(pattern, "{") && !strings.Contains(pattern, "*")
 }
 
 // Registry 管理全量实时频道路由、发布策略与 RPC 远程调用处理映射。
@@ -92,7 +76,7 @@ func (r *Registry) OnceDo(fn func()) {
 	r.once.Do(fn)
 }
 
-// IsPrivateChannel 检查频道是否属于需要鉴权的私有/成员/用户专用频道。
+// IsPrivateChannel 检查频道是否属于包含私有/成员/状态频道专属前缀。
 func IsPrivateChannel(channel string) bool {
 	return strings.HasPrefix(channel, "private:") ||
 		strings.HasPrefix(channel, "private-") ||
@@ -111,6 +95,18 @@ func (r *Registry) Register(pattern string, auth ChannelAuthorization) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.channels.add(pattern, auth)
+}
+
+// AllowPublic 声明公开广播频道白名单，任何客户端均可自由订阅（满足 Fail-Closed 下的显式放行要求）。
+func (r *Registry) AllowPublic(patterns ...string) {
+	if r == nil {
+		return
+	}
+	for _, pattern := range patterns {
+		r.Register(pattern, func(_ context.Context, _ User, _ string, _ map[string]string) error {
+			return nil
+		})
+	}
 }
 
 // RegisterPublish 注册客户端向频道发布消息的授权策略。
@@ -141,7 +137,11 @@ func (r *Registry) RegisterRPC(method string, handler RPCHandler) {
 // Authorize 针对给定用户和目标频道执行订阅授权判定（遵循 Fail-Closed 安全原则）。
 func (r *Registry) Authorize(ctx context.Context, user User, channel string) error {
 	if r == nil {
-		return checkDefaultPrivateChannel(channel)
+		return oops.
+			Code("FORBIDDEN").
+			In("Registry.Authorize").
+			With("channel", channel).
+			Errorf("realtime registry is not initialized")
 	}
 
 	r.mu.RLock()
@@ -149,7 +149,11 @@ func (r *Registry) Authorize(ctx context.Context, user User, channel string) err
 	r.mu.RUnlock()
 
 	if !found {
-		return checkDefaultPrivateChannel(channel)
+		return oops.
+			Code("FORBIDDEN").
+			In("Registry.Authorize").
+			With("channel", channel).
+			Errorf("unauthorized channel subscription: channel %q is not registered", channel)
 	}
 
 	return auth(ctx, user, channel, params)
@@ -201,60 +205,4 @@ func (r *Registry) HandleRPC(ctx context.Context, user User, method string, data
 	}
 
 	return handler(ctx, user, data)
-}
-
-func extractParams(names []string, matches []string) map[string]string {
-	params := make(map[string]string, len(names))
-	for i, name := range names {
-		params[name] = matches[i+1]
-	}
-	return params
-}
-
-func checkDefaultPrivateChannel(channel string) error {
-	if IsPrivateChannel(channel) {
-		return oops.
-			Code("FORBIDDEN").
-			In("Registry.Authorize").
-			With("channel", channel).
-			Errorf("channel authorization not defined for private channel: %s", channel)
-	}
-	return nil
-}
-
-func isStaticPattern(pattern string) bool {
-	return !strings.Contains(pattern, "{") && !strings.Contains(pattern, "*")
-}
-
-func compilePatternRegex(pattern string) ([]string, *regexp.Regexp) {
-	var (
-		names []string
-		out   strings.Builder
-	)
-	out.WriteString("^")
-
-	for i := 0; i < len(pattern); i++ {
-		ch := pattern[i]
-		switch ch {
-		case '{':
-			end := strings.IndexByte(pattern[i+1:], '}')
-			if end < 0 {
-				out.WriteString(regexp.QuoteMeta(pattern[i:]))
-				i = len(pattern)
-				break
-			}
-
-			name := pattern[i+1 : i+1+end]
-			names = append(names, name)
-			out.WriteString(`([^\\.:/]+)`)
-			i += end + 1
-		case '*':
-			out.WriteString(`.*`)
-		default:
-			out.WriteString(regexp.QuoteMeta(string(ch)))
-		}
-	}
-
-	out.WriteString("$")
-	return names, regexp.MustCompile(out.String())
 }

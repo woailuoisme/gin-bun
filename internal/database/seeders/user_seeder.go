@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/database/factories"
@@ -44,7 +45,7 @@ func (s *UserSeeder) Seed(ctx context.Context, db *bun.DB) error {
 
 	// 演示数据携带固定测试凭据，生产环境中直接跳过
 	if cfg.IsProduction() {
-		log.Warn().Msg("demo user seeding is disabled in production, skipped")
+		log.Warn("demo user seeding is disabled in production, skipped")
 		return nil
 	}
 
@@ -53,7 +54,7 @@ func (s *UserSeeder) Seed(ctx context.Context, db *bun.DB) error {
 		total = 20
 	}
 
-	log.Info().Int("count", total).Msg("batch generating test users via UserFactory...")
+	log.Info("batch generating test users via UserFactory...", zap.Int("count", total))
 
 	// 1. 幂等插入固定测试普通用户（若不存在）
 	userExists, err := db.NewSelect().
@@ -71,12 +72,12 @@ func (s *UserSeeder) Seed(ctx context.Context, db *bun.DB) error {
 				u.Name = "Demo User"
 				u.Email = "user.demo@example.com"
 			}).
-			WithAccount("Password123!").
+			WithAccount(factories.FixturePassword).
 			Create(ctx)
 		if err != nil {
 			return fmt.Errorf("user seeder create demo user failed: %w", err)
 		}
-		log.Info().Str("email", "user.demo@example.com").Msg("demo user account seeded")
+		log.Info("demo user account seeded", zap.String("email", "user.demo@example.com"))
 	}
 
 	// 2. 批量生成拟真用户群，覆盖活跃、封禁、未验证等多种状态
@@ -86,7 +87,7 @@ func (s *UserSeeder) Seed(ctx context.Context, db *bun.DB) error {
 	}
 
 	userFactory := factories.User(db).
-		WithAccount("Password123!").
+		WithAccount(factories.FixturePassword).
 		ChunkSize(500)
 	if subHook != nil {
 		userFactory = userFactory.OnProgress(func(current, _ int) {
@@ -134,6 +135,6 @@ func (s *UserSeeder) Seed(ctx context.Context, db *bun.DB) error {
 		subHook(int64(total), int64(total))
 	}
 
-	log.Info().Int("total", total).Msg("batch test user seeding completed")
+	log.Info("batch test user seeding completed", zap.Int("total", total))
 	return nil
 }

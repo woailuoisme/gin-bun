@@ -4,7 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"bgin/internal/middleware"
-	"bgin/internal/platform/authz"
+	"bgin/internal/platform/authorization"
 )
 
 {{ if .IsAdmin }}
@@ -12,11 +12,11 @@ import (
 func RegisterAdminRoutes(router *gin.RouterGroup, handler *Handler, mw *middleware.Middleware) {
 	group := router.Group("{{ .RoutePath }}", mw.RateLimit(middleware.TierAuthenticated), mw.RequireAuth())
 
-	group.GET("", mw.RequirePermission(authz.Resource("{{ .PluralSnake }}"), authz.ActionList), handler.List)
-	group.POST("", mw.RequirePermission(authz.Resource("{{ .PluralSnake }}"), authz.ActionCreate), handler.Create)
-	group.GET("/:id", mw.RequirePermission(authz.Resource("{{ .PluralSnake }}"), authz.ActionRead), handler.GetByID)
-	group.PATCH("/:id", mw.RequirePermission(authz.Resource("{{ .PluralSnake }}"), authz.ActionUpdate), handler.Update)
-	group.DELETE("/:id", mw.RequirePermission(authz.Resource("{{ .PluralSnake }}"), authz.ActionDelete), handler.Delete)
+	group.GET("", mw.RequirePermission(authorization.Resource("{{ .PluralSnake }}"), authorization.ActionList), handler.List)
+	group.POST("", mw.RequirePermission(authorization.Resource("{{ .PluralSnake }}"), authorization.ActionCreate), handler.Create)
+	group.GET("/:id", mw.RequirePermission(authorization.Resource("{{ .PluralSnake }}"), authorization.ActionRead), handler.GetByID)
+	group.PATCH("/:id", mw.RequirePermission(authorization.Resource("{{ .PluralSnake }}"), authorization.ActionUpdate), handler.Update)
+	group.DELETE("/:id", mw.RequirePermission(authorization.Resource("{{ .PluralSnake }}"), authorization.ActionDelete), handler.Delete)
 }
 {{ else }}
 // RegisterRoutes 注册业务路由端点 ({{ .RoutePath }})。

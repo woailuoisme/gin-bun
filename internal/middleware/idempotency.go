@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,10 +13,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
+	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/errs"
-	"bgin/internal/platform/identity"
 	"bgin/internal/platform/logger"
 )
 
@@ -32,6 +32,10 @@ const (
 	DefaultIdempotencyLockTTL = 30 * time.Second
 	// DefaultIdempotencyCacheTTL 默认成功响应缓存保留有效期（24小时）。
 	DefaultIdempotencyCacheTTL = 24 * time.Hour
+	// maxIdempotentBodyBytes 可被回放缓存的成功响应体上限（64 KiB）。
+	// ponytail: 超过即不缓存（回放收益不值得把大列表响应压在缓存里）；
+	// 需要回放大响应时改为存对象存储引用而非内联正文。
+	maxIdempotentBodyBytes = 64 << 10
 )
 
 // IdempotencyConfig 定义请求幂等中间件配置选项。
@@ -255,11 +259,17 @@ func acquireOrHandleExisting(c *gin.Context, store IdempotencyStore, cacheKey, f
 		Fingerprint: fingerprint,
 		CreatedAt:   time.Now().Unix(),
 	}
-	lockPayload, _ := json.Marshal(lockRec)
+	lockPayload, err := json.Marshal(lockRec)
+	if err != nil {
+		// 固定结构体实际不会失败；显式处理以免后人把这里当成可以吞错的先例。
+		logger.FromContext(ctx).Error("failed to encode idempotency lock record", zap.Error(err), zap.String("key", cacheKey))
+		c.Next()
+		return false
+	}
 
 	acquired, err := store.SetNX(ctx, cacheKey, string(lockPayload), lockTTL)
 	if err != nil {
-		logger.FromContext(ctx).Error().Err(err).Str("key", cacheKey).Msg("idempotency cache SetNX failed")
+		logger.FromContext(ctx).Error("idempotency cache SetNX failed", zap.Error(err), zap.String("key", cacheKey))
 		c.Next()
 		return false
 	}
@@ -273,35 +283,35 @@ func acquireOrHandleExisting(c *gin.Context, store IdempotencyStore, cacheKey, f
 			c.Next()
 			return false
 		}
-		logger.FromContext(ctx).Error().Err(err).Str("key", cacheKey).Msg("failed to read idempotency cache")
+		logger.FromContext(ctx).Error("failed to read idempotency cache", zap.Error(err), zap.String("key", cacheKey))
 		c.Next()
 		return false
 	}
 
-	return !handleExistingRecord(c, existingVal, fingerprint)
+	handleExistingRecord(c, existingVal, fingerprint)
+	return false
 }
 
 // handleExistingRecord 处理既有记录：判断是否在处理中、指纹是否吻合或执行响应回放。
-func handleExistingRecord(c *gin.Context, existingVal, currentFingerprint string) bool {
+func handleExistingRecord(c *gin.Context, existingVal, currentFingerprint string) {
 	var existingRec idempotencyRecord
 	if err := json.Unmarshal([]byte(existingVal), &existingRec); err != nil {
-		logger.FromContext(c.Request.Context()).Error().Err(err).Msg("failed to parse idempotency record")
+		logger.FromContext(c.Request.Context()).Error("failed to parse idempotency record", zap.Error(err))
 		c.Next()
-		return true
+		return
 	}
 
 	if existingRec.Status == statusProcessing {
 		abortWithError(c, errs.IdempotencyConflict(""))
-		return true
+		return
 	}
 
 	if existingRec.Fingerprint != currentFingerprint {
 		abortWithError(c, errs.IdempotencyMismatch(""))
-		return true
+		return
 	}
 
 	replayIdempotentResponse(c, existingRec)
-	return true
 }
 
 // replayIdempotentResponse 直接回放已缓存的响应结果。
@@ -327,10 +337,19 @@ func handlePanicRelease(ctx context.Context, store IdempotencyStore, cacheKey st
 	}
 }
 
-// finishIdempotentRequest 仅持久化 2xx 成功响应缓存；非 2xx 或未写入响应则删除锁以允许客户端重试。
+// finishIdempotentRequest 仅持久化 2xx 成功响应缓存；非 2xx、响应过大或未写入响应则删除锁以允许客户端重试。
 func finishIdempotentRequest(ctx context.Context, store IdempotencyStore, cacheKey, fingerprint string, w *responseBufferWriter, ttl time.Duration) {
 	finalStatusCode := w.Status()
 	if finalStatusCode < http.StatusOK || finalStatusCode >= http.StatusMultipleChoices {
+		_, _ = store.Delete(ctx, cacheKey)
+		return
+	}
+
+	if w.body.Len() > maxIdempotentBodyBytes {
+		logger.FromContext(ctx).Warn("idempotent response body exceeds cache limit, skipping replay cache",
+			zap.String("key", cacheKey),
+			zap.Int("body_bytes", w.body.Len()),
+		)
 		_, _ = store.Delete(ctx, cacheKey)
 		return
 	}
@@ -353,7 +372,7 @@ func finishIdempotentRequest(ctx context.Context, store IdempotencyStore, cacheK
 		return
 	}
 	if err := store.Set(ctx, cacheKey, string(completedPayload), ttl); err != nil {
-		logger.FromContext(ctx).Warn().Err(err).Str("key", cacheKey).Msg("failed to persist completed idempotency record")
+		logger.FromContext(ctx).Warn("failed to persist completed idempotency record", zap.Error(err), zap.String("key", cacheKey))
 	}
 }
 
@@ -368,41 +387,29 @@ func computeRequestFingerprint(method, uri string, body []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// resolveIdempotencyScope 解析幂等缓存作用域（优先已认证 UserID，其次 JWT sub 哈希，兜底按客户端 IP 分片）。
+// resolveIdempotencyScope 解析幂等缓存作用域（优先已认证 UserID，其次凭据指纹，兜底按客户端 IP 分片）。
+//
+// 本中间件挂在全局链上，早于路由级鉴权，因此 identity 通常尚未注入；
+// 此时只能依据请求自带的凭据分片，且必须是凭据整体的指纹——绝不能解码 JWT 载荷取 sub，
+// 未校验的 payload 可被任意伪造，等于把缓存命名空间的选择权交给调用方。
 func resolveIdempotencyScope(c *gin.Context) string {
-	if id, ok := identity.FromContext(c.Request.Context()); ok && id.UserID != "" {
+	if id, ok := authentication.FromContext(c.Request.Context()); ok && id.UserID != "" {
 		return "user:" + id.UserID
 	}
-	if subject := credentialSubject(c.GetHeader("Authorization")); subject != "" {
-		sum := sha256.Sum256([]byte(subject))
-		return "subject:" + hex.EncodeToString(sum[:16])
+	if fingerprint := credentialFingerprint(c.GetHeader("Authorization")); fingerprint != "" {
+		return "credential:" + fingerprint
 	}
 	return "ip:" + c.ClientIP()
 }
 
-// credentialSubject 从未校验的 JWT 载荷中提取 sub 声明用于缓存命名空间隔离。
-func credentialSubject(header string) string {
+// credentialFingerprint 对完整 Authorization 凭据（含签名段）取 SHA-256 短指纹。
+func credentialFingerprint(header string) string {
 	credential := bearerCredential(header)
 	if credential == "" {
 		return ""
 	}
-
-	parts := strings.Split(credential, ".")
-	if len(parts) != 3 {
-		return ""
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return ""
-	}
-
-	var claims struct {
-		Subject string `json:"sub"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(claims.Subject)
+	sum := sha256.Sum256([]byte(credential))
+	return hex.EncodeToString(sum[:16])
 }
 
 // bearerCredential 提取 Authorization 头中的凭据本体，缺失或非 Bearer 方案时返回空串。

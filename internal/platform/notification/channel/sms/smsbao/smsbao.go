@@ -27,6 +27,8 @@ type Config struct {
 	Username string
 	Password string // 原始密码或已 MD5 的密码哈希
 	APIKey   string // 若配置了 APIKey 则优先作为密码使用
+	SignName string // 默认短信签名
+	Template string // 默认文本模板（支持 {sign}、{key} 占位符）
 	Endpoint string
 	Timeout  time.Duration
 }
@@ -37,6 +39,8 @@ type Driver struct {
 	passMD5Hex string
 	client     *resty.Client
 }
+
+var _ sms.Driver = (*Driver)(nil)
 
 // NewDriver 创建短信宝驱动实例。
 func NewDriver(cfg Config) (*Driver, error) {
@@ -99,17 +103,32 @@ func smsbaoErrorMessage(code string) string {
 	}
 }
 
-// resolveContent 从短信载荷中解析最终文本内容。
-func resolveContent(msg *sms.Message) string {
+// resolveContent 从短信载荷中解析最终文本内容（优先纯文本 -> 模板插值渲染 -> 验证码兜底）。
+func (d *Driver) resolveContent(msg *sms.Message) string {
 	if msg.Content != "" {
 		return msg.Content
 	}
-	code := msg.TemplateParam["code"]
+
+	signName := msg.ResolveSign(d.Name(), d.cfg.SignName)
+	templatePattern := msg.ResolveTemplate(d.Name(), d.cfg.Template)
+
+	if templatePattern != "" {
+		rendered := msg.RenderContent(templatePattern, signName)
+		if rendered != "" {
+			return rendered
+		}
+	}
+
+	code := cmp.Or(msg.TemplateParam["code"], msg.TemplateParam["otp"])
+	if code == "" && len(msg.ParamSet) > 0 {
+		code = msg.ParamSet[0]
+	}
 	if code == "" {
 		return ""
 	}
-	if msg.SignName != "" {
-		return fmt.Sprintf("[%s] Your verification code is %s", msg.SignName, code)
+
+	if signName != "" {
+		return fmt.Sprintf("【%s】Your verification code is %s", signName, code)
 	}
 	return "Your verification code is " + code
 }
@@ -121,7 +140,7 @@ func (d *Driver) Send(ctx context.Context, msg *sms.Message) error {
 		return oops.Code(errs.CodeBadRequest).Errorf("smsbao: phone number is required")
 	}
 
-	content := resolveContent(msg)
+	content := d.resolveContent(msg)
 	if content == "" {
 		return oops.Code(errs.CodeBadRequest).Errorf("smsbao: sms content is required")
 	}
@@ -142,7 +161,7 @@ func (d *Driver) Send(ctx context.Context, msg *sms.Message) error {
 
 	resCode := strings.TrimSpace(resp.String())
 	if resCode != "0" {
-		return oops.Code("smsbao_send_failed").
+		return oops.Code(errs.CodeSMSBaoSendFailed).
 			With("code", resCode).
 			With("phone", phone).
 			Errorf("smsbao delivery failed: %s", smsbaoErrorMessage(resCode))

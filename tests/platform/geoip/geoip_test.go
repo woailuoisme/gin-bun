@@ -2,6 +2,7 @@
 package geoip_test
 
 import (
+	"context"
 	"net/netip"
 	"testing"
 
@@ -17,43 +18,43 @@ func TestNoopService(t *testing.T) {
 	require.NotNil(t, svc)
 
 	// 1. 环回与局域网私有地址识别
-	loc, err := svc.Lookup("127.0.0.1")
+	loc, err := svc.LookupCtx(t.Context(), "127.0.0.1")
 	require.NoError(t, err)
 	assert.Equal(t, "Internal IP", loc.Country)
 	assert.Equal(t, "Internal IP", loc.City)
 
-	loc, err = svc.Lookup("192.168.1.100")
+	loc, err = svc.LookupCtx(t.Context(), "192.168.1.100")
 	require.NoError(t, err)
 	assert.Equal(t, "Internal IP", loc.Country)
 
-	loc, err = svc.Lookup("::1")
+	loc, err = svc.LookupCtx(t.Context(), "::1")
 	require.NoError(t, err)
 	assert.Equal(t, "Internal IP", loc.Country)
 
 	// 2. IPv6 地址识别
-	loc, err = svc.Lookup("2400:3200::1")
+	loc, err = svc.LookupCtx(t.Context(), "2400:3200::1")
 	require.NoError(t, err)
 	assert.Equal(t, "IPv6", loc.Country)
 
 	// 3. 公网 IPv4 在无数据库时降级为 Unknown
-	loc, err = svc.Lookup("8.8.8.8")
+	loc, err = svc.LookupCtx(t.Context(), "8.8.8.8")
 	require.NoError(t, err)
 	assert.Equal(t, "Unknown", loc.Country)
 
 	// 4. 非法 IP 格式返回错误
-	_, err = svc.Lookup("not-an-ip")
+	_, err = svc.LookupCtx(t.Context(), "not-an-ip")
 	require.Error(t, err)
 
 	// 5. 零堆分配快速路径 LookupAddr
 	addr := netip.MustParseAddr("10.0.0.1")
-	loc, err = svc.LookupAddr(addr)
+	loc, err = svc.LookupAddrCtx(t.Context(), addr)
 	require.NoError(t, err)
 	assert.Equal(t, "Internal IP", loc.Country)
 
 	// 6. Summary 与 SummaryAddr
-	assert.Equal(t, "Internal IP", svc.Summary("127.0.0.1"))
-	assert.Equal(t, "Internal IP", svc.SummaryAddr(addr))
-	assert.Equal(t, "Unknown", svc.Summary("invalid"))
+	assert.Equal(t, "Internal IP", svc.SummaryCtx(t.Context(), "127.0.0.1"))
+	assert.Equal(t, "Internal IP", svc.SummaryAddrCtx(t.Context(), addr))
+	assert.Equal(t, "Unknown", svc.SummaryCtx(t.Context(), "invalid"))
 
 	// 7. Reload 与 Close 空操作安全调用
 	require.NoError(t, svc.Reload())
@@ -96,5 +97,47 @@ func TestNewServiceFallback(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotNil(t, svc)
-	assert.Equal(t, "Internal IP", svc.Summary("127.0.0.1"))
+	assert.Equal(t, "Internal IP", svc.SummaryCtx(t.Context(), "127.0.0.1"))
+}
+
+// mockProvider 用于单元测试模拟自定义物理地理定位提供者。
+type mockProvider struct {
+	called bool
+}
+
+func (m *mockProvider) SearchAddr(_ context.Context, _ netip.Addr) (*geoip.Location, error) {
+	m.called = true
+	return &geoip.Location{
+		Country:  "United States",
+		Province: "California",
+		City:     "San Francisco",
+		ISP:      "Cloudflare",
+	}, nil
+}
+
+func (m *mockProvider) Close() error {
+	return nil
+}
+
+func TestWithCustomProviderAndContext(t *testing.T) {
+	mock := &mockProvider{}
+	svc := geoip.NewWithProvider(mock)
+	require.NotNil(t, svc)
+
+	ctx := t.Context()
+	loc, err := svc.LookupCtx(ctx, "1.1.1.1")
+	require.NoError(t, err)
+	assert.True(t, mock.called)
+	assert.Equal(t, "United States", loc.Country)
+	assert.Equal(t, "San Francisco", loc.City)
+	assert.Equal(t, "United States·California·San Francisco·Cloudflare", svc.SummaryCtx(ctx, "1.1.1.1"))
+
+	// 局域网地址不经过底层 Provider
+	mock.called = false
+	locInternal, err := svc.LookupCtx(ctx, "192.168.1.1")
+	require.NoError(t, err)
+	assert.False(t, mock.called)
+	assert.Equal(t, "Internal IP", locInternal.Country)
+
+	svc.Close()
 }

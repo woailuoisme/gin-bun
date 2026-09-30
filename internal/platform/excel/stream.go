@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"reflect"
 
 	"github.com/samber/oops"
 	"github.com/xuri/excelize/v2"
+
+	"bgin/internal/platform/errs"
 )
 
 // StreamImportOption 定义流式导入配置选项别名，与 ImportOption 保持统一。
@@ -61,27 +64,118 @@ func ExportSliceCSV[T any](
 	return StreamExportCSV(ctx, w, headings, sliceGenerator(items), mapper)
 }
 
-func initStreamWriter(file *excelize.File, sheetName string, headings []string) (*excelize.StreamWriter, int, error) {
+// ExportIterator 使用序列生成器函数将元素直接导出到 Excel 写入器。
+func ExportIterator[T any](
+	ctx context.Context,
+	w io.Writer,
+	seq func(yield func(T) bool),
+	headings []string,
+	mapper func(item T) []any,
+	opts ...ExportOption,
+) error {
+	return StreamExport(ctx, w, headings, func(yield func(item T) bool) error {
+		seq(yield)
+		return nil
+	}, mapper, opts...)
+}
+
+// ExportBuilder 提供基于泛型的流式导出链式建造者。
+type ExportBuilder[T any] struct {
+	items    []T
+	seq      func(yield func(T) bool)
+	headings []string
+	mapper   func(item T) []any
+	opts     []ExportOption
+}
+
+// NewExportBuilder 创建针对类型 T 的流式导出建造者。
+func NewExportBuilder[T any]() *ExportBuilder[T] {
+	return &ExportBuilder[T]{}
+}
+
+// FromSlice 设置导出数据源为切片。
+func (b *ExportBuilder[T]) FromSlice(items []T) *ExportBuilder[T] {
+	b.items = items
+	return b
+}
+
+// FromSeq 设置导出数据源为流式生成器/迭代序列。
+func (b *ExportBuilder[T]) FromSeq(seq func(yield func(T) bool)) *ExportBuilder[T] {
+	b.seq = seq
+	return b
+}
+
+// WithHeadings 设置表头列名。
+func (b *ExportBuilder[T]) WithHeadings(headings ...string) *ExportBuilder[T] {
+	b.headings = headings
+	return b
+}
+
+// WithMapping 设置单行数据映射规则。
+func (b *ExportBuilder[T]) WithMapping(mapper func(item T) []any) *ExportBuilder[T] {
+	b.mapper = mapper
+	return b
+}
+
+// WithOptions 附加函数式配置项。
+func (b *ExportBuilder[T]) WithOptions(opts ...ExportOption) *ExportBuilder[T] {
+	b.opts = append(b.opts, opts...)
+	return b
+}
+
+// Write 执行 Excel 流式导出并写入目标输出端。
+func (b *ExportBuilder[T]) Write(ctx context.Context, w io.Writer) error {
+	if b.seq != nil {
+		return ExportIterator(ctx, w, b.seq, b.headings, b.mapper, b.opts...)
+	}
+	return ExportSlice(ctx, w, b.items, b.headings, b.mapper, b.opts...)
+}
+
+// WriteCSV 执行 CSV 流式导出并写入目标输出端。
+func (b *ExportBuilder[T]) WriteCSV(ctx context.Context, w io.Writer) error {
+	if b.seq != nil {
+		return StreamExportCSV(ctx, w, b.headings, func(yield func(item T) bool) error {
+			b.seq(yield)
+			return nil
+		}, b.mapper)
+	}
+	return ExportSliceCSV(ctx, w, b.items, b.headings, b.mapper)
+}
+
+func initStreamWriter(
+	file *excelize.File,
+	sheetName string,
+	headings []string,
+	cfg *exportConfig,
+) (*excelize.StreamWriter, int, error) {
 	sheetName = cmp.Or(sheetName, defaultSheetName)
 	ensureSheet(file, sheetName)
 
+	if cfg != nil && cfg.freezePanes {
+		_ = file.SetPanes(sheetName, &excelize.Panes{
+			Freeze:      true,
+			Split:       false,
+			XSplit:      0,
+			YSplit:      1,
+			TopLeftCell: "A2",
+			ActivePane:  "bottomLeft",
+		})
+	}
+
+	var headerStyleID int
+	if cfg != nil && cfg.headerStyle != nil {
+		headerStyleID, _ = file.NewStyle(cfg.headerStyle)
+	}
+
 	sw, err := file.NewStreamWriter(sheetName)
 	if err != nil {
-		return nil, 0, oops.Code("excel_stream_error").Wrap(err)
+		return nil, 0, oops.Code(errs.CodeExcelStreamError).Wrap(err)
 	}
 
 	rowIdx := 1
 	if len(headings) > 0 {
-		cells := make([]any, len(headings))
-		for i, h := range headings {
-			cells[i] = excelize.Cell{Value: h}
-		}
-		cellName, cellErr := excelize.CoordinatesToCellName(1, rowIdx)
-		if cellErr != nil {
-			return nil, 0, oops.Code("excel_stream_error").Wrap(cellErr)
-		}
-		if err := sw.SetRow(cellName, cells); err != nil {
-			return nil, 0, oops.Code("excel_stream_error").Wrap(err)
+		if err := writeStreamHeaderRow(sw, headings, headerStyleID); err != nil {
+			return nil, 0, err
 		}
 		rowIdx++
 	}
@@ -89,7 +183,38 @@ func initStreamWriter(file *excelize.File, sheetName string, headings []string) 
 	return sw, rowIdx, nil
 }
 
-func writeStreamRow[T any](sw *excelize.StreamWriter, item T, rowIdx int, mapper func(item T) []any) error {
+func writeStreamHeaderRow(sw *excelize.StreamWriter, headings []string, headerStyleID int) error {
+	cells := make([]any, len(headings))
+	for i, h := range headings {
+		if headerStyleID > 0 {
+			cells[i] = excelize.Cell{Value: h, StyleID: headerStyleID}
+		} else {
+			cells[i] = excelize.Cell{Value: h}
+		}
+	}
+
+	cellName, cellErr := excelize.CoordinatesToCellName(1, 1)
+	if cellErr != nil {
+		return oops.Code(errs.CodeExcelStreamError).Wrap(cellErr)
+	}
+
+	if err := sw.SetRow(cellName, cells); err != nil {
+		return oops.Code(errs.CodeExcelStreamError).Wrap(err)
+	}
+
+	return nil
+}
+
+func writeStreamRow[T any](
+	sw *excelize.StreamWriter,
+	item T,
+	rowIdx int,
+	mapper func(item T) []any,
+	cfg *exportConfig,
+	colStyleIDs map[int]int,
+	widths map[int]int,
+	sampleWidth bool,
+) error {
 	var rowValues []any
 	if mapper != nil {
 		rowValues = mapper(item)
@@ -97,9 +222,26 @@ func writeStreamRow[T any](sw *excelize.StreamWriter, item T, rowIdx int, mapper
 		rowValues = []any{item}
 	}
 
+	sanitize := true
+	if cfg != nil {
+		sanitize = cfg.sanitizeFormulas
+	}
+
 	cells := make([]any, len(rowValues))
 	for i, v := range rowValues {
-		cells[i] = excelize.Cell{Value: formatValue(v)}
+		formatted := formatValueWithOptions(v, sanitize)
+		if sID, hasStyle := colStyleIDs[i]; hasStyle {
+			cells[i] = excelize.Cell{Value: formatted, StyleID: sID}
+		} else {
+			cells[i] = excelize.Cell{Value: formatted}
+		}
+
+		if sampleWidth {
+			cellLen := len([]rune(fmt.Sprintf("%v", formatted)))
+			if current, exists := widths[i]; !exists || cellLen > current {
+				widths[i] = cellLen
+			}
+		}
 	}
 
 	cellName, err := excelize.CoordinatesToCellName(1, rowIdx)
@@ -120,10 +262,10 @@ func StreamExport[T any](
 	opts ...ExportOption,
 ) error {
 	if w == nil {
-		return oops.Code("nil_writer").Errorf("writer cannot be nil")
+		return oops.Code(errs.CodeNilWriter).Errorf("writer cannot be nil")
 	}
 	if generator == nil {
-		return oops.Code("nil_generator").Errorf("generator cannot be nil")
+		return oops.Code(errs.CodeNilGenerator).Errorf("generator cannot be nil")
 	}
 
 	cfg := newDefaultExportConfig()
@@ -134,13 +276,32 @@ func StreamExport[T any](
 	file := excelize.NewFile()
 	defer func() { _ = file.Close() }()
 
-	sw, rowIdx, err := initStreamWriter(file, cfg.sheetName, headings)
+	sw, rowIdx, err := initStreamWriter(file, cfg.sheetName, headings, cfg)
 	if err != nil {
 		return err
 	}
 
-	// 记录生成器闭包内捕获的失败原因。
+	colStyleIDs := make(map[int]int)
+	if cfg.columnFormats != nil {
+		for colName, fmtStr := range cfg.columnFormats {
+			colNum, err := excelize.ColumnNameToNumber(colName)
+			if err == nil {
+				customFmt := fmtStr
+				sID, err := file.NewStyle(&excelize.Style{CustomNumFmt: &customFmt})
+				if err == nil {
+					colStyleIDs[colNum-1] = sID
+				}
+			}
+		}
+	}
+
+	widths := make(map[int]int)
+	for i, h := range headings {
+		widths[i] = len([]rune(h))
+	}
+
 	var yieldErr error
+	totalRows := 0
 
 	genErr := generator(func(item T) bool {
 		select {
@@ -150,29 +311,63 @@ func StreamExport[T any](
 		default:
 		}
 
-		if err := writeStreamRow(sw, item, rowIdx, mapper); err != nil {
+		sampleWidth := totalRows < widthSampleLimit
+		if err := writeStreamRow(sw, item, rowIdx, mapper, cfg, colStyleIDs, widths, sampleWidth); err != nil {
 			yieldErr = err
 			return false
 		}
 		rowIdx++
+		totalRows++
 		return true
 	})
 	if genErr != nil {
-		return oops.Code("excel_generator_error").Wrap(genErr)
+		return oops.Code(errs.CodeExcelGeneratorError).Wrap(genErr)
 	}
 	if yieldErr != nil {
-		// 上下文取消直接透传，方便调用方区分断开与错误。
 		if errors.Is(yieldErr, context.Canceled) || errors.Is(yieldErr, context.DeadlineExceeded) {
 			return yieldErr
 		}
-		return oops.Code("excel_stream_write_error").Wrap(yieldErr)
+		return oops.Code(errs.CodeExcelStreamWriteError).Wrap(yieldErr)
 	}
 
 	if err := sw.Flush(); err != nil {
-		return oops.Code("excel_flush_error").Wrap(err)
+		return oops.Code(errs.CodeExcelFlushError).Wrap(err)
 	}
 
+	applyStreamColumnWidthsDirect(file, cfg.sheetName, widths, cfg)
+
 	return file.Write(w)
+}
+
+func applyStreamColumnWidthsDirect(
+	f *excelize.File,
+	sheetName string,
+	widths map[int]int,
+	cfg *exportConfig,
+) {
+	if cfg != nil && cfg.columnWidths != nil {
+		for colStr, width := range cfg.columnWidths {
+			_ = f.SetColWidth(sheetName, colStr, colStr, width)
+		}
+		return
+	}
+
+	shouldAuto := false
+	if cfg != nil && cfg.autoWidth != nil {
+		shouldAuto = *cfg.autoWidth
+	}
+
+	if shouldAuto {
+		for colIdx, width := range widths {
+			colName, err := excelize.ColumnNumberToName(colIdx + 1)
+			if err != nil {
+				continue
+			}
+
+			computedWidth := math.Max(float64(width+3), 10.0)
+			_ = f.SetColWidth(sheetName, colName, colName, computedWidth)
+		}
+	}
 }
 
 // StreamExportCSV 使用生成器迭代函数将元素直接导出为 CSV 格式，支持百万级数据高效导出并保持 O(1) 内存。
@@ -184,21 +379,20 @@ func StreamExportCSV[T any](
 	mapper func(item T) []any,
 ) error {
 	if w == nil {
-		return oops.Code("nil_writer").Errorf("writer cannot be nil")
+		return oops.Code(errs.CodeNilWriter).Errorf("writer cannot be nil")
 	}
 	if generator == nil {
-		return oops.Code("nil_generator").Errorf("generator cannot be nil")
+		return oops.Code(errs.CodeNilGenerator).Errorf("generator cannot be nil")
 	}
 
 	cw := csv.NewWriter(w)
 
 	if len(headings) > 0 {
 		if err := cw.Write(headings); err != nil {
-			return oops.Code("csv_write_error").Wrap(err)
+			return oops.Code(errs.CodeCSVWriteError).Wrap(err)
 		}
 	}
 
-	// 记录生成器闭包内捕获的失败原因。
 	var yieldErr error
 
 	genErr := generator(func(item T) bool {
@@ -218,7 +412,7 @@ func StreamExportCSV[T any](
 
 		record := make([]string, len(rowValues))
 		for i, v := range rowValues {
-			record[i] = fmt.Sprintf("%v", formatValue(v))
+			record[i] = fmt.Sprintf("%v", formatValueWithOptions(v, true))
 		}
 
 		if err := cw.Write(record); err != nil {
@@ -228,20 +422,18 @@ func StreamExportCSV[T any](
 		return true
 	})
 	if genErr != nil {
-		return oops.Code("csv_generator_error").Wrap(genErr)
+		return oops.Code(errs.CodeCSVGeneratorError).Wrap(genErr)
 	}
 	if yieldErr != nil {
-		// 上下文取消直接透传，方便调用方区分断开与错误。
 		if errors.Is(yieldErr, context.Canceled) || errors.Is(yieldErr, context.DeadlineExceeded) {
 			return yieldErr
 		}
-		return oops.Code("csv_write_error").Wrap(yieldErr)
+		return oops.Code(errs.CodeCSVWriteError).Wrap(yieldErr)
 	}
 
-	// 刷新缓冲并检查写错误。
 	cw.Flush()
 	if err := cw.Error(); err != nil {
-		return oops.Code("csv_flush_error").Wrap(err)
+		return oops.Code(errs.CodeCSVFlushError).Wrap(err)
 	}
 
 	return nil
@@ -253,7 +445,7 @@ func resolveSheetName(file *excelize.File, requested string) (string, error) {
 	}
 	sheets := file.GetSheetList()
 	if len(sheets) == 0 {
-		return "", oops.Code("empty_sheets").Errorf("no sheets found in excel workbook")
+		return "", oops.Code(errs.CodeEmptySheets).Errorf("no sheets found in excel workbook")
 	}
 	return sheets[0], nil
 }
@@ -274,11 +466,11 @@ func processImportRow[T any](
 		if skipInvalid {
 			return false, nil
 		}
-		return false, oops.Code("excel_map_error").With("row_idx", rowIdx).Wrap(mapErr)
+		return false, oops.Code(errs.CodeExcelMapError).With("row_idx", rowIdx).Wrap(mapErr)
 	}
 
 	if err := consumer(item, rowIdx); err != nil {
-		return false, oops.Code("excel_consume_error").With("row_idx", rowIdx).Wrap(err)
+		return false, oops.Code(errs.CodeExcelConsumeError).With("row_idx", rowIdx).Wrap(err)
 	}
 
 	return true, nil
@@ -297,7 +489,7 @@ func iterateRows[T any](
 		currentRowIdx++
 		select {
 		case <-ctx.Done():
-			return processedCount, oops.Code("context_canceled").With("row_idx", currentRowIdx).Wrap(ctx.Err())
+			return processedCount, oops.Code(errs.CodeContextCanceled).With("row_idx", currentRowIdx).Wrap(ctx.Err())
 		default:
 		}
 
@@ -310,7 +502,7 @@ func iterateRows[T any](
 			if skipInvalid {
 				continue
 			}
-			return processedCount, oops.Code("excel_read_row_error").With("row_idx", currentRowIdx).Wrap(colErr)
+			return processedCount, oops.Code(errs.CodeExcelReadRowError).With("row_idx", currentRowIdx).Wrap(colErr)
 		}
 
 		processed, procErr := processImportRow(rowCols, currentRowIdx, mapper, consumer, skipInvalid)
@@ -333,10 +525,10 @@ func StreamImport[T any](
 	opts ...StreamImportOption,
 ) (int, error) {
 	if r == nil {
-		return 0, oops.Code("nil_reader").Errorf("reader cannot be nil")
+		return 0, oops.Code(errs.CodeNilReader).Errorf("reader cannot be nil")
 	}
 	if mapper == nil || consumer == nil {
-		return 0, oops.Code("nil_callback").Errorf("mapper and consumer cannot be nil")
+		return 0, oops.Code(errs.CodeNilCallback).Errorf("mapper and consumer cannot be nil")
 	}
 
 	cfg := newDefaultImportConfig()
@@ -346,7 +538,7 @@ func StreamImport[T any](
 
 	file, err := excelize.OpenReader(r)
 	if err != nil {
-		return 0, oops.Code("excel_open_error").Wrap(err)
+		return 0, oops.Code(errs.CodeExcelOpenError).Wrap(err)
 	}
 	defer func() { _ = file.Close() }()
 
@@ -357,7 +549,7 @@ func StreamImport[T any](
 
 	rows, err := file.Rows(sheetName)
 	if err != nil {
-		return 0, oops.Code("excel_rows_error").Wrap(err)
+		return 0, oops.Code(errs.CodeExcelRowsError).Wrap(err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -373,10 +565,10 @@ func StreamImportCSV[T any](
 	opts ...StreamImportOption,
 ) (int, error) {
 	if r == nil {
-		return 0, oops.Code("nil_reader").Errorf("reader cannot be nil")
+		return 0, oops.Code(errs.CodeNilReader).Errorf("reader cannot be nil")
 	}
 	if mapper == nil || consumer == nil {
-		return 0, oops.Code("nil_callback").Errorf("mapper and consumer cannot be nil")
+		return 0, oops.Code(errs.CodeNilCallback).Errorf("mapper and consumer cannot be nil")
 	}
 
 	cfg := newDefaultImportConfig()
@@ -390,7 +582,7 @@ func StreamImportCSV[T any](
 	for {
 		select {
 		case <-ctx.Done():
-			return processedCount, oops.Code("context_canceled").Wrap(ctx.Err())
+			return processedCount, oops.Code(errs.CodeContextCanceled).Wrap(ctx.Err())
 		default:
 		}
 
@@ -402,7 +594,7 @@ func StreamImportCSV[T any](
 			if cfg.skipInvalidRows {
 				continue
 			}
-			return processedCount, oops.Code("csv_read_error").With("row_idx", currentRowIdx).Wrap(err)
+			return processedCount, oops.Code(errs.CodeCSVReadError).With("row_idx", currentRowIdx).Wrap(err)
 		}
 
 		currentRowIdx++
@@ -420,6 +612,102 @@ func StreamImportCSV[T any](
 	}
 
 	return processedCount, nil
+}
+
+// ImportToModels 将 Excel 内容按行通过自定义 mapper 函数映射并解析为领域模型切片，同时收集详细统计报告。
+func ImportToModels[T any](
+	ctx context.Context,
+	r io.Reader,
+	mapper func(row []string, rowIdx int) (T, error),
+	opts ...ImportOption,
+) ([]T, *ImportResult, error) {
+	if r == nil {
+		return nil, nil, oops.Code(errs.CodeExcelNilPointer).In("excel.ImportToModels").Errorf("reader cannot be nil")
+	}
+	if mapper == nil {
+		return nil, nil, oops.Code(errs.CodeExcelNilPointer).In("excel.ImportToModels").Errorf("mapper cannot be nil")
+	}
+
+	cfg := newDefaultImportConfig()
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	file, err := excelize.OpenReader(r)
+	if err != nil {
+		return nil, nil, oops.Code(errs.CodeExcelOpenError).Wrap(err)
+	}
+	defer func() { _ = file.Close() }()
+
+	sheetName, err := resolveSheetName(file, cfg.sheetName)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rows, err := file.Rows(sheetName)
+	if err != nil {
+		return nil, nil, oops.Code(errs.CodeExcelRowsError).Wrap(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := &ImportResult{}
+	var items []T
+	currentRowIdx := 0
+
+	for rows.Next() {
+		currentRowIdx++
+		select {
+		case <-ctx.Done():
+			return items, result, ctx.Err()
+		default:
+		}
+
+		if currentRowIdx <= cfg.headerRowIndex {
+			continue
+		}
+
+		cols, colErr := rows.Columns()
+		if colErr != nil {
+			if cfg.skipInvalidRows {
+				result.SkippedCount++
+				result.Failures = append(result.Failures, RowFailure{
+					Row:   currentRowIdx,
+					Error: colErr,
+				})
+				continue
+			}
+			return items, result, oops.Code(errs.CodeExcelReadRowError).With("row_idx", currentRowIdx).Wrap(colErr)
+		}
+
+		if len(cols) == 0 || isRowEmpty(cols) {
+			continue
+		}
+
+		if cfg.maxRows > 0 && result.TotalRows >= cfg.maxRows {
+			break
+		}
+
+		result.TotalRows++
+
+		item, mapErr := mapper(cols, currentRowIdx)
+		if mapErr != nil {
+			if cfg.skipInvalidRows {
+				result.SkippedCount++
+				result.Failures = append(result.Failures, RowFailure{
+					Row:    currentRowIdx,
+					Values: cols,
+					Error:  mapErr,
+				})
+				continue
+			}
+			return items, result, oops.Code(errs.CodeExcelMapError).With("row_idx", currentRowIdx).Wrap(mapErr)
+		}
+
+		items = append(items, item)
+		result.ImportedCount++
+	}
+
+	return items, result, nil
 }
 
 func checkRowHeaderOrSkip(cols []string, headerRowIdx, currentRowIdx int) (skip bool, isHeader bool) {
@@ -466,10 +754,10 @@ func ImportSlice[T any](
 	opts ...ImportOption,
 ) error {
 	if r == nil {
-		return oops.Code("excel_nil_pointer").In("excel.ImportSlice").Errorf("reader cannot be nil")
+		return oops.Code(errs.CodeExcelNilPointer).In("excel.ImportSlice").Errorf("reader cannot be nil")
 	}
 	if dest == nil {
-		return oops.Code("excel_nil_pointer").In("excel.ImportSlice").Errorf("destination slice pointer cannot be nil")
+		return oops.Code(errs.CodeExcelNilPointer).In("excel.ImportSlice").Errorf("destination slice pointer cannot be nil")
 	}
 
 	cfg := newDefaultImportConfig()
@@ -479,7 +767,7 @@ func ImportSlice[T any](
 
 	file, err := excelize.OpenReader(r)
 	if err != nil {
-		return oops.Code("excel_open_error").Wrap(err)
+		return oops.Code(errs.CodeExcelOpenError).Wrap(err)
 	}
 	defer func() { _ = file.Close() }()
 
@@ -490,7 +778,7 @@ func ImportSlice[T any](
 
 	rows, err := file.Rows(sheetName)
 	if err != nil {
-		return oops.Code("excel_rows_error").Wrap(err)
+		return oops.Code(errs.CodeExcelRowsError).Wrap(err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -512,7 +800,7 @@ func ImportSlice[T any](
 			if cfg.skipInvalidRows {
 				continue
 			}
-			return oops.Code("excel_read_row_error").With("row_idx", currentRowIdx).Wrap(colErr)
+			return oops.Code(errs.CodeExcelReadRowError).With("row_idx", currentRowIdx).Wrap(colErr)
 		}
 
 		skip, isHeader := checkRowHeaderOrSkip(cols, cfg.headerRowIndex, currentRowIdx)
@@ -529,7 +817,7 @@ func ImportSlice[T any](
 			if cfg.skipInvalidRows {
 				continue
 			}
-			return oops.Code("excel_map_error").With("row_idx", currentRowIdx).Wrap(mapErr)
+			return oops.Code(errs.CodeExcelMapError).With("row_idx", currentRowIdx).Wrap(mapErr)
 		}
 
 		items = append(items, item)

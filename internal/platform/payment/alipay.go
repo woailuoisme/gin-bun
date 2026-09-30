@@ -11,7 +11,7 @@ import (
 	"github.com/go-pay/gopay"
 	alipaynotify "github.com/go-pay/gopay/alipay"
 	alipayv3 "github.com/go-pay/gopay/alipay/v3"
-	"github.com/rs/zerolog"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/errs"
@@ -38,12 +38,15 @@ const (
 // 因此三本证书在构造期必须全部加载成功，否则构造直接失败。
 type alipayProvider struct {
 	appKey            string
+	appID             string
 	notifyURL         string
 	returnURL         string
 	scenes            map[enums.PaymentScene]struct{}
 	client            *alipayv3.ClientV3
 	publicCertContent []byte
 }
+
+var _ FullProvider = (*alipayProvider)(nil)
 
 // newAlipayProvider 依据渠道应用配置构造支付宝 Provider。
 // isProd 由运行环境推导，沙箱与生产各用一套应用凭据，不在同一份配置内并存。
@@ -52,7 +55,7 @@ func newAlipayProvider(
 	cfg config.AlipayPaymentAppConfig,
 	isProd bool,
 	certsDir string,
-	logger zerolog.Logger,
+	logger *zap.Logger,
 ) (*alipayProvider, error) {
 	scenes, err := resolveScenes(cfg.Scenes, enums.PaymentChannelAlipay)
 	if err != nil {
@@ -98,7 +101,7 @@ func newAlipayProvider(
 			err,
 		)
 	}
-	client.SetLogger(newXLogAdapter(logger))
+	client.SetLogger(newXLogAdapter(logger, !isProd))
 
 	if strings.TrimSpace(client.AliPayPublicCertSN) == "" {
 		return nil, errs.ServiceUnavailable(
@@ -108,6 +111,7 @@ func newAlipayProvider(
 
 	return &alipayProvider{
 		appKey:            appKey,
+		appID:             strings.TrimSpace(cfg.AppID),
 		notifyURL:         strings.TrimSpace(cfg.NotifyURL),
 		returnURL:         strings.TrimSpace(cfg.ReturnURL),
 		scenes:            scenes,
@@ -284,7 +288,7 @@ func (p *alipayProvider) createMiniProgramInstruction(
 func (p *alipayProvider) createBodyMap(req CreateRequest) gopay.BodyMap {
 	body := make(gopay.BodyMap).
 		Set("out_trade_no", req.OutTradeNo).
-		Set("total_amount", FormatYuanAmount(req.Amount)).
+		Set("total_amount", FormatYuanAmount(req.EffectiveAmount())).
 		Set("subject", req.Subject)
 
 	if notifyURL := resolveNotifyURL(req.NotifyURL, p.notifyURL); notifyURL != "" {
@@ -373,7 +377,7 @@ func (p *alipayProvider) Refund(ctx context.Context, req RefundRequest) (*Refund
 	body := make(gopay.BodyMap).
 		Set("out_trade_no", req.OutTradeNo).
 		Set("out_request_no", req.OutRefundNo).
-		Set("refund_amount", FormatYuanAmount(req.RefundAmount))
+		Set("refund_amount", FormatYuanAmount(req.EffectiveRefundAmount()))
 
 	if req.Reason != "" {
 		body.Set("refund_reason", req.Reason)
@@ -473,6 +477,12 @@ func (p *alipayProvider) ParseNotification(req *http.Request) (*Notification, er
 	verified, err := alipaynotify.VerifySignWithCert(p.publicCertContent, body)
 	if err != nil || !verified {
 		return nil, errs.Unauthorized(errs.CodeAuthTokenInvalid, "invalid alipay notification signature for "+p.appKey)
+	}
+
+	// 验签只证明报文来自支付宝，不证明报文属于本应用：报文携带 app_id 时必须与本应用一致，
+	// 防止同一支付宝账号下的多个应用之间发生通知串号。
+	if appID := body.GetString("app_id"); appID != "" && appID != p.appID {
+		return nil, errs.Forbidden("alipay notification app_id mismatch for " + p.appKey)
 	}
 
 	notification := &Notification{

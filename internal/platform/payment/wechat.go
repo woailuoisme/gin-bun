@@ -10,7 +10,7 @@ import (
 
 	"github.com/go-pay/gopay"
 	"github.com/go-pay/gopay/wechat/v3"
-	"github.com/rs/zerolog"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/errs"
@@ -46,14 +46,17 @@ type wechatProvider struct {
 	platformPublicKey *rsa.PublicKey
 }
 
+var _ FullProvider = (*wechatProvider)(nil)
+
 // newWechatProvider 依据渠道应用配置构造微信支付 Provider。
 // 商户私钥与平台公钥在构造期读入内存；任一必需材料缺失或加载失败都会让构造直接失败，
 // 从而杜绝「证书未加载导致验签被静默跳过」的隐患。
 func newWechatProvider(
 	appKey string,
 	cfg config.WechatPaymentAppConfig,
+	isProd bool,
 	certsDir string,
-	logger zerolog.Logger,
+	logger *zap.Logger,
 ) (*wechatProvider, error) {
 	scenes, err := resolveScenes(cfg.Scenes, enums.PaymentChannelWechat)
 	if err != nil {
@@ -77,7 +80,7 @@ func newWechatProvider(
 			err,
 		)
 	}
-	client.SetLogger(newXLogAdapter(logger))
+	client.SetLogger(newXLogAdapter(logger, !isProd))
 
 	provider := &wechatProvider{
 		appKey:    appKey,
@@ -359,7 +362,7 @@ func (p *wechatProvider) createBodyMap(req CreateRequest) gopay.BodyMap {
 		Set("description", req.Subject).
 		Set("out_trade_no", req.OutTradeNo).
 		SetBodyMap("amount", func(amount gopay.BodyMap) {
-			amount.Set("total", req.Amount).Set("currency", wechatCurrencyCNY)
+			amount.Set("total", req.EffectiveAmount()).Set("currency", wechatCurrencyCNY)
 		})
 
 	if notifyURL := resolveNotifyURL(req.NotifyURL, p.notifyURL); notifyURL != "" {
@@ -425,8 +428,8 @@ func (p *wechatProvider) Refund(ctx context.Context, req RefundRequest) (*Refund
 		Set("out_trade_no", req.OutTradeNo).
 		Set("out_refund_no", req.OutRefundNo).
 		SetBodyMap("amount", func(amount gopay.BodyMap) {
-			amount.Set("total", req.TotalAmount).
-				Set("refund", req.RefundAmount).
+			amount.Set("total", req.EffectiveTotalAmount()).
+				Set("refund", req.EffectiveRefundAmount()).
 				Set("currency", wechatCurrencyCNY)
 		})
 
@@ -530,6 +533,11 @@ func (p *wechatProvider) attachPaymentNotification(
 		return nil, errs.BadRequest("failed to decrypt wechat payment notification for " + p.appKey)
 	}
 
+	// 平台证书只证明报文来自微信，不证明报文属于本商户：必须再比对报文内的商户号与应用号。
+	if decrypted.Mchid != p.mchID || decrypted.Appid != p.appID {
+		return nil, errs.Forbidden("wechat payment notification merchant or app mismatch for " + p.appKey)
+	}
+
 	encoded, err := json.Marshal(decrypted)
 	if err != nil {
 		return nil, errs.Internal(fmt.Errorf("failed to encode wechat payment notification payload: %w", err))
@@ -550,6 +558,11 @@ func (p *wechatProvider) attachRefundNotification(
 	decrypted, err := notifyRequest.DecryptRefundCipherText(p.apiV3Key)
 	if err != nil {
 		return nil, errs.BadRequest("failed to decrypt wechat refund notification for " + p.appKey)
+	}
+
+	// 退款通知同样必须归属本商户。
+	if decrypted.Mchid != p.mchID {
+		return nil, errs.Forbidden("wechat refund notification merchant mismatch for " + p.appKey)
 	}
 
 	encoded, err := json.Marshal(decrypted)

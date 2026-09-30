@@ -15,8 +15,8 @@ func RegisterAdminAuthRoutes(router *gin.RouterGroup, handler *Handler, mw *midd
 	sensitive.POST("/sign-in/email", handler.SignInEmail)
 	sensitive.POST("/token/refresh", handler.Refresh)
 
-	// 受保护会话端点（基础鉴权，无需额外 Casbin 业务权限码）
-	protected := group.Group("", mw.RequireAuth(), mw.RateLimit(middleware.TierAuthenticated))
+	// 受保护会话端点（管理员守卫鉴权，无需额外 Casbin 业务权限码）
+	protected := group.Group("", mw.RequireAuth("admin"), mw.RateLimit(middleware.TierAuthenticated))
 	protected.GET("/get-session", handler.GetSession)
 	protected.POST("/sign-out", handler.SignOut)
 	protected.POST("/change-password", handler.ChangePassword)

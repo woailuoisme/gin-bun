@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // serverURL 构造本地服务访问 URL。
@@ -30,16 +32,17 @@ func (a *Application) Serve(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
 		base := serverURL(a.cfg.App.Port)
-		event := a.logger.Info().
-			Str("addr", server.Addr).
-			Str("url", base).
-			Str("env", a.cfg.App.Env).
-			Str("gin", gin.Mode()).
-			Str("storage", a.cfg.Storage.Driver)
-		if a.cfg.App.EnableDocs {
-			event = event.Str("docs", base+docsPagePath)
+		fields := []zap.Field{
+			zap.String("addr", server.Addr),
+			zap.String("url", base),
+			zap.String("env", a.cfg.App.Env),
+			zap.String("gin", gin.Mode()),
+			zap.String("storage", a.cfg.Storage.Driver),
 		}
-		event.Msg("HTTP server started and listening")
+		if a.cfg.App.EnableDocs {
+			fields = append(fields, zap.String("docs", base+docsPagePath))
+		}
+		a.logger.Info("HTTP server started and listening", fields...)
 
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
@@ -50,10 +53,14 @@ func (a *Application) Serve(ctx context.Context) error {
 	case err := <-errCh:
 		return fmt.Errorf("HTTP server exited unexpectedly: %w", err)
 	case <-ctx.Done():
-		a.logger.Info().Msg("shutdown signal received, initiating graceful shutdown")
+		a.logger.Info("shutdown signal received, initiating graceful shutdown")
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), srvCfg.ShutdownTimeout)
+	shutdownTimeout := srvCfg.ShutdownTimeout
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 15 * time.Second
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown failed: %w", err)

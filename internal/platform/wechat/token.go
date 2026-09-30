@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/errs"
@@ -15,18 +19,19 @@ const (
 	stableEndpoint = "/cgi-bin/stable_token"
 	// grantTypeClientCredential 是获取接口调用凭据的唯一合法取值。
 	grantTypeClientCredential = "client_credential"
-	// tokenRefreshMargin 是提前失效量：宁可提前几分钟重取，
-	// 也不要在临界点上让业务请求撞上一次注定失败的调用。
+	// tokenRefreshMargin 是提前失效量：提前 5 分钟重取，避免临界请求撞上过期凭据。
 	tokenRefreshMargin = 5 * time.Minute
-	// minTokenTTL 是本地缓存时长的下限，避免上游返回极短有效期时写入一个立刻失效的条目。
+	// minTokenTTL 是本地缓存时长的下限，避免上游返回极短有效期时写入立刻失效的条目。
 	minTokenTTL = 30 * time.Second
+	// distributedLockTTL 是多 Pod 实例争抢回源时的分布式锁租期。
+	distributedLockTTL = 5 * time.Second
+	// lockPollInterval 是未争抢到分布式锁的实例轮询 L2 缓存的时间间隔。
+	lockPollInterval = 50 * time.Millisecond
+	// maxLockWaitDuration 是等待其他 Pod 回源的最大超时时间。
+	maxLockWaitDuration = 2 * time.Second
 )
 
-// tokenEntry 是进程内缓存的凭据条目。
-//
-// 过期时刻必须随值一起存，不能只依赖缓存 TTL：stable_token 在有效期内会返回同一个凭据，
-// 但 expires_in 是**剩余**秒数。若按固定 TTL 缓存，一个在新旧凭据交替期间启动的实例
-// 会把「剩余 60 秒」的凭据缓存成一整段 TTL，之后每个业务请求都要先吃一次 40001 再重试。
+// tokenEntry 是两级缓存存储的凭据条目。
 type tokenEntry struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expiresAt"`
@@ -48,28 +53,180 @@ func tokenCacheKey(appID string) string {
 	return cache.Key("wechat", "token", appID)
 }
 
-// accessToken 返回业务调用所需的接口调用凭据，优先命中进程内缓存。
+// tokenLockKey 生成按 appid 隔离的分布式排队锁键。
+func tokenLockKey(appID string) string {
+	return cache.Key("wechat", "token", appID, "lock")
+}
+
+// redisTokenStore 基于 internal/platform/cache 实现 TokenStore 接口。
+type redisTokenStore struct {
+	cache *cache.Client
+}
+
+var _ TokenStore = (*redisTokenStore)(nil)
+
+func newRedisTokenStore(client *cache.Client) TokenStore {
+	if client == nil {
+		return newMemoryTokenStore()
+	}
+	return &redisTokenStore{cache: client}
+}
+
+func (s *redisTokenStore) Get(ctx context.Context, key string) (string, bool) {
+	val, err := s.cache.Get(ctx, key)
+	if err != nil || val == "" {
+		return "", false
+	}
+	return val, true
+}
+
+func (s *redisTokenStore) Set(ctx context.Context, key string, token string, ttl time.Duration) error {
+	return s.cache.Set(ctx, key, token, ttl)
+}
+
+func (s *redisTokenStore) Delete(ctx context.Context, key string) error {
+	_, err := s.cache.Delete(ctx, key)
+	return err
+}
+
+func (s *redisTokenStore) Lock(ctx context.Context, key string, ttl time.Duration) (string, bool, error) {
+	owner := newLockOwner()
+	acquired, err := s.cache.SetNX(ctx, tokenLockKey(key), owner, ttl)
+	if err != nil || !acquired {
+		return "", false, err
+	}
+	return owner, true, nil
+}
+
+func (s *redisTokenStore) Unlock(ctx context.Context, key, owner string) error {
+	if owner == "" {
+		return nil
+	}
+	// 原子比对持有者后删除：TTL 到期后锁可能已被他人重新获取。
+	_, err := s.cache.DeleteIfMatch(ctx, tokenLockKey(key), owner)
+	return err
+}
+
+// newLockOwner 生成一次锁持有的唯一标识。
+func newLockOwner() string {
+	return uuid.NewString()
+}
+
+type memoryEntry struct {
+	value     string
+	expiresAt time.Time
+}
+
+// memoryTokenStore 基于 sync.Map 实现进程内内存 TokenStore。
+type memoryTokenStore struct {
+	data      sync.Map
+	lockMu    sync.Mutex
+	lockOwner atomic.Value
+}
+
+var _ TokenStore = (*memoryTokenStore)(nil)
+
+func newMemoryTokenStore() TokenStore {
+	return &memoryTokenStore{}
+}
+
+func (s *memoryTokenStore) Get(_ context.Context, key string) (string, bool) {
+	val, ok := s.data.Load(key)
+	if !ok {
+		return "", false
+	}
+	entry, ok := val.(memoryEntry)
+	if !ok || time.Now().UTC().After(entry.expiresAt) {
+		return "", false
+	}
+	return entry.value, true
+}
+
+func (s *memoryTokenStore) Set(_ context.Context, key string, token string, ttl time.Duration) error {
+	s.data.Store(key, memoryEntry{
+		value:     token,
+		expiresAt: time.Now().UTC().Add(ttl),
+	})
+	return nil
+}
+
+func (s *memoryTokenStore) Delete(_ context.Context, key string) error {
+	s.data.Delete(key)
+	return nil
+}
+
+func (s *memoryTokenStore) Lock(_ context.Context, _ string, _ time.Duration) (string, bool, error) {
+	if !s.lockMu.TryLock() {
+		return "", false, nil
+	}
+	owner := newLockOwner()
+	s.lockOwner.Store(owner)
+	return owner, true, nil
+}
+
+func (s *memoryTokenStore) Unlock(_ context.Context, _, owner string) error {
+	if current, ok := s.lockOwner.Load().(string); ok && current != "" && current != owner {
+		return nil
+	}
+	s.lockOwner.Store("")
+	s.lockMu.Unlock()
+	return nil
+}
+
+// accessToken 返回业务调用所需的接口调用凭据。
 //
-// 缓存未命中时通过 singleflight 合并并发回源：微信对取凭据的接口本身有配额，
-// 且并发回源在多实例下会把彼此的凭据相互作废。
+// 性能架构（L1 进程内存 + L2 分布式 Redis + SingleFlight + Redis 锁）：
+// 1. 优先读取基于 atomic.Pointer 的 L1 进程内存缓存（微秒级免 I/O 命中）；
+// 2. L1 未命中时读取 L2 分布式存储，命中后回填 L1；
+// 3. L2 未命中时，通过进程级 SingleFlight 保证同 Pod 单次回源；
+// 4. 回源前尝试争抢分布式排队锁，获锁者回源微信并将结果写入 L1/L2，未获锁者短暂轮询 L2。
 func (c *Client) accessToken(ctx context.Context) (string, error) {
 	if c == nil {
 		return "", errs.ServiceUnavailable("wechat miniprogram client is not configured")
 	}
 
-	if token, ok := c.cachedToken(ctx); ok {
+	now := time.Now().UTC()
+
+	// 1. L1 进程内存高速缓存命中
+	if l1 := c.l1Token.Load(); l1 != nil && l1.isValid(now) {
+		return l1.Token, nil
+	}
+
+	// 2. L2 分布式缓存命中
+	if token, ok := c.readL2Token(ctx, now); ok {
 		return token, nil
 	}
 
+	// 3. SingleFlight 进程内合并并发回源
 	value, err, _ := c.flight.Do(c.tokenKey, func() (any, error) {
-		// 用 WithoutCancel：一次请求取消不应连累共享同一次回源的其他请求。
 		flightCtx := context.WithoutCancel(ctx)
 
-		// 二次校验：并发场景下可能已被其他 goroutine 回填。
-		if token, ok := c.cachedToken(flightCtx); ok {
+		// 二次检查 L1 / L2（可能已被同进程前序协程回填）
+		if l1 := c.l1Token.Load(); l1 != nil && l1.isValid(time.Now().UTC()) {
+			return l1.Token, nil
+		}
+		if token, ok := c.readL2Token(flightCtx, time.Now().UTC()); ok {
 			return token, nil
 		}
 
+		// 4. 跨 Pod 分布式锁排队协调
+		if c.tokenStore != nil {
+			owner, acquired, lockErr := c.tokenStore.Lock(flightCtx, c.tokenKey, distributedLockTTL)
+			if lockErr == nil && acquired {
+				defer func() {
+					_ = c.tokenStore.Unlock(flightCtx, c.tokenKey, owner)
+				}()
+
+				return c.fetchAccessToken(flightCtx)
+			}
+
+			// 未争抢到分布式锁：等待获锁 Pod 回填，毫秒级轮询 L2
+			if token, ok := c.pollL2Token(flightCtx); ok {
+				return token, nil
+			}
+		}
+
+		// 降级：超时未见 L2 回填或未配置分布式锁，本节点直接回源
 		return c.fetchAccessToken(flightCtx)
 	})
 	if err != nil {
@@ -84,46 +241,63 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-// cachedToken 读取仍在有效期内的凭据。
-func (c *Client) cachedToken(ctx context.Context) (string, bool) {
-	now := time.Now().UTC()
-	if c.cache != nil {
-		raw, err := c.cache.Get(ctx, c.tokenKey)
-		if err != nil || raw == "" {
-			return "", false
-		}
-		var entry tokenEntry
-		if err := json.Unmarshal([]byte(raw), &entry); err != nil {
-			return "", false
-		}
-		if !entry.isValid(now) {
-			return "", false
-		}
-		return entry.Token, true
+// readL2Token 从 L2 存储读取 Token 并回填 L1。
+func (c *Client) readL2Token(ctx context.Context, now time.Time) (string, bool) {
+	if c.tokenStore == nil {
+		return "", false
 	}
 
-	val, ok := c.memTokens.Load(c.tokenKey)
-	if !ok {
+	raw, ok := c.tokenStore.Get(ctx, c.tokenKey)
+	if !ok || raw == "" {
 		return "", false
 	}
-	entry, ok := val.(tokenEntry)
-	if !ok || !entry.isValid(now) {
+
+	var entry tokenEntry
+	if err := json.Unmarshal([]byte(raw), &entry); err != nil {
 		return "", false
 	}
+
+	if !entry.isValid(now) {
+		return "", false
+	}
+
+	// 回填 L1 进程内存
+	c.l1Token.Store(&entry)
 	return entry.Token, true
 }
 
-// fetchAccessToken 向微信换取一次凭据并写入缓存。
+// pollL2Token 在未获锁时短暂轮询 L2 缓存。
+func (c *Client) pollL2Token(ctx context.Context) (string, bool) {
+	ticker := time.NewTicker(lockPollInterval)
+	defer ticker.Stop()
+
+	timer := time.NewTimer(maxLockWaitDuration)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", false
+		case <-timer.C:
+			return "", false
+		case <-ticker.C:
+			if token, ok := c.readL2Token(ctx, time.Now().UTC()); ok {
+				return token, true
+			}
+		}
+	}
+}
+
+// fetchAccessToken 向微信 stable_token 接口换取新凭据并写入 L1 与 L2。
 func (c *Client) fetchAccessToken(ctx context.Context) (string, error) {
-	const operation = "wechat.accessToken"
+	const operation = "wechat.token.fetchAccessToken"
 
 	response, err := c.http.R().
 		SetContext(ctx).
 		SetBody(map[string]any{
-			"grant_type": grantTypeClientCredential,
-			"appid":      c.appID,
-			"secret":     c.appSecret,
-			// 恒为 false：force_refresh=true 会立即作废其他实例正在使用的凭据。
+			"grant_type":    grantTypeClientCredential,
+			"appid":         c.appID,
+			"secret":        c.appSecret,
 			"force_refresh": false,
 		}).
 		Post(stableEndpoint)
@@ -141,32 +315,37 @@ func (c *Client) fetchAccessToken(ctx context.Context) (string, error) {
 	}
 
 	ttl := tokenTTL(payload.ExpiresIn)
-	entry := tokenEntry{Token: payload.AccessToken, ExpiresAt: time.Now().UTC().Add(ttl)}
+	entry := tokenEntry{
+		Token:     payload.AccessToken,
+		ExpiresAt: time.Now().UTC().Add(ttl),
+	}
 
-	if c.cache != nil {
-		if raw, err := json.Marshal(entry); err == nil {
-			_ = c.cache.Set(ctx, c.tokenKey, string(raw), ttl)
+	// 写入 L1 进程内存
+	c.l1Token.Store(&entry)
+
+	// 写入 L2 分布式存储
+	if c.tokenStore != nil {
+		if raw, marshalErr := json.Marshal(entry); marshalErr == nil {
+			_ = c.tokenStore.Set(ctx, c.tokenKey, string(raw), ttl)
 		}
-	} else {
-		c.memTokens.Store(c.tokenKey, entry)
 	}
 
 	return payload.AccessToken, nil
 }
 
-// invalidateAccessToken 丢弃凭据缓存，使下一次 accessToken 重新向微信取一次。
+// invalidateAccessToken 丢弃 L1 与 L2 凭据缓存。
 func (c *Client) invalidateAccessToken(ctx context.Context) {
 	if c == nil {
 		return
 	}
 
-	if c.cache != nil {
-		_, _ = c.cache.Delete(ctx, c.tokenKey)
+	c.l1Token.Store(nil)
+	if c.tokenStore != nil {
+		_ = c.tokenStore.Delete(ctx, c.tokenKey)
 	}
-	c.memTokens.Delete(c.tokenKey)
 }
 
-// tokenTTL 把上游返回的有效期换算为本地缓存时长，预留提前失效量并设下限。
+// tokenTTL 计算安全缓存时长。
 func tokenTTL(expiresIn int) time.Duration {
 	return max(minTokenTTL, time.Duration(expiresIn)*time.Second-tokenRefreshMargin)
 }

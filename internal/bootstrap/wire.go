@@ -4,9 +4,9 @@ import (
 	"context"
 	"slices"
 
-	"github.com/golang-module/carbon/v2"
-	"github.com/rs/zerolog"
+	"github.com/dromara/carbon/v2"
 	"github.com/uptrace/bun"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/database"
@@ -18,7 +18,8 @@ import (
 	realtimeFeature "bgin/internal/features/realtime"
 	"bgin/internal/features/system"
 	"bgin/internal/middleware"
-	"bgin/internal/platform/authz"
+	platformauth "bgin/internal/platform/authentication"
+	"bgin/internal/platform/authorization"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/i18n"
@@ -30,9 +31,9 @@ import (
 	"bgin/internal/platform/realtime"
 	"bgin/internal/platform/search"
 	"bgin/internal/platform/storage"
-	"bgin/internal/platform/token"
 	"bgin/internal/platform/wechat"
 	"bgin/internal/shared/media"
+	sharedDatabase "bgin/internal/shared/notification/database"
 	"bgin/internal/shared/user"
 )
 
@@ -69,7 +70,13 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	}
 	td.add(cacheClient.Close)
 
-	mailerClient, err := mailer.New(cfg.Mail, *log)
+	locker, err := cache.NewRedisLocker(cfg.Cache)
+	if err != nil {
+		return nil, td.fail(err)
+	}
+	td.add(locker.Close)
+
+	mailerClient, err := mailer.New(cfg.Mail, log)
 	if err != nil {
 		return nil, td.fail(err)
 	}
@@ -87,16 +94,30 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	}
 	i18n.SetDefault(translator)
 
-	enforcer, err := authz.New()
+	enforcer, err := authorization.New()
 	if err != nil {
 		return nil, td.fail(err)
 	}
 
-	tokens := token.New(cfg.JWT, cacheClient)
+	tokens := platformauth.NewTokenIssuer(cfg.JWT, cacheClient)
 	hasherClient := hasher.New()
+
+	// 初始化共享用户仓储及各业务服务
+	userRepo := user.NewRepository(db, hasherClient)
+
+	// 初始化客户端与管理端 Guard 及多守卫注册中心 (Multiple Guards)
+	clientAuthRepo := auth.NewRepository(db, hasherClient)
+	clientGuard := platformauth.NewGuard(tokens, userRepo, user.ClientPolicy{})
+	adminGuard := platformauth.NewGuard(tokens, userRepo, user.AdminPolicy{})
+
+	authManager := platformauth.NewManager().
+		Register("client", clientGuard).
+		Register("admin", adminGuard).
+		SetDefault("client")
 
 	mw := middleware.New(middleware.Deps{
 		Tokens:         tokens,
+		AuthManager:    authManager,
 		Cache:          cacheClient,
 		Authz:          enforcer,
 		Logger:         log,
@@ -105,10 +126,14 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		Production:     cfg.IsProduction(),
 		Translator:     translator,
 		RequestTimeout: cfg.App.Server.RequestTimeout,
+		// multipart 上传按媒体单文件配额放行；批量上传（UploadMultiple）受此单请求上限约束，
+		// ponytail: 单请求上限 == 单文件配额，需要一次传多个大文件时再加 MaxFiles 配置。
+		UploadMaxBody: cfg.Media.MaxFileSize,
 	})
 
 	authService := auth.NewService(auth.Deps{
-		Repo:       auth.NewRepository(db),
+		Repo:       clientAuthRepo,
+		Guard:      clientGuard,
 		Tokens:     tokens,
 		Hasher:     hasherClient,
 		Cache:      cacheClient,
@@ -116,12 +141,12 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		Translator: translator,
 		Config:     cfg,
 	})
-	// 初始化共享用户仓储及各业务服务
-	userRepo := user.NewRepository(db)
-	profileService := profile.NewService(profile.Deps{Repo: userRepo})
+
+	userService := user.NewService(userRepo)
 	adminService := admin.NewService(admin.Deps{Repo: userRepo, Hasher: hasherClient})
 	adminAuthService := adminauth.NewService(adminauth.Deps{
-		Repo:   adminauth.NewRepository(db),
+		Repo:   userRepo,
+		Guard:  adminGuard,
 		Tokens: tokens,
 		Hasher: hasherClient,
 	})
@@ -144,7 +169,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	// 初始化健康就绪探针 Handler
 	systemHandler := system.NewHandler(
 		system.NewService(system.Deps{
-			Database: databasePinger{db: db},
+			Database: &databasePinger{db: db},
 			Cache:    cacheClient,
 			Storage:  disk,
 			Search:   searchClient,
@@ -161,20 +186,21 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		Users:   userRepo,
 	})
 	realtimeHandler := realtimeFeature.NewHandler(realtimeService)
-	var wechatClient *wechat.Client
-	if cfg.WeChat.MiniProgram.AppID != "" {
-		wechatClient = wechat.NewClient(cfg.WeChat.MiniProgram, cacheClient)
-	}
-
-	paymentManager, err := payment.NewManager(cfg, *log)
+	wechatManager, err := wechat.NewManager(cfg.WeChat, cacheClient)
 	if err != nil {
 		return nil, td.fail(err)
 	}
 
-	paymentService := paymentFeature.NewService(paymentManager, cacheClient, cfg)
+	paymentManager, err := payment.NewManager(cfg, log)
+	if err != nil {
+		return nil, td.fail(err)
+	}
+
+	paymentService := paymentFeature.NewService(paymentManager, cacheClient, cfg, nil)
 	paymentHandler := paymentFeature.NewHandler(paymentService)
 
-	notifier, err := notification.New(cfg.Notification, db, mailerClient, realtimeGateway)
+	notifier, err := notification.New(cfg.Notification, mailerClient, realtimeGateway,
+		sharedDatabase.NewChannel(db))
 	if err != nil {
 		return nil, td.fail(err)
 	}
@@ -183,7 +209,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	engine, err := buildEngine(
 		cfg, mw, systemHandler,
 		auth.NewHandler(authService),
-		profile.NewHandler(profileService),
+		profile.NewHandler(userService, mediaManager),
 		admin.NewHandler(adminService),
 		adminauth.NewHandler(adminAuthService),
 		realtimeHandler,
@@ -203,12 +229,13 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		logger:       log,
 		db:           db,
 		cache:        cacheClient,
+		locker:       locker,
 		mailer:       mailerClient,
 		notification: notifier,
 		storage:      disk,
 		media:        mediaManager,
 		pdf:          pdfService,
-		wechat:       wechatClient,
+		wechat:       wechatManager,
 		payment:      paymentManager,
 		realtime:     realtimeGateway,
 		search:       searchClient,
@@ -218,7 +245,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 
 // 编译期断言满足探针接口。
 var (
-	_ system.Pinger = databasePinger{}
+	_ system.Pinger = (*databasePinger)(nil)
 	_ system.Pinger = (*cache.Client)(nil)
 )
 
@@ -226,35 +253,35 @@ var (
 type databasePinger struct{ db *bun.DB }
 
 // Ping 实现 system.Pinger。
-func (p databasePinger) Ping(ctx context.Context) error { return p.db.PingContext(ctx) }
+func (p *databasePinger) Ping(ctx context.Context) error { return p.db.PingContext(ctx) }
 
 // Driver 返回底层驱动标识。
-func (databasePinger) Driver() string { return "postgres" }
+func (*databasePinger) Driver() string { return "postgres" }
 
 // logDatabaseReady 打印数据库连接池就绪日志并进行连接池配额诊断。
-func logDatabaseReady(ctx context.Context, log *zerolog.Logger, db *bun.DB, cfg config.DatabaseConfig) {
-	log.Info().
-		Int("max_open_conns", cfg.MaxOpenConns).
-		Int("max_idle_conns", cfg.MaxIdleConns).
-		Str("conn_max_lifetime", cfg.ConnMaxLifetime.String()).
-		Str("conn_max_idle_time", cfg.ConnMaxIdleTime.String()).
-		Str("connect_timeout", cfg.ConnectTimeout.String()).
-		Str("statement_timeout", cfg.StatementTimeout.String()).
-		Str("idle_in_tx_timeout", cfg.IdleInTxTimeout.String()).
-		Str("slow_threshold", cfg.SlowThreshold.String()).
-		Bool("debug", cfg.Debug).
-		Msg("database connection pool ready")
+func logDatabaseReady(ctx context.Context, log *zap.Logger, db *bun.DB, cfg config.DatabaseConfig) {
+	log.Info("database connection pool ready",
+		zap.Int("max_open_conns", cfg.MaxOpenConns),
+		zap.Int("max_idle_conns", cfg.MaxIdleConns),
+		zap.Duration("conn_max_lifetime", cfg.ConnMaxLifetime),
+		zap.Duration("conn_max_idle_time", cfg.ConnMaxIdleTime),
+		zap.Duration("connect_timeout", cfg.ConnectTimeout),
+		zap.Duration("statement_timeout", cfg.StatementTimeout),
+		zap.Duration("idle_in_tx_timeout", cfg.IdleInTxTimeout),
+		zap.Duration("slow_threshold", cfg.SlowThreshold),
+		zap.Bool("debug", cfg.Debug),
+	)
 
 	if warning, err := database.BudgetWarning(ctx, db, cfg.MaxOpenConns); err != nil {
-		log.Debug().Err(err).Msg("database connection budget check skipped")
+		log.Debug("database connection budget check skipped", zap.Error(err))
 	} else if warning != "" {
-		log.Warn().Str("detail", warning).Msg("database max open connections exceed configured budget")
+		log.Warn("database max open connections exceed configured budget", zap.String("detail", warning))
 	}
 }
 
 // teardown 管理装配中途失败时的逆序资源清理。
 type teardown struct {
-	log     *zerolog.Logger
+	log     *zap.Logger
 	closers []func() error
 }
 
@@ -265,7 +292,7 @@ func (t *teardown) add(closer func() error) { t.closers = append(t.closers, clos
 func (t *teardown) fail(cause error) error {
 	for _, closer := range slices.Backward(t.closers) {
 		if err := closer(); err != nil {
-			t.log.Warn().Err(err).Msg("failed to close resource during teardown")
+			t.log.Warn("failed to close resource during teardown", zap.Error(err))
 		}
 	}
 	return cause

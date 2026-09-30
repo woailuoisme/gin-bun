@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dromara/carbon/v2"
 	"github.com/dustin/go-humanize"
-	"github.com/golang-module/carbon/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -3,6 +3,7 @@ package i18n_test
 
 import (
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -194,4 +195,44 @@ func TestInvoiceFallsBackAndGivesUp(t *testing.T) {
 		"未装载的语言应回退到默认语言，而不是留空标签")
 	assert.NotEmpty(t, translator.Invoice("", "buyer", nil), "空语言标签同样回退默认语言")
 	assert.Empty(t, translator.Invoice("en", "no_such_label", nil))
+}
+
+// TestTranslator_T 校验通用翻译方法 T 支持任意分节与变量替换。
+func TestTranslator_T(t *testing.T) {
+	translator := newTranslator(t, "en")
+
+	// 直接访问 invoice 分节
+	val := translator.T("zh-CN", "invoice.title", nil)
+	assert.Equal(t, "电子发票 / 结算凭据", val)
+
+	// 带参数替换
+	ref := translator.T("zh-CN", "invoice.number", map[string]string{"Number": "INV-888"})
+	assert.Equal(t, "凭据编号: INV-888", ref)
+
+	// 语言回退到默认 en
+	enVal := translator.T("de-DE", "invoice.title", nil)
+	assert.Equal(t, "Electronic Invoice / Statement", enVal)
+
+	// 不存在的键返回空
+	assert.Empty(t, translator.T("en", "invoice.nonexistent_key", nil))
+	assert.Empty(t, translator.T("en", "nonexistent_section.key", nil))
+}
+
+// TestNewWithFS 校验从自定义 fs.FS 载入翻译包。
+func TestNewWithFS(t *testing.T) {
+	mockFS := fstest.MapFS{
+		"en/messages.toml": &fstest.MapFile{
+			Data: []byte(`hello = "Hello, {{.Name}}!"`),
+		},
+		"zh-CN/messages.toml": &fstest.MapFile{
+			Data: []byte(`hello = "你好，{{.Name}}！"`),
+		},
+	}
+
+	translator, err := i18n.NewWithFS("en", mockFS)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Hello, Bob!", translator.T("en", "messages.hello", map[string]string{"Name": "Bob"}))
+	assert.Equal(t, "你好，张三！", translator.T("zh-CN", "messages.hello", map[string]string{"Name": "张三"}))
+	assert.Equal(t, "Hello, Bob!", translator.T("fr-FR", "messages.hello", map[string]string{"Name": "Bob"}))
 }

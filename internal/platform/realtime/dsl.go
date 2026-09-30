@@ -2,14 +2,16 @@
 package realtime
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/samber/oops"
 
-	"bgin/internal/platform/identity"
+	"bgin/internal/platform/authentication"
 )
 
 // Authenticatable 表示实时频道鉴权可操作的用户实体契约。
@@ -25,6 +27,8 @@ type GenericUser struct {
 	GuardName string
 	Role      string
 }
+
+var _ Authenticatable = (*GenericUser)(nil)
 
 // GetAuthIdentifier 返回用户主键标识。
 func (u *GenericUser) GetAuthIdentifier() string {
@@ -73,6 +77,93 @@ func Public(format string, args ...any) string {
 	return fmt.Sprintf(format, args...)
 }
 
+// AllowUser 注册标准用户私有频道规则（仅允许自身 ID 匹配 {id} 参数或拥有管理员角色的用户订阅）。
+func AllowUser(r *Registry, pattern string) {
+	if r == nil {
+		return
+	}
+	r.Register(pattern, func(ctx context.Context, user User, channel string, params map[string]string) error {
+		actor := resolveActor(ctx, user)
+		if actor == nil || actor.GetAuthIdentifier() == "" {
+			return oops.
+				Code("UNAUTHORIZED").
+				In("AllowUser."+pattern).
+				With("channel", channel).
+				Errorf("authentication required for user channel")
+		}
+
+		targetID := strings.TrimSpace(params["id"])
+		if targetID != "" && actor.GetAuthIdentifier() == targetID {
+			return nil
+		}
+
+		if actor.GetRole() == "admin" || actor.GetRole() == "super_admin" {
+			return nil
+		}
+
+		return oops.
+			Code("FORBIDDEN").
+			In("AllowUser."+pattern).
+			With("channel", channel).
+			Errorf("permission denied for user channel")
+	})
+}
+
+// AllowRole 注册限定指定角色访问的声明式频道策略。
+func AllowRole(r *Registry, pattern string, allowedRoles ...string) {
+	if r == nil || len(allowedRoles) == 0 {
+		return
+	}
+	r.Register(pattern, func(ctx context.Context, user User, channel string, _ map[string]string) error {
+		actor := resolveActor(ctx, user)
+		if actor == nil || actor.GetAuthIdentifier() == "" {
+			return oops.
+				Code("UNAUTHORIZED").
+				In("AllowRole."+pattern).
+				With("channel", channel).
+				Errorf("authentication required for role channel")
+		}
+
+		role := actor.GetRole()
+		if slices.Contains(allowedRoles, role) {
+			return nil
+		}
+
+		return oops.
+			Code("FORBIDDEN").
+			In("AllowRole."+pattern).
+			With("channel", channel).
+			Errorf("insufficient permissions for channel: required one of %v", allowedRoles)
+	})
+}
+
+// AllowPublic 声明公开广播频道白名单，任何客户端均可自由订阅（满足 Fail-Closed 下的显式放行要求）。
+func AllowPublic(r *Registry, patterns ...string) {
+	if r == nil {
+		return
+	}
+	r.AllowPublic(patterns...)
+}
+
+// AllowGuard 注册限定特定 Guard 访问的声明式频道策略。
+func AllowGuard(r *Registry, pattern string, allowedGuards ...string) {
+	if r == nil || len(allowedGuards) == 0 {
+		return
+	}
+	r.Register(pattern, func(ctx context.Context, user User, channel string, _ map[string]string) error {
+		guard := resolveGuard(ctx, user)
+		if slices.Contains(allowedGuards, guard) {
+			return nil
+		}
+
+		return oops.
+			Code("FORBIDDEN").
+			In("AllowGuard."+pattern).
+			With("channel", channel).
+			Errorf("guard required for channel: %v", allowedGuards)
+	})
+}
+
 // Channel 注册基于目标 ID 谓词匹配的声明式频道策略。
 func Channel(r *Registry, pattern string, policy func(ctx context.Context, actor Authenticatable, id string) bool) {
 	if r == nil || policy == nil {
@@ -94,21 +185,7 @@ func Channel(r *Registry, pattern string, policy func(ctx context.Context, actor
 
 // ChannelGuard 注册限定 Guard 名称访问的声明式频道策略。
 func ChannelGuard(r *Registry, pattern, allowedGuard string) {
-	if r == nil {
-		return
-	}
-	r.Register(pattern, func(ctx context.Context, user User, channel string, _ map[string]string) error {
-		guard := resolveGuard(ctx, user)
-		if guard == allowedGuard {
-			return nil
-		}
-
-		return oops.
-			Code("FORBIDDEN").
-			In("channels."+pattern).
-			With("channel", channel).
-			Errorf("%s guard required for channel", allowedGuard)
-	})
+	AllowGuard(r, pattern, allowedGuard)
 }
 
 // ChannelPolicy 注册通用纯布尔谓词策略。
@@ -156,16 +233,21 @@ func RPC(r *Registry, method string, handler RPCHandler) {
 }
 
 func resolveActor(ctx context.Context, user User) Authenticatable {
-	if id, ok := identity.FromContext(ctx); ok {
+	if id, ok := authentication.FromContext(ctx); ok {
+		defaultGuard := "client"
+		if id.Role == "admin" || id.Role == "super_admin" {
+			defaultGuard = "admin"
+		}
 		return &GenericUser{
 			ID:        id.UserID,
-			Role:      id.Role,
-			GuardName: "api",
+			Role:      cmp.Or(user.Role, id.Role),
+			GuardName: cmp.Or(user.GuardName, defaultGuard),
 		}
 	}
-	if user.ID != "" {
+	if user.ID != "" || user.GuardName != "" || user.Role != "" {
 		return &GenericUser{
 			ID:        user.ID,
+			Role:      user.Role,
 			GuardName: user.GuardName,
 		}
 	}

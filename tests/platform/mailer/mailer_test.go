@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/mailer"
@@ -44,7 +44,7 @@ func TestMailpitDriverLifecycle(t *testing.T) {
 		},
 	}
 
-	client, err := mailer.New(cfg, zerolog.Nop())
+	client, err := mailer.New(cfg, zap.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, client)
 
@@ -69,7 +69,7 @@ func TestResendDriverMissingAPIKey(t *testing.T) {
 		},
 	}
 
-	client, err := mailer.New(cfg, zerolog.Nop())
+	client, err := mailer.New(cfg, zap.NewNop())
 	require.Error(t, err)
 	assert.Nil(t, client)
 	assert.Contains(t, err.Error(), "api key cannot be empty")
@@ -103,7 +103,7 @@ func TestResendDriverSendSuccess(t *testing.T) {
 		},
 	}
 
-	client, err := mailer.New(cfg, zerolog.Nop())
+	client, err := mailer.New(cfg, zap.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, client)
 	defer func() {
@@ -152,7 +152,7 @@ func TestResendDriverSendWithAttachments(t *testing.T) {
 		},
 	}
 
-	client, err := mailer.New(cfg, zerolog.Nop())
+	client, err := mailer.New(cfg, zap.NewNop())
 	require.NoError(t, err)
 
 	err = client.Send(context.Background(), mailer.Message{
@@ -189,7 +189,7 @@ func TestResendDriverServerError(t *testing.T) {
 		},
 	}
 
-	client, err := mailer.New(cfg, zerolog.Nop())
+	client, err := mailer.New(cfg, zap.NewNop())
 	require.NoError(t, err)
 
 	err = client.Send(context.Background(), mailer.Message{
@@ -199,6 +199,35 @@ func TestResendDriverServerError(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Domain not verified")
+}
+
+func TestResendDriverRateLimited(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("retry-after", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message":"Too many requests"}`))
+	}))
+	defer server.Close()
+
+	cfg := config.MailConfig{
+		Driver: "resend",
+		Resend: config.ResendConfig{
+			APIKey:  "re_rate_limited",
+			BaseURL: server.URL,
+		},
+	}
+
+	client, err := mailer.New(cfg, zap.NewNop())
+	require.NoError(t, err)
+
+	err = client.Send(context.Background(), mailer.Message{
+		To:      "buyer@example.com",
+		Subject: "测试限流",
+		Body:    "正文",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate limit exceeded")
 }
 
 func TestSendMailableTemplateRendering(t *testing.T) {
@@ -222,7 +251,7 @@ func TestSendMailableTemplateRendering(t *testing.T) {
 		},
 	}
 
-	client, err := mailer.New(cfg, zerolog.Nop())
+	client, err := mailer.New(cfg, zap.NewNop())
 	require.NoError(t, err)
 
 	mailable := &testMailable{
@@ -249,7 +278,7 @@ func TestUnsupportedDriver(t *testing.T) {
 		Driver: "sendgrid",
 	}
 
-	client, err := mailer.New(cfg, zerolog.Nop())
+	client, err := mailer.New(cfg, zap.NewNop())
 	require.Error(t, err)
 	assert.Nil(t, client)
 	assert.Contains(t, err.Error(), "unsupported mail driver")
@@ -290,4 +319,115 @@ func TestConfigValidation(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "resend api key cannot be empty")
 	})
+}
+
+func TestMemoryMailer(t *testing.T) {
+	t.Run("生命周期与发送断言", func(t *testing.T) {
+		mem := mailer.NewMemoryMailer()
+		require.NotNil(t, mem)
+		assert.Equal(t, 0, mem.Count())
+
+		ctx := context.Background()
+		msg := mailer.Message{
+			To:      "alice@example.com",
+			Cc:      []string{"bob@example.com"},
+			Subject: "Welcome",
+			Body:    "<h1>Hello Alice</h1>",
+			IsHTML:  true,
+			RawAttachments: []mailer.Attachment{
+				mailer.NewAttachmentFromBytes("invoice.pdf", []byte("%PDF-1.4 sample content"), "application/pdf"),
+			},
+		}
+
+		err := mem.Send(ctx, msg)
+		require.NoError(t, err)
+		assert.Equal(t, 1, mem.Count())
+
+		mem.AssertSent(t, 1)
+		mem.AssertSentTo(t, "alice@example.com")
+		mem.AssertSentTo(t, "bob@example.com")
+
+		last, ok := mem.LastMessage()
+		assert.True(t, ok)
+		assert.Equal(t, "Welcome", last.Subject)
+		assert.Len(t, last.RawAttachments, 1)
+
+		// 验证重置
+		mem.Reset()
+		assert.Equal(t, 0, mem.Count())
+
+		// 验证空收件人校验
+		err = mem.Send(ctx, mailer.Message{To: ""})
+		require.Error(t, err)
+
+		// 验证关闭后发送报错
+		require.NoError(t, mem.Close())
+		err = mem.Send(ctx, msg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "is closed")
+	})
+
+	t.Run("通过 New 构造 memory 驱动", func(t *testing.T) {
+		client, err := mailer.New(config.MailConfig{Driver: "memory"}, zap.NewNop())
+		require.NoError(t, err)
+		require.NotNil(t, client)
+
+		err = client.Send(context.Background(), mailer.Message{
+			To:      "user@example.com",
+			Subject: "Test",
+			Body:    "Body",
+		})
+		require.NoError(t, err)
+		require.NoError(t, client.Close())
+	})
+}
+
+func TestAttachmentAndAllAttachments(t *testing.T) {
+	// 临时文件用于路径附件测试
+	tmpFile := filepath.Join(t.TempDir(), "test.txt")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("disk content"), 0o600))
+
+	t.Run("内存附件与路径附件 Bytes", func(t *testing.T) {
+		memAtt := mailer.NewAttachmentFromBytes("doc.pdf", []byte("pdf data"), "application/pdf")
+		data, err := memAtt.Bytes()
+		require.NoError(t, err)
+		assert.Equal(t, []byte("pdf data"), data)
+		assert.Equal(t, "doc.pdf", memAtt.Filename)
+		assert.Equal(t, "application/pdf", memAtt.ContentType)
+
+		fileAtt := mailer.NewAttachmentFromPath(tmpFile)
+		data, err = fileAtt.Bytes()
+		require.NoError(t, err)
+		assert.Equal(t, []byte("disk content"), data)
+		assert.Equal(t, "test.txt", fileAtt.Filename)
+
+		emptyAtt := mailer.Attachment{}
+		_, err = emptyAtt.Bytes()
+		require.Error(t, err)
+	})
+
+	t.Run("AllAttachments 合并路径与内存附件", func(t *testing.T) {
+		msg := mailer.Message{
+			Attachments: []string{tmpFile, ""},
+			RawAttachments: []mailer.Attachment{
+				mailer.NewAttachmentFromBytes("report.pdf", []byte("pdf content")),
+			},
+		}
+
+		all := msg.AllAttachments()
+		require.Len(t, all, 2)
+		assert.Equal(t, "test.txt", all[0].Filename)
+		assert.Equal(t, "report.pdf", all[1].Filename)
+	})
+}
+
+func TestCustomDriverRegistry(t *testing.T) {
+	mailer.RegisterDriver("custom-mock", func(_ config.MailConfig, _ *zap.Logger) (mailer.Mailer, error) {
+		return mailer.NewMemoryMailer(), nil
+	})
+
+	client, err := mailer.New(config.MailConfig{Driver: "custom-mock"}, zap.NewNop())
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	require.NoError(t, client.Close())
 }

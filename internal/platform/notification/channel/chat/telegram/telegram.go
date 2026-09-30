@@ -33,6 +33,8 @@ type Driver struct {
 	client *resty.Client
 }
 
+var _ chat.Driver = (*Driver)(nil)
+
 // NewDriver 创建 Telegram 驱动实例。
 func NewDriver(cfg Config) (*Driver, error) {
 	if cfg.BotToken == "" {
@@ -104,7 +106,7 @@ func (d *Driver) Send(ctx context.Context, msg *chat.Message) error {
 	}
 
 	if resp.IsError() || !res.OK {
-		return oops.Code("telegram_api_error").
+		return oops.Code(errs.CodeTelegramAPIError).
 			With("status", resp.StatusCode()).
 			With("error_code", res.ErrorCode).
 			Errorf("telegram delivery failed: %s", res.Description)

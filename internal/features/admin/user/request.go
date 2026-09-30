@@ -3,7 +3,8 @@ package admin
 import (
 	"time"
 
-	"bgin/internal/platform/optional"
+	"github.com/aarondl/opt/omitnull"
+
 	"bgin/internal/shared/enums"
 	"bgin/internal/shared/user"
 )
@@ -44,27 +45,27 @@ type CreateUserRequest struct {
 // UpdateUserRequest 是 PATCH /v1/admin/users/:id 的请求体。
 type UpdateUserRequest struct {
 	// 用户展示昵称
-	Name optional.Optional[string] `json:"name" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
+	Name omitnull.Val[string] `json:"name" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
 	// 用户头像 URL
-	Image optional.Optional[string] `json:"image" swaggertype:"string" extensions:"x-nullable" example:"https://example.com/avatar.png"`
+	Image omitnull.Val[string] `json:"image" swaggertype:"string" extensions:"x-nullable" example:"https://example.com/avatar.png"`
 	// 唯一登录用户名 (3-30位)
-	Username optional.Optional[string] `json:"username" swaggertype:"string" extensions:"x-nullable" example:"alexmercer"`
+	Username omitnull.Val[string] `json:"username" swaggertype:"string" extensions:"x-nullable" example:"alexmercer"`
 	// 用户显示名称
-	DisplayUsername optional.Optional[string] `json:"displayUsername" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
+	DisplayUsername omitnull.Val[string] `json:"displayUsername" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
 	// E.164 格式手机号
-	PhoneNumber optional.Optional[string] `json:"phoneNumber" swaggertype:"string" extensions:"x-nullable" example:"+8613800138000"`
+	PhoneNumber omitnull.Val[string] `json:"phoneNumber" swaggertype:"string" extensions:"x-nullable" example:"+8613800138000"`
 	// 邮箱是否已验证
-	EmailVerified optional.Optional[bool] `json:"emailVerified" swaggertype:"boolean" extensions:"x-nullable" example:"true"`
+	EmailVerified omitnull.Val[bool] `json:"emailVerified" swaggertype:"boolean" extensions:"x-nullable" example:"true"`
 	// 用户权限角色 (user: 普通用户, admin: 系统管理员)
-	Role optional.Optional[Role] `json:"role" swaggertype:"string" extensions:"x-nullable" example:"admin" enums:"user,admin"`
+	Role omitnull.Val[Role] `json:"role" swaggertype:"string" extensions:"x-nullable" example:"admin" enums:"user,admin"`
 	// 账号状态 (active: 正常活跃, inactive: 未激活, banned: 已封禁)
-	Status optional.Optional[Status] `json:"status" swaggertype:"string" extensions:"x-nullable" example:"active" enums:"active,inactive,banned"`
+	Status omitnull.Val[Status] `json:"status" swaggertype:"string" extensions:"x-nullable" example:"active" enums:"active,inactive,banned"`
 	// 是否封禁
-	Banned optional.Optional[bool] `json:"banned" swaggertype:"boolean" extensions:"x-nullable" example:"false"`
+	Banned omitnull.Val[bool] `json:"banned" swaggertype:"boolean" extensions:"x-nullable" example:"false"`
 	// 封禁原因
-	BanReason optional.Optional[string] `json:"banReason" swaggertype:"string" extensions:"x-nullable" example:"违规发布广告"`
+	BanReason omitnull.Val[string] `json:"banReason" swaggertype:"string" extensions:"x-nullable" example:"违规发布广告"`
 	// 封禁到期时间 (ISO 8601 UTC)
-	BanExpires optional.Optional[time.Time] `json:"banExpires" swaggertype:"string" extensions:"x-nullable" example:"2026-10-01T00:00:00Z"`
+	BanExpires omitnull.Val[time.Time] `json:"banExpires" swaggertype:"string" extensions:"x-nullable" example:"2026-10-01T00:00:00Z"`
 }
 
 // fieldSet 将请求中的档案字段投影为共享内核字段集。

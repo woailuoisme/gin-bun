@@ -17,7 +17,7 @@ var (
 
 // Norm 计算向量的 L2 欧几里得模长 (Norm/Magnitude)。
 func Norm(v Vector) float64 {
-	s := v.Slice()
+	s := v.rawSlice()
 	if len(s) == 0 {
 		return 0
 	}
@@ -31,7 +31,7 @@ func Norm(v Vector) float64 {
 
 // Normalize 将向量转化为单位模长的单位向量。
 func Normalize(v Vector) (Vector, error) {
-	s := v.Slice()
+	s := v.rawSlice()
 	if len(s) == 0 {
 		return Vector{}, ErrEmptyVector
 	}
@@ -43,12 +43,12 @@ func Normalize(v Vector) (Vector, error) {
 	for i, val := range s {
 		res[i] = float32(float64(val) / norm)
 	}
-	return NewVector(res), nil
+	return newVectorNoClone(res), nil
 }
 
 // DotProduct 计算两个向量的代数点积（内积）。
 func DotProduct(a, b Vector) (float64, error) {
-	sa, sb := a.Slice(), b.Slice()
+	sa, sb := a.rawSlice(), b.rawSlice()
 	if len(sa) == 0 || len(sb) == 0 {
 		return 0, ErrEmptyVector
 	}
@@ -94,7 +94,7 @@ func CosineDistance(a, b Vector) (float64, error) {
 
 // L2Distance 计算两向量之间的欧几里得距离（L2 空间直线距离）。
 func L2Distance(a, b Vector) (float64, error) {
-	sa, sb := a.Slice(), b.Slice()
+	sa, sb := a.rawSlice(), b.rawSlice()
 	if len(sa) == 0 || len(sb) == 0 {
 		return 0, ErrEmptyVector
 	}
@@ -111,7 +111,7 @@ func L2Distance(a, b Vector) (float64, error) {
 
 // L1Distance 计算两向量之间的曼哈顿距离（L1 坐标轴差绝对值总和）。
 func L1Distance(a, b Vector) (float64, error) {
-	sa, sb := a.Slice(), b.Slice()
+	sa, sb := a.rawSlice(), b.rawSlice()
 	if len(sa) == 0 || len(sb) == 0 {
 		return 0, ErrEmptyVector
 	}

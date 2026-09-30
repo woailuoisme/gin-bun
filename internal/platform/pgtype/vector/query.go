@@ -50,6 +50,16 @@ func OrderByDistance(q *bun.SelectQuery, column string, queryVec Vector, metric 
 	return q.OrderExpr(expr+" "+dir, args...)
 }
 
+// OrderByDistanceAsc 向 Bun 查询构建器追加按与目标向量的距离升序排序（用于 Top-K ANN 近邻检索）。
+func OrderByDistanceAsc(q *bun.SelectQuery, column string, queryVec Vector, metric Metric) *bun.SelectQuery {
+	return OrderByDistance(q, column, queryVec, metric, true)
+}
+
+// OrderByDistanceDesc 向 Bun 查询构建器追加按与目标向量的距离降序排序。
+func OrderByDistanceDesc(q *bun.SelectQuery, column string, queryVec Vector, metric Metric) *bun.SelectQuery {
+	return OrderByDistance(q, column, queryVec, metric, false)
+}
+
 // WhereDistanceWithin 向 Bun 查询构建器追加距离阈值截断过滤条件（distance <= maxDistance）。
 func WhereDistanceWithin(q *bun.SelectQuery, column string, queryVec Vector, metric Metric, maxDistance float64) *bun.SelectQuery {
 	if q == nil {

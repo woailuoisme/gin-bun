@@ -1,12 +1,14 @@
 package pdf
 
 import (
+	"bytes"
 	"os"
+	"path/filepath"
 
 	"github.com/johnfercher/maroto/v2/pkg/consts/fontfamily"
 	"github.com/johnfercher/maroto/v2/pkg/consts/fontstyle"
 	"github.com/johnfercher/maroto/v2/pkg/core/entity"
-	"github.com/rs/zerolog"
+	"go.uber.org/zap"
 )
 
 // FontDefinition 描述自定义字体注册元数据。
@@ -27,7 +29,7 @@ type fontEntity struct {
 func (f *fontEntity) GetFamily() string        { return f.family }
 func (f *fontEntity) GetStyle() fontstyle.Type { return f.style }
 func (f *fontEntity) GetFile() string          { return f.file }
-func (f *fontEntity) GetBytes() []byte         { return f.bytes }
+func (f *fontEntity) GetBytes() []byte         { return bytes.Clone(f.bytes) }
 
 // NewCustomFontFromFile 基于本地 TTF/OTF 文件路径构造 Maroto 字体对象。
 func NewCustomFontFromFile(family string, style fontstyle.Type, filePath string) entity.CustomFont {
@@ -39,16 +41,17 @@ func NewCustomFontFromFile(family string, style fontstyle.Type, filePath string)
 }
 
 // NewCustomFontFromBytes 基于内存字节流构造 Maroto 字体对象。
+// 采用防御性拷贝隔离输入切片，遵循 Uber Go 边界规范。
 func NewCustomFontFromBytes(family string, style fontstyle.Type, data []byte) entity.CustomFont {
 	return &fontEntity{
 		family: family,
 		style:  style,
-		bytes:  data,
+		bytes:  bytes.Clone(data),
 	}
 }
 
 // ResolveFontConfig 解析并加载字体配置，支持本地文件、内存字节与自动回退。
-func ResolveFontConfig(fontPath, fontFamily string, log *zerolog.Logger) ([]entity.CustomFont, string) {
+func ResolveFontConfig(fontPath, fontFamily string, log *zap.Logger) ([]entity.CustomFont, string) {
 	if fontFamily == "" {
 		fontFamily = "SourceHanSans"
 	}
@@ -57,30 +60,30 @@ func ResolveFontConfig(fontPath, fontFamily string, log *zerolog.Logger) ([]enti
 		return nil, fontfamily.Helvetica
 	}
 
-	info, err := os.Stat(fontPath)
+	cleanFontPath := filepath.Clean(fontPath)
+	info, err := os.Stat(cleanFontPath)
+
 	if err != nil || info.IsDir() {
 		if log != nil {
-			log.Warn().
-				Str("family", fontFamily).
-				Str("path", fontPath).
-				Msg("PDF custom font file not found, falling back to core Helvetica font")
+			log.Warn("PDF custom font file not found, falling back to core Helvetica font",
+				zap.String("family", fontFamily),
+				zap.String("path", fontPath))
 		}
 		return nil, fontfamily.Helvetica
 	}
 
 	if log != nil {
-		log.Info().
-			Str("family", fontFamily).
-			Str("path", fontPath).
-			Msg("loaded custom PDF font successfully")
+		log.Info("loaded custom PDF font successfully",
+			zap.String("family", fontFamily),
+			zap.String("path", fontPath))
 	}
 
 	// 注册 Regular / Bold 等基础变体（若单文件则映射到主要样式）
 	fonts := []entity.CustomFont{
-		NewCustomFontFromFile(fontFamily, fontstyle.Normal, fontPath),
-		NewCustomFontFromFile(fontFamily, fontstyle.Bold, fontPath),
-		NewCustomFontFromFile(fontFamily, fontstyle.Italic, fontPath),
-		NewCustomFontFromFile(fontFamily, fontstyle.BoldItalic, fontPath),
+		NewCustomFontFromFile(fontFamily, fontstyle.Normal, cleanFontPath),
+		NewCustomFontFromFile(fontFamily, fontstyle.Bold, cleanFontPath),
+		NewCustomFontFromFile(fontFamily, fontstyle.Italic, cleanFontPath),
+		NewCustomFontFromFile(fontFamily, fontstyle.BoldItalic, cleanFontPath),
 	}
 	return fonts, fontFamily
 }

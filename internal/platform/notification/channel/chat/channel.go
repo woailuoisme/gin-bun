@@ -20,6 +20,8 @@ type Channel struct {
 	defaultDriver string
 }
 
+var _ contract.Channel = (*Channel)(nil)
+
 // NewChannel 创建即时通讯通知渠道实例。
 func NewChannel(defaultDriver string) *Channel {
 	return &Channel{
@@ -65,7 +67,7 @@ func (c *Channel) Format(n contract.Notification, notifiable any) (any, error) {
 		}
 	}
 
-	return nil, oops.Code("notification_unsupported_chat").
+	return nil, oops.Code(errs.CodeNotificationUnsupportedChat).
 		With("notification", n).
 		Errorf("notification does not implement chat.Notification or ChannelFormatter")
 }
@@ -80,7 +82,7 @@ func toChatMessage(raw any) (*Message, error) {
 		msg := NewMessage().WithText(v)
 		return msg, nil
 	default:
-		return nil, oops.Code("invalid_chat_message").Errorf("unsupported chat message payload type: %T", raw)
+		return nil, oops.Code(errs.CodeInvalidChatMessage).Errorf("unsupported chat message payload type: %T", raw)
 	}
 }
 
@@ -99,7 +101,7 @@ func (c *Channel) Send(ctx context.Context, notifiable any, message any) error {
 
 	driver := c.Driver()
 	if driver == nil {
-		return oops.Code("chat_driver_not_found").Errorf("chat: default driver %s is not registered", c.defaultDriver)
+		return oops.Code(errs.CodeChatDriverNotFound).Errorf("chat: default driver %s is not registered", c.defaultDriver)
 	}
 
 	return driver.Send(ctx, msg)

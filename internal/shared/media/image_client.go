@@ -210,8 +210,8 @@ type client struct {
 }
 
 // NewImageClient 创建并初始化基于 imgproxy 的图像服务客户端。
-func NewImageClient(cfg ...config.ImgproxyConfig) Client {
-	return NewWithStorage(lo.FirstOrEmpty(cfg), config.StorageConfig{})
+func NewImageClient(cfg config.ImgproxyConfig) Client {
+	return NewWithStorage(cfg, config.StorageConfig{})
 }
 
 // NewWithStorage 创建带存储配置的 imgproxy 图像服务客户端，用于按存储配置推导资源 URI。

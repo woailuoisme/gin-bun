@@ -4,17 +4,26 @@ package errs_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"runtime"
+	"slices"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/samber/oops"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"bgin/internal/platform/errs"
 )
@@ -227,6 +236,35 @@ func TestStatusCoversEveryDeclaredCode(t *testing.T) {
 		{errs.CodeAuthPasswordMismatch, http.StatusUnprocessableEntity},
 		{errs.CodeAuthPasswordTooWeak, http.StatusUnprocessableEntity},
 		{errs.CodeGatewayTimeout, http.StatusGatewayTimeout},
+
+		// 子系统错误码：这些是"客户端改一下请求就能成功"的失败，
+		// 漏登记会让它们静默退化成 500，与 api.md 的状态码契约不符。
+		{errs.CodeExcelOpenError, http.StatusBadRequest},
+		{errs.CodeExcelReadError, http.StatusBadRequest},
+		{errs.CodeExcelFileTooLarge, http.StatusRequestEntityTooLarge},
+		{errs.CodeExcelMapError, http.StatusUnprocessableEntity},
+		{errs.CodeExcelRowsError, http.StatusUnprocessableEntity},
+		{errs.CodeExcelReadRowError, http.StatusUnprocessableEntity},
+		{errs.CodeEmptySheets, http.StatusBadRequest},
+		{errs.CodeCSVReadError, http.StatusBadRequest},
+		{errs.CodeNotificationMissingRecipient, http.StatusBadRequest},
+		{errs.CodeNotificationMissingRecipientID, http.StatusBadRequest},
+		{errs.CodeNotificationUnsupportedSMS, http.StatusBadRequest},
+		{errs.CodeNotificationUnsupportedMail, http.StatusBadRequest},
+		{errs.CodeNotificationUnsupportedDB, http.StatusBadRequest},
+		{errs.CodeNotificationUnsupportedRT, http.StatusBadRequest},
+		{errs.CodeNotificationUnsupportedGotify, http.StatusBadRequest},
+		{errs.CodeNotificationUnsupportedChat, http.StatusBadRequest},
+		{errs.CodeNotificationChannelNotFound, http.StatusBadRequest},
+		{errs.CodeNotificationRateLimited, http.StatusTooManyRequests},
+		{errs.CodeNotificationDeduplicated, http.StatusConflict},
+		{errs.CodeMailMissingRecipient, http.StatusBadRequest},
+		{errs.CodeSMSMissingPhone, http.StatusBadRequest},
+		{errs.CodeInvalidSMSMessage, http.StatusBadRequest},
+		{errs.CodeInvalidGotifyMessage, http.StatusBadRequest},
+		{errs.CodeInvalidChatMessage, http.StatusBadRequest},
+		{errs.CodePaymentCapabilityNotSupported, http.StatusBadRequest},
+		{errs.CodeDatabaseUnavailable, http.StatusServiceUnavailable},
 	}
 
 	for _, tt := range tests {
@@ -235,6 +273,121 @@ func TestStatusCoversEveryDeclaredCode(t *testing.T) {
 
 	// 未登记的错误码必须兜底为 500，而不是漏成 2xx。
 	assert.Equal(t, http.StatusInternalServerError, errs.Status(errs.Code("NOT_REGISTERED")))
+}
+
+// codesDeclPattern / apiDocsCodePattern 用于把两份"错误码清单"抽出来做双向比对。
+var (
+	codesDeclPattern = regexp.MustCompile(`Code[A-Za-z0-9]+\s+Code = "([^"]+)"`)
+	// apiDocsCodePattern 匹配 api.md 错误码表格行的首列（形如 | `BAD_REQUEST` |）。
+	// 只认全大写 token：这样表头行（| `code` | 状态码 | ...）不会被误当成一个码，
+	// 同时把"文档里出现小写码"这种情况直接排除在合法清单之外。
+	apiDocsCodePattern = regexp.MustCompile("(?m)^\\|\\s*`([A-Z][A-Z0-9_]*)`")
+	shoutySnakeCase    = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+)
+
+// repoFile 读取仓库内文件的内容。
+// 相对路径会随 CWD 变化（IDE 直跑测试、`go test -C` 都会换目录），故以本文件位置反推仓库根。
+func repoFile(t *testing.T, rel string) []byte {
+	t.Helper()
+
+	for _, root := range repoRootCandidates() {
+		if data, err := os.ReadFile(filepath.Join(root, rel)); err == nil {
+			return data
+		}
+	}
+
+	t.Fatalf("无法定位仓库文件：%s", rel)
+	return nil
+}
+
+// repoRootCandidates 给出候选仓库根：本文件位置上溯三级，以及从 CWD 上溯找到 go.mod 的目录。
+// 后者用于 `-trimpath` 构建——那时 runtime.Caller 只返回模块相对路径，无法直接拼接。
+func repoRootCandidates() []string {
+	candidates := make([]string, 0, 2)
+
+	if _, file, _, ok := runtime.Caller(0); ok {
+		candidates = append(candidates, filepath.Join(filepath.Dir(file), "..", "..", ".."))
+	}
+
+	dir, err := os.Getwd()
+	for err == nil {
+		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
+			return append(candidates, dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	return candidates
+}
+
+// TestCodeContractMatchesAPIDocs 锁定 codes.go 与 api.md 4.2 清单的双向一致。
+//
+// 这两处一旦漂移，客户端按文档分支就会匹配不上真实响应（历史上正是这么错的：
+// codes.go 写小写、api.md 写大写，同一个码两种拼法）。
+func TestCodeContractMatchesAPIDocs(t *testing.T) {
+	source := repoFile(t, "internal/platform/errs/codes.go")
+
+	declared := make([]string, 0, 64)
+	for _, m := range codesDeclPattern.FindAllStringSubmatch(string(source), -1) {
+		declared = append(declared, m[1])
+	}
+	require.NotEmpty(t, declared, "未能从 codes.go 解析出任何错误码声明")
+
+	// 1. 声明值必须一律 SHOUTY_SNAKE_CASE：对外契约不接受小写码。
+	for _, code := range declared {
+		assert.Regexp(t, shoutySnakeCase, code, "错误码 %q 不是全大写下划线格式", code)
+	}
+
+	// 2. 会出现在响应体里的码（已在 statuses 登记）必须逐条写在 api.md 清单里。
+	exposed := make([]string, 0, len(declared))
+	for _, c := range errs.ExposedCodes() {
+		exposed = append(exposed, string(c))
+	}
+	slices.Sort(exposed)
+
+	docs := repoFile(t, "api.md")
+
+	documented := make([]string, 0, len(exposed))
+	for _, m := range apiDocsCodePattern.FindAllStringSubmatch(string(docs), -1) {
+		documented = append(documented, m[1])
+	}
+	slices.Sort(documented)
+
+	assert.Equal(t, exposed, documented,
+		"api.md 4.2 清单与 errs.ExposedCodes() 必须一一对应：文档多写或漏写都会让客户端分支失效")
+
+	// 3. api.md 里出现的每个码都必须在 codes.go 有声明（杜绝文档凭空造码）。
+	declaredSet := make(map[string]struct{}, len(declared))
+	for _, code := range declared {
+		declaredSet[code] = struct{}{}
+	}
+	for _, code := range documented {
+		_, ok := declaredSet[code]
+		assert.True(t, ok, "api.md 列出的 %q 在 codes.go 中没有声明", code)
+	}
+}
+
+// TestMapSubsystemCodeMessage 锁定子系统错误码的对外文案与状态码。
+//
+// 这类错误由平台子系统直接以 oops.Code("字面量") 抛出，不带 Public 文案；
+// 登记进 statuses 后必须按状态码给出对应说明，而不是统一回一句"意外错误"。
+func TestMapSubsystemCodeMessage(t *testing.T) {
+	status, resp := errs.Map(oops.Code(errs.CodeExcelOpenError).Wrap(errors.New("zip: not a valid zip file")))
+	assert.Equal(t, http.StatusBadRequest, status)
+	assert.Equal(t, string(errs.CodeExcelOpenError), resp.Code)
+	assert.Equal(t, "EXCEL_OPEN_ERROR", resp.Code)
+	assert.NotEqual(t, msgInternal, resp.Message)
+
+	// 未登记的码保持原有兜底行为：500 + 通用文案，且不回显底层原因。
+	status, resp = errs.Map(oops.Code("some_internal_failure").Wrap(errors.New("driver exploded")))
+	assert.Equal(t, http.StatusInternalServerError, status)
+	assert.Equal(t, string(errs.CodeInternal), resp.Code)
+	assert.Equal(t, msgInternal, resp.Message)
+	assert.NotContains(t, resp.Message, "driver exploded")
 }
 
 // TestGatewayTimeoutMapping 校验 context.DeadlineExceeded 与 GatewayTimeout 映射为 504。
@@ -252,4 +405,96 @@ func TestGatewayTimeoutMapping(t *testing.T) {
 func TestStackIsAvailableForLogging(t *testing.T) {
 	err := errs.Internal(errors.New("boom"))
 	assert.NotEmpty(t, errs.Stack(err))
+}
+
+// TestSanitizeMessage 校验错误文案脱敏机制，确保 SQL、密码等敏感特征被置换为安全文案。
+func TestSanitizeMessage(t *testing.T) {
+	assert.Equal(t, "Safe user message", errs.SanitizeMessage("Safe user message"))
+	assert.Equal(t, "An unexpected error occurred", errs.SanitizeMessage("pq: relation users not found"))
+	assert.Equal(t, "An unexpected error occurred", errs.SanitizeMessage("failed with password=123456"))
+	assert.Equal(t, "An unexpected error occurred", errs.SanitizeMessage("syntax error at SELECT * FROM secret"))
+}
+
+// TestRender_Sanitization 验证 Render 执行时敏感信息被安全清洗。
+func TestRender_Sanitization(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	// 触发带敏感信息的消息
+	err := errs.BadRequest("failed: select id from users where token=xyz")
+	errs.Render(c, err)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	var resp errs.Response
+	unmarshalErr := json.Unmarshal(rec.Body.Bytes(), &resp)
+	require.NoError(t, unmarshalErr)
+	assert.Equal(t, "An unexpected error occurred", resp.Message)
+
+	assert.Equal(t, string(errs.CodeBadRequest), resp.Code)
+}
+
+// TestOopsFields 验证 oops 绑定的上下文能被自动解包为 Zap 字段，且敏感键值被安全脱敏。
+func TestOopsFields(t *testing.T) {
+	extractValue := func(f zap.Field) any {
+		if f.String != "" {
+			return f.String
+		}
+		if f.Integer != 0 {
+			return int(f.Integer)
+		}
+		return f.Interface
+	}
+
+	t.Run("非 oops 错误返回 nil", func(t *testing.T) {
+		assert.Nil(t, errs.OopsFields(errors.New("standard error")))
+	})
+
+	t.Run("普通字段正常提取且按 key 排序", func(t *testing.T) {
+		err := oops.
+			With("trade_no", "TX123456").
+			With("channel", "wechat").
+			Wrap(errors.New("db error"))
+
+		fields := errs.OopsFields(err)
+		require.Len(t, fields, 2)
+		assert.Equal(t, "channel", fields[0].Key)
+		assert.Equal(t, "wechat", extractValue(fields[0]))
+		assert.Equal(t, "trade_no", fields[1].Key)
+		assert.Equal(t, "TX123456", extractValue(fields[1]))
+	})
+
+	t.Run("敏感键名自动脱敏为星号", func(t *testing.T) {
+		err := oops.
+			With("password", "super-secret-123").
+			With("api_key", "sk-live-xyz").
+			With("access_token", "eyJhbGciOi...").
+			With("normal_id", 1001).
+			Wrap(errors.New("auth error"))
+
+		fields := errs.OopsFields(err)
+		require.Len(t, fields, 4)
+
+		fieldMap := make(map[string]any)
+		for _, f := range fields {
+			fieldMap[f.Key] = extractValue(f)
+		}
+
+		assert.Equal(t, "***", fieldMap["password"])
+		assert.Equal(t, "***", fieldMap["api_key"])
+		assert.Equal(t, "***", fieldMap["access_token"])
+		assert.Equal(t, 1001, fieldMap["normal_id"])
+	})
+
+	t.Run("敏感值包含 SQL 特征自动清洗", func(t *testing.T) {
+		err := oops.
+			With("query_preview", "select * from users where secret=123").
+			Wrap(errors.New("sql failure"))
+
+		fields := errs.OopsFields(err)
+		require.Len(t, fields, 1)
+		assert.Equal(t, "query_preview", fields[0].Key)
+		assert.Equal(t, msgInternal, extractValue(fields[0]))
+	})
 }

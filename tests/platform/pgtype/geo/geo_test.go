@@ -31,6 +31,14 @@ func TestPoint_Basic(t *testing.T) {
 	assert.InDelta(t, 116.4074, pt.Lng(), 1e-6)
 	assert.InDelta(t, 39.9042, pt.Lat(), 1e-6)
 
+	// 不可变值对象方法验证 (WithLng, WithLat)
+	ptImmutable := pt.WithLng(113.2644).WithLat(23.1291)
+	assert.InDelta(t, 113.2644, ptImmutable.Lng(), 1e-6)
+	assert.InDelta(t, 23.1291, ptImmutable.Lat(), 1e-6)
+	// 原 pt 保持不变
+	assert.InDelta(t, 116.4074, pt.Lng(), 1e-6)
+	assert.InDelta(t, 39.9042, pt.Lat(), 1e-6)
+
 	// 自定义 SRID 验证
 	ptCustom := geo.NewPointWithSRID(120.0, 30.0, geo.SRIDCGCS2000)
 	assert.Equal(t, geo.SRIDCGCS2000, ptCustom.SRID)
@@ -396,6 +404,15 @@ func TestPostGISQueryHelpers(t *testing.T) {
 	assert.Contains(t, renderedSQL, "ST_Distance")
 	assert.Contains(t, renderedSQL, "ASC")
 	assert.Contains(t, renderedSQL, "dist_meters")
+
+	// 验证自解释排序别名辅助函数
+	qAsc := db.NewSelect().Model((*Store)(nil))
+	qAsc = geo.OrderByDistanceAsc(qAsc, "location", shanghai)
+	assert.Contains(t, qAsc.String(), "ASC")
+
+	qDesc := db.NewSelect().Model((*Store)(nil))
+	qDesc = geo.OrderByDistanceDesc(qDesc, "location", shanghai)
+	assert.Contains(t, qDesc.String(), "DESC")
 }
 
 // 确保符合 sql.Scanner 与 driver.Valuer 接口契约的编译期检查

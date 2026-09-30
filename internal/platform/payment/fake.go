@@ -49,6 +49,8 @@ type FakeProvider struct {
 	failures         map[string]error
 }
 
+var _ FullProvider = (*FakeProvider)(nil)
+
 // NewFakeProvider 创建绑定到指定渠道与应用的 Fake Provider。
 func NewFakeProvider(channel enums.PaymentChannel, application string) *FakeProvider {
 	return &FakeProvider{
@@ -307,7 +309,7 @@ func (f *FakeProvider) Refund(_ context.Context, req RefundRequest) (*RefundResu
 		OutTradeNo:   req.OutTradeNo,
 		Status:       enums.PaymentRefundStatusPending,
 		ChannelState: string(enums.PaymentRefundStatusPending),
-		RefundAmount: req.RefundAmount,
+		RefundAmount: req.EffectiveRefundAmount(),
 	}, nil
 }
 

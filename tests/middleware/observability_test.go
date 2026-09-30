@@ -10,12 +10,12 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/middleware"
 	"bgin/internal/platform/errs"
+	"bgin/internal/platform/logger"
 )
 
 // TestAccessLog404SingleWarn 验证 404 请求仅输出一条 WARN 访问日志，
@@ -24,9 +24,13 @@ func TestAccessLog404SingleWarn(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var buf bytes.Buffer
-	testLogger := zerolog.New(&buf).Level(zerolog.DebugLevel)
+	testLogger := logger.NewWithOptions(
+		logger.WithLevel("debug"),
+		logger.WithChannel("json"),
+		logger.WithWriter(&buf),
+	)
 
-	mw := middleware.New(middleware.Deps{Logger: &testLogger})
+	mw := middleware.New(middleware.Deps{Logger: testLogger})
 	engine := gin.New()
 	engine.Use(
 		mw.RequestID(),
@@ -49,7 +53,7 @@ func TestAccessLog404SingleWarn(t *testing.T) {
 
 	type logEntry struct {
 		Level   string `json:"level"`
-		Message string `json:"message"`
+		Message string `json:"msg"`
 		Status  int    `json:"status"`
 		Code    string `json:"code"`
 		Error   string `json:"error"`
@@ -78,9 +82,13 @@ func TestAccessLog500ErrorWithStack(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var buf bytes.Buffer
-	testLogger := zerolog.New(&buf).Level(zerolog.DebugLevel)
+	testLogger := logger.NewWithOptions(
+		logger.WithLevel("debug"),
+		logger.WithChannel("json"),
+		logger.WithWriter(&buf),
+	)
 
-	mw := middleware.New(middleware.Deps{Logger: &testLogger})
+	mw := middleware.New(middleware.Deps{Logger: testLogger})
 	engine := gin.New()
 	engine.Use(
 		mw.RequestID(),
@@ -102,7 +110,7 @@ func TestAccessLog500ErrorWithStack(t *testing.T) {
 
 	type logEntry struct {
 		Level   string `json:"level"`
-		Message string `json:"message"`
+		Message string `json:"msg"`
 		Status  int    `json:"status"`
 		Stack   string `json:"stack"`
 	}

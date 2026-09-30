@@ -176,6 +176,8 @@ type jobRegistry struct {
 	mu          sync.RWMutex
 }
 
+var _ Registry = (*jobRegistry)(nil)
+
 var defaultReg = &jobRegistry{
 	jobs:     make(map[string]func() Job),
 	jobLocks: make(map[string]time.Duration),
@@ -243,12 +245,8 @@ func (r *jobRegistry) LookupLockTTL(taskName string, job Job) (time.Duration, bo
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	if r.jobLocks != nil {
-		ttl, ok := r.jobLocks[taskName]
-		return ttl, ok
-	}
-
-	return 0, false
+	ttl, ok := r.jobLocks[taskName]
+	return ttl, ok
 }
 
 // GetCronEntries 返回所有已注册的定时周期任务切片副本。

@@ -9,8 +9,9 @@ import (
 
 // RegisterRoutes 注册前端用户个人档案端点 (/v1/users)。
 func RegisterRoutes(router *gin.RouterGroup, handler *Handler, mw *middleware.Middleware) {
-	group := router.Group("/users", mw.RequireAuth(), mw.RateLimit(middleware.TierAuthenticated))
+	group := router.Group("/users", mw.RequireAuth("client"), mw.RateLimit(middleware.TierAuthenticated))
 
 	group.GET("/me", handler.GetProfile)
 	group.PATCH("/me", handler.UpdateProfile)
+	group.POST("/me/avatar", handler.UploadAvatar)
 }

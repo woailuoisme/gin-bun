@@ -8,6 +8,10 @@ golangci-lint = "2"                                # 静态检查与统一格式
 "go:golang.org/x/vuln/cmd/govulncheck" = "latest"  # 依赖漏洞扫描
 "go:golang.org/x/tools/cmd/deadcode" = "latest"    # 死代码分析
 "go:github.com/oligot/go-mod-upgrade" = "latest"   # 交互式依赖升级
+"go:github.com/jmattheis/goverter/cmd/goverter" = "latest"  # 结构体映射代码生成（DTO↔Model）
+"go:github.com/stephenafamo/bob/gen/bobgen-psql" = "latest" # 依 Postgres schema 反推 ORM 模型代码
+"go:golang.org/x/tools/gopls" = "latest"                    # Go 语言服务器（编辑器补全与诊断）
+
 gotestsum = "latest"                               # 测试结果摘要
 swag = "1.16.6"                                    # 钉稳定版本保证 OpenAPI 生成一致
 

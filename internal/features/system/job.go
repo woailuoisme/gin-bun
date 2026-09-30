@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"go.uber.org/zap"
+
 	"bgin/internal/platform/logger"
 	"bgin/internal/platform/queue"
 	"bgin/internal/platform/storage"
@@ -47,18 +49,16 @@ func RegisterJobs(reg queue.Registry, disk storage.Disk) {
 // Handle 任务执行入口。
 func (j *CleanupTempFilesJob) Handle(ctx context.Context) error {
 	log := logger.FromContext(ctx)
-	log.Info().
-		Str("directory", j.Directory).
-		Msg("system cleanup temp files job started")
+	log.Info("system cleanup temp files job started",
+		zap.String("directory", j.Directory))
 
 	// 若注入了存储驱动且指定了目录，可进一步联动 storage 进行深度清理
 	if j.disk != nil && j.Directory != "" {
-		log.Debug().
-			Str("driver", j.disk.Driver()).
-			Str("dir", j.Directory).
-			Msg("cleaning up temp files on storage disk")
+		log.Debug("cleaning up temp files on storage disk",
+			zap.String("driver", j.disk.Driver()),
+			zap.String("dir", j.Directory))
 	}
 
-	log.Info().Msg("system cleanup temp files job completed successfully")
+	log.Info("system cleanup temp files job completed successfully")
 	return nil
 }

@@ -324,6 +324,112 @@
                 "x-order": 3
             }
         },
+        "/admin/users/export": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "根据关键字、状态与角色条件分块流式导出用户列表为 Excel 文件，免除内存溢出风险。",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ],
+                "tags": [
+                    "用户管理"
+                ],
+                "summary": "导出系统用户",
+                "parameters": [
+                    {
+                        "maximum": 1000000,
+                        "minimum": 1,
+                        "type": "integer",
+                        "example": 1,
+                        "description": "当前页码 (从 1 开始，默认 1，上限 1000000，与 maxPage 常量保持一致)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "maximum": 100,
+                        "minimum": 1,
+                        "type": "integer",
+                        "example": 20,
+                        "description": "每页条数 (1-100，默认 20)",
+                        "name": "pageSize",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "user",
+                            "admin"
+                        ],
+                        "type": "string",
+                        "example": "user",
+                        "x-enum-varnames": [
+                            "RoleUser",
+                            "RoleAdmin"
+                        ],
+                        "description": "按权限角色过滤 (user: 普通用户, admin: 系统管理员)",
+                        "name": "role",
+                        "in": "query"
+                    },
+                    {
+                        "maxLength": 120,
+                        "type": "string",
+                        "example": "alex",
+                        "description": "关键字搜索 (按邮箱、昵称、用户名模糊检索)",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "maxLength": 120,
+                        "type": "string",
+                        "example": "-createdAt",
+                        "description": "排序字段 (字段名前加 - 表示倒序，如 -createdAt)",
+                        "name": "sort",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "active",
+                            "inactive",
+                            "pending",
+                            "suspended",
+                            "banned",
+                            "active",
+                            "inactive",
+                            "pending",
+                            "suspended",
+                            "banned"
+                        ],
+                        "type": "string",
+                        "example": "active",
+                        "x-enum-varnames": [
+                            "StatusActive",
+                            "StatusInactive",
+                            "StatusPending",
+                            "StatusSuspended",
+                            "StatusBanned"
+                        ],
+                        "description": "按账号状态过滤 (active: 正常活跃, inactive: 未激活, banned: 已封禁)",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "用户数据 Excel 文件",
+                        "schema": {
+                            "type": "file"
+                        }
+                    }
+                },
+                "x-order": 6
+            }
+        },
         "/admin/users/{id}": {
             "get": {
                 "security": [
@@ -441,75 +547,6 @@
                     }
                 },
                 "x-order": 4
-            }
-        },
-        "/payments/notify/{channel}": {
-            "post": {
-                "description": "接收微信或支付宝服务端的支付与退款异步通知，由网关执行公钥/证书验签、幂等防重检查与业务状态机推进，返回渠道约定的确认应答。",
-                "consumes": [
-                    "application/json",
-                    "application/x-www-form-urlencoded"
-                ],
-                "produces": [
-                    "application/json",
-                    "text/plain"
-                ],
-                "tags": [
-                    "支付中心"
-                ],
-                "summary": "支付与退款异步通知回调",
-                "parameters": [
-                    {
-                        "enum": [
-                            "wechat",
-                            "alipay"
-                        ],
-                        "type": "string",
-                        "description": "支付渠道 (wechat, alipay)",
-                        "name": "channel",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "应用标识 (可选，缺省时使用渠道默认应用)",
-                        "name": "app",
-                        "in": "path"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "回调验签与业务消费成功",
-                        "schema": {
-                            "$ref": "#/definitions/payment.CallbackAckResponse"
-                        }
-                    }
-                },
-                "x-order": 1
-            }
-        },
-        "/payments/return/alipay": {
-            "get": {
-                "description": "用户在支付宝完成付款后由浏览器重定向跳回，经公钥验签通过后 302 跳转至前端订单结果展示页。仅作展示导流，实际支付状态严格以异步通知为准。",
-                "consumes": [
-                    "text/html"
-                ],
-                "produces": [
-                    "text/html"
-                ],
-                "tags": [
-                    "支付中心"
-                ],
-                "summary": "支付宝客户端同步重定向跳转",
-                "responses": {
-                    "302": {
-                        "description": "重定向至前端订单展示页",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                },
-                "x-order": 2
             }
         }
     },
@@ -1034,21 +1071,6 @@
                 "StatusSuspended",
                 "StatusBanned"
             ]
-        },
-        "payment.CallbackAckResponse": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "description": "应答说明",
-                    "type": "string",
-                    "example": "OK"
-                },
-                "status": {
-                    "description": "应答状态码或纯文本",
-                    "type": "string",
-                    "example": "success"
-                }
-            }
         },
         "response.Meta": {
             "type": "object",

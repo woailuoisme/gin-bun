@@ -3,11 +3,16 @@ package payment
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
+	"bgin/internal/platform/money"
 	"bgin/internal/platform/payment/enums"
 )
+
+// ErrCapabilityNotSupported 表示渠道或 Provider 未实现请求的操作能力（如不支持退款或查单）。
+var ErrCapabilityNotSupported = errors.New("payment: capability not supported by provider")
 
 // Gateway 定义统一支付基础设施门面契约。
 //
@@ -41,7 +46,41 @@ type Gateway interface {
 	HealthCheck() error
 }
 
-// Provider 定义单一渠道应用的规范化收款契约。
+// Payable 定义渠道收款创建与关单能力契约。
+type Payable interface {
+	// Create 发起一次收款，返回客户端把付款人交给渠道所需的支付指令。
+	Create(ctx context.Context, req CreateRequest) (*Instruction, error)
+	// Close 关闭一笔未支付的收款。
+	Close(ctx context.Context, req CloseRequest) error
+}
+
+// Queryable 定义渠道支付状态主动查询能力契约。
+type Queryable interface {
+	// Query 主动查询支付状态，用于补偿缺失的渠道通知。
+	Query(ctx context.Context, req QueryRequest) (*PaymentResult, error)
+}
+
+// Refundable 定义渠道退款与退款查询能力契约。
+type Refundable interface {
+	// Refund 发起全额或部分退款。
+	Refund(ctx context.Context, req RefundRequest) (*RefundResult, error)
+	// QueryRefund 主动查询退款状态。
+	QueryRefund(ctx context.Context, req QueryRefundRequest) (*RefundResult, error)
+}
+
+// WebhookVerifiable 定义异步通知解密与验签能力契约。
+type WebhookVerifiable interface {
+	// ParseNotification 解析并验签渠道异步通知，返回值中的报文为渠道解密后的业务负载。
+	ParseNotification(req *http.Request) (*Notification, error)
+}
+
+// HealthChecker 定义渠道应用的凭据与连通性可用状态探测契约。
+type HealthChecker interface {
+	// HealthCheck 检查该渠道应用的凭据与客户端是否处于可用状态。
+	HealthCheck() error
+}
+
+// Provider 定义单一渠道应用的基础规范化契约 (遵循 ISP 原则解耦各原子能力)。
 type Provider interface {
 	// Channel 返回该 Provider 所属的支付渠道。
 	Channel() enums.PaymentChannel
@@ -49,20 +88,17 @@ type Provider interface {
 	Application() string
 	// Scenes 返回该渠道应用声明可承载的支付场景。
 	Scenes() []enums.PaymentScene
-	// Create 发起一次收款，返回客户端把付款人交给渠道所需的支付指令。
-	Create(ctx context.Context, req CreateRequest) (*Instruction, error)
-	// Query 主动查询支付状态，用于补偿缺失的渠道通知。
-	Query(ctx context.Context, req QueryRequest) (*PaymentResult, error)
-	// Close 关闭一笔未支付的收款。
-	Close(ctx context.Context, req CloseRequest) error
-	// Refund 发起全额或部分退款。
-	Refund(ctx context.Context, req RefundRequest) (*RefundResult, error)
-	// QueryRefund 主动查询退款状态。
-	QueryRefund(ctx context.Context, req QueryRefundRequest) (*RefundResult, error)
-	// ParseNotification 解析并验签渠道异步通知，返回值中的报文为渠道解密后的业务负载。
-	ParseNotification(req *http.Request) (*Notification, error)
-	// HealthCheck 检查该渠道应用的凭据与客户端是否处于可用状态。
-	HealthCheck() error
+
+	HealthChecker
+}
+
+// FullProvider 组合了支付全链路能力的完整提供者接口。
+type FullProvider interface {
+	Provider
+	Payable
+	Queryable
+	Refundable
+	WebhookVerifiable
 }
 
 // CreateRequest 描述一次收款创建请求，字段为渠道中立的规范化语义。
@@ -71,8 +107,10 @@ type CreateRequest struct {
 	Scene enums.PaymentScene
 	// OutTradeNo 我方商户订单号，在同一渠道内唯一且重试时保持不变。
 	OutTradeNo string
-	// Amount 收款金额，单位为分。
+	// Amount 收款金额，单位为分（当 Money 为 nil 时作为备选生效，保持向后兼容）。
 	Amount int64
+	// Money 高精度金融货币值对象。优先采用 Money，并通过 Money.ToCents() 自动遵循 ISO-4217 币种精度与金融舍入。
+	Money *money.Money
 	// Subject 收款主题，展示在渠道账单中。
 	Subject string
 	// Description 收款描述。支付宝用作账单明细（body），微信忽略该字段。
@@ -90,6 +128,25 @@ type CreateRequest struct {
 	ClientIP string
 	// Attach 渠道原样回传的附加数据。
 	Attach string
+}
+
+// EffectiveAmount 返回实际生效的收款金额（单位：分）。
+// 优先使用 Money 值对象；若 Money 为 nil 则回退到 Amount 字段。
+func (r CreateRequest) EffectiveAmount() int64 {
+	if r.Money != nil {
+		return r.Money.ToCents()
+	}
+	return r.Amount
+}
+
+// EffectiveMoney 返回实际生效的 Money 值对象。
+// 若 Money 字段非空则直接返回解引用副本；否则基于 EffectiveAmount 与 CNY 币种构造默认 Money。
+func (r CreateRequest) EffectiveMoney() money.Money {
+	if r.Money != nil {
+		return *r.Money
+	}
+	m, _ := money.NewFromCents(r.Amount, "CNY")
+	return m
 }
 
 // Instruction 描述客户端如何把付款人交给渠道完成支付。
@@ -126,14 +183,34 @@ type RefundRequest struct {
 	OutTradeNo string
 	// OutRefundNo 商户退款单号，重试时必须保持不变以保证幂等。
 	OutRefundNo string
-	// TotalAmount 原收款总额，单位为分。
+	// TotalAmount 原收款总额，单位为分（当 TotalMoney 为 nil 时生效）。
 	TotalAmount int64
-	// RefundAmount 本次退款金额，单位为分，可小于总额以实现部分退款。
+	// RefundAmount 本次退款金额，单位为分，可小于总额以实现部分退款（当 RefundMoney 为 nil 时生效）。
 	RefundAmount int64
+	// TotalMoney 原收款总额高精度货币值对象（可选）。
+	TotalMoney *money.Money
+	// RefundMoney 本次退款金额高精度货币值对象（可选）。
+	RefundMoney *money.Money
 	// Reason 退款原因，展示在渠道账单中。
 	Reason string
 	// NotifyURL 退款结果通知地址，留空时使用渠道应用的默认配置。
 	NotifyURL string
+}
+
+// EffectiveTotalAmount 返回实际生效的原收款总额（单位：分）。
+func (r RefundRequest) EffectiveTotalAmount() int64 {
+	if r.TotalMoney != nil {
+		return r.TotalMoney.ToCents()
+	}
+	return r.TotalAmount
+}
+
+// EffectiveRefundAmount 返回实际生效的本次退款金额（单位：分）。
+func (r RefundRequest) EffectiveRefundAmount() int64 {
+	if r.RefundMoney != nil {
+		return r.RefundMoney.ToCents()
+	}
+	return r.RefundAmount
 }
 
 // QueryRefundRequest 描述一次退款状态主动查询。
@@ -156,10 +233,20 @@ type PaymentResult struct {
 	ChannelState string
 	// PaidAmount 实际到账金额，单位为分。
 	PaidAmount int64
+	// Money 实际到账金额对应的高精度货币值对象（可选）。
+	Money *money.Money
 	// PaidAt 支付完成时刻，未支付时为空。
 	PaidAt *time.Time
 	// PayerID 付款人的渠道身份。
 	PayerID string
+}
+
+// WithMoney 辅助链式注入高精度货币值对象。
+func (p *PaymentResult) WithMoney(m money.Money) *PaymentResult {
+	if p != nil {
+		p.Money = &m
+	}
+	return p
 }
 
 // RefundResult 是渠道退款状态的规范化结果。
@@ -178,8 +265,18 @@ type RefundResult struct {
 	ChannelState string
 	// RefundAmount 本次退款金额，单位为分。
 	RefundAmount int64
+	// Money 本次退款金额对应的高精度货币值对象（可选）。
+	Money *money.Money
 	// RefundedAt 退款成功时刻，未成功时为空。
 	RefundedAt *time.Time
+}
+
+// WithMoney 辅助链式注入高精度货币值对象。
+func (r *RefundResult) WithMoney(m money.Money) *RefundResult {
+	if r != nil {
+		r.Money = &m
+	}
+	return r
 }
 
 // NotificationAck 描述渠道要求的通知应答内容。

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -107,5 +108,41 @@ func TestCollection(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, recorder.Code)
 		assert.JSONEq(t, `["a","b"]`, recorder.Body.String())
+	})
+}
+
+// TestAttachmentAndInline 校验流式附件与内联下载响应头。
+func TestAttachmentAndInline(t *testing.T) {
+	t.Run("Attachment 写入 Content-Disposition attachment", func(t *testing.T) {
+		content := "sample content"
+		recorder := run(func(c *gin.Context) {
+			response.Attachment(c, "report.pdf", strings.NewReader(content), int64(len(content)), "application/pdf")
+		})
+
+		assert.Equal(t, http.StatusOK, recorder.Code)
+		assert.Contains(t, recorder.Header().Get("Content-Disposition"), "attachment; filename=\"report.pdf\"")
+		assert.Equal(t, content, recorder.Body.String())
+	})
+
+	t.Run("Inline 写入 Content-Disposition inline", func(t *testing.T) {
+		content := "image content"
+		recorder := run(func(c *gin.Context) {
+			response.Inline(c, "image.png", strings.NewReader(content), int64(len(content)), "image/png")
+		})
+
+		assert.Equal(t, http.StatusOK, recorder.Code)
+		assert.Contains(t, recorder.Header().Get("Content-Disposition"), "inline; filename=\"image.png\"")
+		assert.Equal(t, content, recorder.Body.String())
+	})
+
+	t.Run("非 ASCII 文件名兜底为 ASCII，真名走 filename*", func(t *testing.T) {
+		recorder := run(func(c *gin.Context) {
+			response.Attachment(c, "账单.pdf", strings.NewReader("x"), 1, "application/pdf")
+		})
+
+		disposition := recorder.Header().Get("Content-Disposition")
+		// 兜底 filename 参数不得出现 \uXXXX 转义串（中文名由 filename*= 以 UTF-8 承载）。
+		assert.NotContains(t, disposition, `\u`)
+		assert.Contains(t, disposition, "filename*=UTF-8''%E8%B4%A6%E5%8D%95.pdf")
 	})
 }

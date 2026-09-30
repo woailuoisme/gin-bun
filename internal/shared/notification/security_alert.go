@@ -4,6 +4,7 @@ import (
 	"bgin/internal/platform/mailer"
 	"bgin/internal/platform/notification"
 	"bgin/internal/platform/notification/contract"
+	sharedDatabase "bgin/internal/shared/notification/database"
 )
 
 // SecurityAlertNotification 多渠道账号安全事件通知（邮件 + 数据库站内信 + 实时广播）。
@@ -70,6 +71,6 @@ func (n *SecurityAlertNotification) ToRealtime(notifiable any) notification.Real
 var (
 	_ contract.Notification             = (*SecurityAlertNotification)(nil)
 	_ notification.MailNotification     = (*SecurityAlertNotification)(nil)
-	_ notification.DatabaseNotification = (*SecurityAlertNotification)(nil)
+	_ sharedDatabase.Notification       = (*SecurityAlertNotification)(nil)
 	_ notification.RealtimeNotification = (*SecurityAlertNotification)(nil)
 )

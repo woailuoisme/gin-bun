@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"time"
 
 	"github.com/hibiken/asynq"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 )
@@ -21,7 +21,7 @@ func (c *Client) RunWorker(queues map[string]int) error {
 		return errors.New("queue: client is nil")
 	}
 	if len(queues) == 0 {
-		c.log().Warn().Msg("no queue weights specified, worker listening on default queue only")
+		c.log().Warn("no queue weights specified, worker listening on default queue only")
 		queues = map[string]int{DefaultQueueName: 1}
 	}
 
@@ -64,41 +64,38 @@ func (c *Client) BuildServeMux() *asynq.ServeMux {
 		taskName := name
 		jobFactory := factory
 
-		mux.HandleFunc(taskName, func(ctx context.Context, t *asynq.Task) (execErr error) {
+		mux.HandleFunc(taskName, func(ctx context.Context, t *asynq.Task) error {
 			job := jobFactory()
 			if job == nil {
-				c.log().Error().Str("task", taskName).Msg("job factory returned nil instance")
-				return errors.New("queue: job factory returned nil instance")
+				return fmt.Errorf("queue: job factory returned nil instance for task %q", taskName)
 			}
 
-			if err := unmarshalPayload(t.Payload(), job); err != nil {
-				c.log().Error().Str("task", taskName).Err(err).Msg("failed to unmarshal task payload")
-				return err
+			headers, err := unwrapEnvelope(t.Payload(), job)
+			if err != nil {
+				return fmt.Errorf("queue: failed to unmarshal task payload for %q: %w", taskName, err)
 			}
 
-			if ttl, ok := defaultReg.LookupLockTTL(taskName, job); ok {
-				job = WrapOverlappingJobWithLogger(c.log(), job, ttl, c.locker)
+			coreHandler := func(jobCtx context.Context, j Job) error {
+				return j.Handle(jobCtx)
 			}
 
-			defer func() {
-				if r := recover(); r != nil {
-					stack := string(debug.Stack())
-					c.log().Error().
-						Str("task", taskName).
-						Interface("panic", r).
-						Str("stack", stack).
-						Msg("panic recovered in task execution")
-					execErr = fmt.Errorf("queue: job panic: %v", r)
-				}
-			}()
-
-			execErr = job.Handle(ctx)
-			if execErr != nil {
-				c.log().Error().Str("task", taskName).Err(execErr).Msg("task execution failed")
-				return execErr
+			// 内置中间件链：Recovery -> Tracing -> Locking -> Logging
+			mws := []Middleware{
+				RecoveryMiddleware(c.log()),
+				TracingMiddleware(c.log(), headers),
+				LockingMiddleware(c.locker, defaultReg, c.log()),
+				LoggingMiddleware(c.log()),
 			}
 
-			return nil
+			// 附加全局用户自定义中间件
+			c.mu.RLock()
+			if len(c.middlewares) > 0 {
+				mws = append(mws, c.middlewares...)
+			}
+			c.mu.RUnlock()
+
+			pipeline := Chain(coreHandler, mws...)
+			return pipeline(ctx, job)
 		})
 	}
 
@@ -127,7 +124,9 @@ func (c *Client) newScheduler(cfg *config.Config) (*asynq.Scheduler, error) {
 
 		payload, err := json.Marshal(entry.Job)
 		if err != nil {
-			c.log().Error().Str("task", entry.Job.TaskName()).Err(err).Msg("failed to marshal periodic task payload")
+			c.log().Error("failed to marshal periodic task payload",
+				zap.String("task", entry.Job.TaskName()),
+				zap.Error(err))
 			continue
 		}
 
@@ -137,20 +136,18 @@ func (c *Client) newScheduler(cfg *config.Config) (*asynq.Scheduler, error) {
 
 		entryID, err := scheduler.Register(entry.Spec, task, opts...)
 		if err != nil {
-			c.log().Error().
-				Str("task", entry.Job.TaskName()).
-				Str("spec", entry.Spec).
-				Err(err).
-				Msg("failed to register periodic task")
+			c.log().Error("failed to register periodic task",
+				zap.String("task", entry.Job.TaskName()),
+				zap.String("spec", entry.Spec),
+				zap.Error(err))
 			continue
 		}
 
-		c.log().Info().
-			Str("task", entry.Job.TaskName()).
-			Str("spec", entry.Spec).
-			Str("queue", queueName).
-			Str("entry_id", entryID).
-			Msg("periodic task registered successfully")
+		c.log().Info("periodic task registered successfully",
+			zap.String("task", entry.Job.TaskName()),
+			zap.String("spec", entry.Spec),
+			zap.String("queue", queueName),
+			zap.String("entry_id", entryID))
 	}
 
 	return scheduler, nil
@@ -168,7 +165,7 @@ func (c *Client) StartScheduler(cfg *config.Config) error {
 
 	go func() {
 		if err := scheduler.Run(); err != nil {
-			c.log().Error().Err(err).Msg("periodic task scheduler encountered an error")
+			c.log().Error("periodic task scheduler encountered an error", zap.Error(err))
 		}
 	}()
 
@@ -216,7 +213,7 @@ func (c *Client) StopScheduler() error {
 
 	if scheduler != nil {
 		scheduler.Shutdown()
-		c.log().Info().Msg("periodic task scheduler stopped")
+		c.log().Info("periodic task scheduler stopped")
 	}
 
 	return nil
@@ -241,31 +238,22 @@ func (c *Client) handleTaskError(ctx context.Context, task *asynq.Task, err erro
 	retried, hasRetried := asynq.GetRetryCount(ctx)
 	maxRetry, hasMax := asynq.GetMaxRetry(ctx)
 	taskID, _ := asynq.GetTaskID(ctx)
-
 	queueName, _ := asynq.GetQueueName(ctx)
 
-	event := c.log().Error().
-		Str("task_id", taskID).
-		Str("task", task.Type()).
-		Str("queue", queueName).
-		Err(err)
+	fields := []zap.Field{
+		zap.String("task_id", taskID),
+		zap.String("task", task.Type()),
+		zap.String("queue", queueName),
+		zap.Error(err),
+	}
 
 	if hasRetried && hasMax {
-		event.Int("retried", retried).Int("max_retry", maxRetry)
+		fields = append(fields, zap.Int("retried", retried), zap.Int("max_retry", maxRetry))
 		if retried >= maxRetry {
-			event.Msg("task retries exhausted, moved to dead letter archive")
+			c.log().Error("task retries exhausted, moved to dead letter archive", fields...)
 			return
 		}
 	}
 
-	event.Msg("task execution failed, retry scheduled")
-}
-
-// unmarshalPayload 将原始载荷反序列化到任务实例中。
-func unmarshalPayload(raw []byte, job Job) error {
-	if len(raw) == 0 {
-		return nil
-	}
-
-	return json.Unmarshal(raw, job)
+	c.log().Error("task execution failed, retry scheduled", fields...)
 }

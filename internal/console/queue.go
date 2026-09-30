@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"text/tabwriter"
 
-	"github.com/golang-module/carbon/v2"
+	"github.com/dromara/carbon/v2"
 	"github.com/hibiken/asynq"
 	"github.com/spf13/cobra"
 
@@ -18,6 +18,7 @@ import (
 	"bgin/internal/console/core"
 	"bgin/internal/features/client/auth"
 	"bgin/internal/features/system"
+	"bgin/internal/platform/cache"
 	"bgin/internal/platform/logger"
 	"bgin/internal/platform/mailer"
 	"bgin/internal/platform/queue"
@@ -44,7 +45,11 @@ func newQueueWorkCmd() *cobra.Command {
 
 			log := logger.New(cfg)
 
-			mailerClient, err := mailer.New(cfg.Mail, *log)
+			// 队列包内部的注册期告警（非法 cron / 非法调度时间 / 锁失效）走包级兜底日志器，
+			// 默认是 Nop；不注入就会静默吞掉，调度写错无人知晓。
+			queue.SetFallbackLogger(log)
+
+			mailerClient, err := mailer.New(cfg.Mail, log)
 			if err != nil {
 				return fmt.Errorf("failed to initialize mailer: %w", err)
 			}
@@ -67,7 +72,13 @@ func newQueueWorkCmd() *cobra.Command {
 				sched.Register()
 			}
 
-			client, cleanup, err := queue.NewClient(cfg.Queue)
+			var locker queue.Locker
+			if cacheLocker, err := cache.NewRedisLocker(cfg.Cache); err == nil {
+				defer func() { _ = cacheLocker.Close() }()
+				locker = queue.AdaptLocker(cacheLocker)
+			}
+
+			client, cleanup, err := queue.NewClient(cfg.Queue, locker)
 			if err != nil {
 				return fmt.Errorf("failed to initialize queue client: %w", err)
 			}

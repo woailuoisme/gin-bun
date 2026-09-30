@@ -98,3 +98,19 @@ func (u *User) GetModelType() string {
 func (u *User) GetModelID() string {
 	return u.ID
 }
+
+// GetAuthIdentifier 返回认证主体唯一标识符（用户 ID）。
+func (u *User) GetAuthIdentifier() string {
+	if u == nil {
+		return ""
+	}
+	return u.ID
+}
+
+// GetAuthRole 返回认证主体的权限角色。
+func (u *User) GetAuthRole() string {
+	if u == nil {
+		return ""
+	}
+	return u.Role
+}

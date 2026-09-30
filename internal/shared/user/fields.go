@@ -6,10 +6,10 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/aarondl/opt/omitnull"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"bgin/internal/platform/errs"
-	"bgin/internal/platform/optional"
 )
 
 // uniqueViolation 是 PostgreSQL 的唯一约束冲突错误码。
@@ -44,35 +44,54 @@ type ProfilePatch struct {
 
 // FieldSet 是客户端与后台管理共用的可更新档案字段集合。
 type FieldSet struct {
-	Name            optional.Optional[string]
-	Image           optional.Optional[string]
-	Username        optional.Optional[string]
-	DisplayUsername optional.Optional[string]
-	PhoneNumber     optional.Optional[string]
+	Name            omitnull.Val[string]
+	Image           omitnull.Val[string]
+	Username        omitnull.Val[string]
+	DisplayUsername omitnull.Val[string]
+	PhoneNumber     omitnull.Val[string]
+}
+
+// Patch 将字段集转换为用于校验的指针投影结构体。
+func (f FieldSet) Patch() ProfilePatch {
+	return ProfilePatch{
+		Name:            ToPtr(f.Name),
+		Image:           ToPtr(f.Image),
+		Username:        ToPtr(f.Username),
+		DisplayUsername: ToPtr(f.DisplayUsername),
+		PhoneNumber:     ToPtr(f.PhoneNumber),
+	}
+}
+
+// ToPtr 将三态值在拥有具体值时转换为指针，缺省或置空时返回 nil。
+func ToPtr[T any](v omitnull.Val[T]) *T {
+	if val, ok := v.Get(); ok {
+		return &val
+	}
+	return nil
 }
 
 // CollectFields 把档案三态字段翻译成待更新列。repo 只用于确认用户名未被他人占用。
 func CollectFields(ctx context.Context, repo *Repository, userID string, patch FieldSet) (map[string]any, error) {
 	fields := make(map[string]any, 5)
 
-	if patch.Name.Present {
-		if patch.Name.Value == nil {
+	if !patch.Name.IsUnset() {
+		if patch.Name.IsNull() {
 			return nil, FieldCannotBeNull("name")
 		}
-		fields["name"] = strings.TrimSpace(*patch.Name.Value)
+		fields["name"] = strings.TrimSpace(patch.Name.MustGet())
 	}
-	if patch.Image.Present {
+	if !patch.Image.IsUnset() {
 		SetNullable(fields, "image", patch.Image)
 	}
-	if patch.PhoneNumber.Present {
+	if !patch.PhoneNumber.IsUnset() {
 		SetNullable(fields, "phone_number", patch.PhoneNumber)
 	}
-	if patch.Username.Present {
+	if !patch.Username.IsUnset() {
 		if err := setUsername(ctx, repo, userID, fields, patch.Username); err != nil {
 			return nil, err
 		}
 	}
-	if patch.DisplayUsername.Present {
+	if !patch.DisplayUsername.IsUnset() {
 		SetNullable(fields, "display_username", patch.DisplayUsername)
 	}
 	return fields, nil
@@ -97,13 +116,13 @@ func ApplyUpdate(ctx context.Context, repo *Repository, id string, fields map[st
 }
 
 // SetNullable 把三态字段写入列；显式 null 或空白串都落为 NULL。
-func SetNullable(fields map[string]any, column string, value optional.Optional[string]) {
-	if value.Value == nil {
+func SetNullable(fields map[string]any, column string, value omitnull.Val[string]) {
+	if value.IsNull() {
 		fields[column] = nil
 		return
 	}
 
-	trimmed := strings.TrimSpace(*value.Value)
+	trimmed := strings.TrimSpace(value.MustGet())
 	if trimmed == "" {
 		fields[column] = nil
 		return
@@ -145,15 +164,15 @@ func setUsername(
 	repo *Repository,
 	userID string,
 	fields map[string]any,
-	value optional.Optional[string],
+	value omitnull.Val[string],
 ) error {
-	if value.Value == nil {
+	if value.IsNull() {
 		fields["username"] = nil
 		fields["display_username"] = nil
 		return nil
 	}
 
-	normalised := NormaliseUsername(*value.Value)
+	normalised := NormaliseUsername(value.MustGet())
 	// 这次查重只为给出友好错误，不构成并发保证：两个用户同时改名可能双双通过这里。
 	// 真正的仲裁是唯一索引 idx_user_username，冲突由 MapUniqueConflict 兜底成同一个错误码。
 	existing, err := repo.FindByUsername(ctx, normalised)

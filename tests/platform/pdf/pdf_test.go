@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/johnfercher/maroto/v2/pkg/consts/align"
 	"github.com/johnfercher/maroto/v2/pkg/consts/orientation"
 	"github.com/johnfercher/maroto/v2/pkg/consts/pagesize"
@@ -104,20 +103,16 @@ func TestRenderToWriter(t *testing.T) {
 	assert.True(t, bytes.HasPrefix(buf.Bytes(), []byte("%PDF")))
 }
 
-func TestStreamToResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
+func TestStreamToHTTP(t *testing.T) {
 	svc := pdf.NewService(config.PDFConfig{
 		FontFamily: "Helvetica",
 	}, nil, nil)
 
 	t.Run("inline preview mode", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodGet, "/test.pdf", nil)
 
 		doc := &simpleTestDoc{title: "Preview", content: "Inline content"}
-		err := svc.StreamToResponse(c, "preview.pdf", doc, pdf.DeliveryInline)
+		err := svc.StreamToHTTP(t.Context(), w, "preview.pdf", doc, pdf.DeliveryInline)
 		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -129,11 +124,9 @@ func TestStreamToResponse(t *testing.T) {
 
 	t.Run("attachment download mode", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodGet, "/download.pdf", nil)
 
 		doc := &simpleTestDoc{title: "Download", content: "Attachment content"}
-		err := svc.StreamToResponse(c, "账单.pdf", doc, pdf.DeliveryAttachment)
+		err := svc.StreamToHTTP(t.Context(), w, "账单.pdf", doc, pdf.DeliveryAttachment)
 		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -144,10 +137,9 @@ func TestStreamToResponse(t *testing.T) {
 
 	t.Run("standard http response writer mode", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		ctx := t.Context()
 
 		doc := &simpleTestDoc{title: "StandardHTTP", content: "Standard HTTP content"}
-		err := svc.StreamToHTTP(ctx, w, "std.pdf", doc, pdf.DeliveryInline)
+		err := svc.StreamToHTTP(t.Context(), w, "std.pdf", doc, pdf.DeliveryInline)
 		require.NoError(t, err)
 
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -289,4 +281,55 @@ func TestGlobalServiceAccess(t *testing.T) {
 	data, err := pdf.Render(ctx, doc)
 	require.NoError(t, err)
 	assert.True(t, bytes.HasPrefix(data, []byte("%PDF")))
+}
+
+// TestComponentAndDeliveryMethods 验证可复用 Component 渲染与附件/内联两种交付方式。
+func TestComponentAndDeliveryMethods(t *testing.T) {
+	ctx := t.Context()
+
+	svc := pdf.NewService(config.PDFConfig{
+		FontFamily: "Helvetica",
+	}, nil, nil)
+
+	// 定义测试组件
+	headerComp := pdf.ComponentFunc(func(ctx context.Context, b *pdf.Builder) error {
+		b.AddHeading("Reusable Header Component", align.Center)
+		return nil
+	})
+
+	doc := &simpleTestDoc{title: "Component Test", content: "Testing reusable component"}
+	// 测试直接调用 AddComponent
+	builderDoc := &componentDoc{
+		comp: headerComp,
+		doc:  doc,
+	}
+
+	data, err := svc.Render(ctx, builderDoc)
+	require.NoError(t, err)
+	assert.True(t, bytes.HasPrefix(data, []byte("%PDF")))
+
+	// 测试附件下载与内联预览两种交付方式
+	recDown := httptest.NewRecorder()
+	err = svc.StreamToHTTP(ctx, recDown, "report.pdf", doc, pdf.DeliveryAttachment)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, recDown.Code)
+	assert.Contains(t, recDown.Header().Get("Content-Disposition"), "attachment")
+
+	recInline := httptest.NewRecorder()
+	err = svc.StreamToHTTP(ctx, recInline, "preview.pdf", doc, pdf.DeliveryInline)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, recInline.Code)
+	assert.Contains(t, recInline.Header().Get("Content-Disposition"), "inline")
+}
+
+type componentDoc struct {
+	comp pdf.Component
+	doc  pdf.Document
+}
+
+func (d *componentDoc) Build(ctx context.Context, b *pdf.Builder) error {
+	if err := b.AddComponent(ctx, d.comp); err != nil {
+		return err
+	}
+	return d.doc.Build(ctx, b)
 }

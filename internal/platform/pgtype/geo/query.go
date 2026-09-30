@@ -84,6 +84,16 @@ func OrderByDistance(q *bun.SelectQuery, column string, center Point, asc bool) 
 	return q.OrderExpr(expr+" "+order, args...)
 }
 
+// OrderByDistanceAsc 向 Bun 查询构建器追加按与参考点的地表米级距离升序排序。
+func OrderByDistanceAsc(q *bun.SelectQuery, column string, center Point) *bun.SelectQuery {
+	return OrderByDistance(q, column, center, true)
+}
+
+// OrderByDistanceDesc 向 Bun 查询构建器追加按与参考点的地表米级距离降序排序。
+func OrderByDistanceDesc(q *bun.SelectQuery, column string, center Point) *bun.SelectQuery {
+	return OrderByDistance(q, column, center, false)
+}
+
 // ColumnDistance 在 Bun 查询的投影列中追加与参考点的地表大圆距离（单位：米），重命名为 alias。
 func ColumnDistance(q *bun.SelectQuery, column string, center Point, alias string) *bun.SelectQuery {
 	if q == nil {

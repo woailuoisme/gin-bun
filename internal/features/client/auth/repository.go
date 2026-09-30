@@ -6,21 +6,23 @@ import (
 
 	"github.com/uptrace/bun"
 
+	"bgin/internal/platform/hasher"
 	"bgin/internal/shared/models"
 	shareduser "bgin/internal/shared/user"
 )
 
 // Repository 是认证域的数据访问入口，内嵌 shareduser.Repository 以复用用户基础查询。
 type Repository struct {
-	db *bun.DB
 	*shareduser.Repository
+
+	db *bun.DB
 }
 
-// NewRepository 构造 Repository。
-func NewRepository(db *bun.DB) *Repository {
+// NewRepository 构造 Repository。h 允许为 nil，表示暂不注入口令哈希器。
+func NewRepository(db *bun.DB, h *hasher.Hasher) *Repository {
 	return &Repository{
 		db:         db,
-		Repository: shareduser.NewRepository(db),
+		Repository: shareduser.NewRepository(db, h),
 	}
 }
 

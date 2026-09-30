@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/brianvoe/gofakeit/v7"
-	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
 	"bgin/internal/platform/hasher"
@@ -23,11 +22,11 @@ func NewAccountFactory(db bun.IDB) *AccountFactory {
 	return &AccountFactory{
 		base: New(db, func(f *gofakeit.Faker) *models.Account {
 			now := time.Now().UTC()
-			id, _ := uuid.NewV7()
-			userID, _ := uuid.NewV7()
+			id := newUUID()
+			userID := newUUID()
 			email := strings.ToLower(f.Email())
 			pwdHasher := hasher.New()
-			hashedPwd, _ := pwdHasher.Make("Password123!")
+			hashedPwd := hashPasswordOrPanic(pwdHasher, FixturePassword)
 
 			return &models.Account{
 				Base: models.Base{
@@ -84,10 +83,8 @@ func (af *AccountFactory) ForUser(userID, accountID string) *AccountFactory {
 func (af *AccountFactory) Password(rawPassword string) *AccountFactory {
 	return af.State(func(a *models.Account) {
 		pwdHasher := hasher.New()
-		hashedPwd, err := pwdHasher.Make(rawPassword)
-		if err == nil {
-			a.Password = &hashedPwd
-		}
+		hashedPwd := hashPasswordOrPanic(pwdHasher, rawPassword)
+		a.Password = &hashedPwd
 	})
 }
 

@@ -1,13 +1,13 @@
 package factories
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/brianvoe/gofakeit/v7"
-	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
 	"bgin/internal/platform/hasher"
@@ -24,7 +24,7 @@ func NewUserFactory(db bun.IDB) *UserFactory {
 	return &UserFactory{
 		base: New(db, func(f *gofakeit.Faker) *models.User {
 			now := time.Now().UTC()
-			id, _ := uuid.NewV7()
+			id := newUUID()
 			email := strings.ToLower(f.Email())
 			username := strings.ToLower(f.Username())
 			dispUser := f.Username()
@@ -174,13 +174,10 @@ func (uf *UserFactory) WithAvatar(avatarURL ...string) *UserFactory {
 	})
 }
 
-// WithAccount 级联创建本地凭据密码账号（支持自定义密码，缺省为 Password123!）。
+// WithAccount 级联创建本地凭据密码账号；password 传空串表示使用 FixturePassword。
 // 该修饰器在 Create/CreateMany 持久化触发时，通过 AfterCreating 钩子自动向 account 表写入哈希凭据。
-func (uf *UserFactory) WithAccount(password ...string) *UserFactory {
-	rawPwd := "Password123!"
-	if len(password) > 0 && password[0] != "" {
-		rawPwd = password[0]
-	}
+func (uf *UserFactory) WithAccount(password string) *UserFactory {
+	rawPwd := cmp.Or(password, FixturePassword)
 
 	return uf.AfterCreating(func(ctx context.Context, u *models.User) error {
 		db := uf.base.DB()
@@ -194,7 +191,7 @@ func (uf *UserFactory) WithAccount(password ...string) *UserFactory {
 			return fmt.Errorf("factory with-account hash password failed: %w", err)
 		}
 
-		accountID, _ := uuid.NewV7()
+		accountID := newUUID()
 		now := time.Now().UTC()
 		account := &models.Account{
 			Base: models.Base{

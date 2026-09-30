@@ -12,16 +12,18 @@ const (
 
 // 重新导出核心契约接口与类型定义。
 type (
-	Notifiable             = contract.Notifiable
-	Recipient              = contract.Recipient
-	Notification           = contract.Notification
-	ChannelFormatter       = contract.ChannelFormatter
-	Channel                = contract.Channel
-	Formatter              = contract.Formatter
-	ShouldQueue            = contract.ShouldQueue
-	ShouldQueueWithOptions = contract.ShouldQueueWithOptions
-	SendOption             = contract.SendOption
-	SendOptions            = contract.SendOptions
+	Notifiable              = contract.Notifiable
+	Recipient               = contract.Recipient
+	Notification            = contract.Notification
+	ChannelFormatter        = contract.ChannelFormatter
+	Channel                 = contract.Channel
+	Formatter               = contract.Formatter
+	IdempotentNotification  = contract.IdempotentNotification
+	RateLimitedNotification = contract.RateLimitedNotification
+	ShouldQueue             = contract.ShouldQueue
+	ShouldQueueWithOptions  = contract.ShouldQueueWithOptions
+	SendOption              = contract.SendOption
+	SendOptions             = contract.SendOptions
 )
 
 // 重新导出标准哨兵错误、工厂方法与选项函数。
@@ -35,6 +37,8 @@ var (
 	ErrNoRoute        = contract.ErrNoRoute
 	ErrNoFormatter    = contract.ErrNoFormatter
 	ErrClosed         = contract.ErrClosed
+	ErrRateLimited    = contract.ErrRateLimited
+	ErrDeduplicated   = contract.ErrDeduplicated
 
 	Via   = contract.Via
 	Sync  = contract.Sync

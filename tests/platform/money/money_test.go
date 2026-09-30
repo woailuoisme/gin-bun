@@ -264,6 +264,8 @@ func TestMoney_GatewayAdaptersAndFormatting(t *testing.T) {
 	// 格式化展示
 	assert.Equal(t, "¥12.35", m.Format(true))
 	assert.Equal(t, "12.35 CNY", m.Format(false))
+	assert.Equal(t, "¥12.35", m.FormatWithSymbol())
+	assert.Equal(t, "12.35 CNY", m.FormatWithCode())
 	assert.Equal(t, "12.35 CNY", m.String())
 }
 
@@ -321,4 +323,65 @@ func TestMoney_DatabaseValueAndScan(t *testing.T) {
 	err = nilScanned.Scan(nil)
 	require.NoError(t, err)
 	assert.True(t, nilScanned.IsZero())
+}
+
+func TestMoney_Calculator(t *testing.T) {
+	initial := money.MustNew(decimal.NewFromInt(100), money.CNY)
+	calc := money.NewCalculator(initial).
+		Add(money.MustNew(decimal.NewFromInt(50), money.CNY)).
+		Sub(money.MustNew(decimal.NewFromInt(20), money.CNY)).
+		MulInt(2).
+		DivInt(2)
+
+	res, err := calc.Result()
+	require.NoError(t, err)
+	assert.Equal(t, "130", res.Amount().String())
+	assert.Equal(t, money.CNY, res.CurrencyCode())
+	assert.Equal(t, res, calc.MustResult())
+
+	// 币种不匹配错误聚集
+	calcErr := money.NewCalculator(initial).
+		Add(money.MustNew(decimal.NewFromInt(10), money.USD)).
+		Sub(money.MustNew(decimal.NewFromInt(5), money.CNY))
+	_, err = calcErr.Result()
+	require.ErrorIs(t, err, money.ErrCurrencyMismatch)
+	assert.Panics(t, func() {
+		calcErr.MustResult()
+	})
+
+	// 除以零错误聚集
+	calcDivZero := money.NewCalculator(initial).DivInt(0)
+	_, err = calcDivZero.Result()
+	require.ErrorIs(t, err, money.ErrDivisionByZero)
+
+	// 舍入方法
+	rounded := money.NewCalculator(money.MustNew(decimal.NewFromFloat(123.456), money.CNY)).
+		RoundToSubunit(money.RoundHalfUp).
+		MustResult()
+	assert.Equal(t, "123.46", rounded.Amount().String())
+}
+
+func TestMoney_MemoryConverter(t *testing.T) {
+	ctx := t.Context()
+	converter := money.NewMemoryConverter()
+
+	converter.SetRate(money.USD, money.CNY, decimal.NewFromFloat(7.25))
+
+	usd := money.MustNew(decimal.NewFromInt(100), money.USD)
+
+	// 同币种转换
+	same, err := converter.Convert(ctx, usd, money.USD)
+	require.NoError(t, err)
+	assert.True(t, same.Equal(usd))
+
+	// USD 转换为 CNY
+	cny, err := converter.Convert(ctx, usd, money.CNY)
+	require.NoError(t, err)
+	assert.Equal(t, money.CNY, cny.CurrencyCode())
+	assert.Equal(t, "725", cny.Amount().String())
+
+	// 缺失汇率报错
+	_, err = converter.Convert(ctx, usd, money.EUR)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exchange rate not found")
 }

@@ -18,19 +18,19 @@ type Money struct {
 	currency Currency
 }
 
-// New 使用 Decimal 金额和 ISO 货币代码构建 Money 实例。
+// New 使用 Decimal 金额和 ISO 货币代码构建 Money 实例；币种未注册时返回 ErrUnknownCurrency。
 func New(amount decimal.Decimal, currencyCode string) (Money, error) {
-	code := strings.ToUpper(strings.TrimSpace(currencyCode))
-	if code == "" {
-		return Money{}, ErrUnknownCurrency
+	curr, err := ResolveCurrency(currencyCode)
+	if err != nil {
+		return Money{}, err
 	}
 	return Money{
 		amount:   amount,
-		currency: MustGetCurrency(code),
+		currency: curr,
 	}, nil
 }
 
-// MustNew 构建 Money 实例，币种未预注册时使用默认规则创建，空代码时 panic。
+// MustNew 构建 Money 实例；币种未注册或代码为空时 panic。
 func MustNew(amount decimal.Decimal, currencyCode string) Money {
 	m, err := New(amount, currencyCode)
 	if err != nil {
@@ -63,7 +63,10 @@ func NewFromInt(amount int64, currencyCode string) (Money, error) {
 
 // NewFromCents 从分币（次要单位整数）构建 Money（如 12345 CNY -> 123.45 CNY）。
 func NewFromCents(cents int64, currencyCode string) (Money, error) {
-	curr := MustGetCurrency(currencyCode)
+	curr, err := ResolveCurrency(currencyCode)
+	if err != nil {
+		return Money{}, err
+	}
 	factor := decimal.NewFromInt(int64(math.Pow10(int(curr.Fraction))))
 	d := decimal.NewFromInt(cents).Div(factor)
 	return Money{amount: d, currency: curr}, nil
@@ -290,7 +293,10 @@ func (m Money) ExchangeTo(targetCode string, rate decimal.Decimal) (Money, error
 	if rate.LessThanOrEqual(decimal.Zero) {
 		return Money{}, ErrNegativeRate
 	}
-	targetCurr := MustGetCurrency(targetCode)
+	targetCurr, err := ResolveCurrency(targetCode)
+	if err != nil {
+		return Money{}, err
+	}
 	return Money{
 		amount:   m.amount.Mul(rate),
 		currency: targetCurr,
@@ -319,9 +325,19 @@ func (m Money) Format(showSymbol bool) string {
 	return valStr + " " + m.currency.Code
 }
 
+// FormatWithSymbol 格式化为携带货币符号的人类可读字符串展示（如 "¥123.45"）。
+func (m Money) FormatWithSymbol() string {
+	return m.Format(true)
+}
+
+// FormatWithCode 格式化为携带 ISO 货币代码的人类可读字符串展示（如 "123.45 CNY"）。
+func (m Money) FormatWithCode() string {
+	return m.Format(false)
+}
+
 // String 实现 fmt.Stringer 接口。
 func (m Money) String() string {
-	return m.Format(false)
+	return m.FormatWithCode()
 }
 
 type jsonMoneyPayload struct {
@@ -353,7 +369,10 @@ func parseMoneyString(raw string) (Money, error) {
 func (m *Money) UnmarshalJSON(data []byte) error {
 	// 尝试反序列化为对象结构
 	var payload jsonMoneyPayload
-	if err := json.Unmarshal(data, &payload); err == nil && payload.Currency != "" {
+	if err := json.Unmarshal(data, &payload); err == nil {
+		if payload.Currency == "" {
+			return fmt.Errorf("%w: money payload is missing the currency field", ErrInvalidAmount)
+		}
 		parsed, err := NewFromString(payload.Amount, payload.Currency)
 		if err != nil {
 			return err
@@ -382,6 +401,7 @@ func (m Money) Value() (driver.Value, error) {
 }
 
 // Scan 实现 sql.Scanner 接口，支持从数据库读取单列（JSON 文本或分币）。
+// NULL 按零额 CNY 处理：单列存储无法从 NULL 推回币种，币种必须由调用方从相邻列显式恢复。
 func (m *Money) Scan(src any) error {
 	if src == nil {
 		*m = Zero(CNY)

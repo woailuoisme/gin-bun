@@ -115,9 +115,6 @@ func (b *Builder) Sign() (string, error) {
 
 // String 实现 fmt.Stringer 接口，便于在模板或日志中直接输出签名 URL。
 func (b *Builder) String() string {
-	urlStr, err := b.Sign()
-	if err != nil {
-		return ""
-	}
+	urlStr, _ := b.Sign()
 	return urlStr
 }

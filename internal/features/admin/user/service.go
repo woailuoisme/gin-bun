@@ -4,14 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"strings"
 	"time"
 
+	"github.com/aarondl/opt/omitnull"
 	"github.com/samber/lo"
 
 	"bgin/internal/platform/errs"
-	"bgin/internal/platform/hasher"
-	"bgin/internal/platform/optional"
+	"bgin/internal/platform/excel"
 	"bgin/internal/platform/response"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
@@ -19,16 +20,21 @@ import (
 	"bgin/internal/shared/user"
 )
 
+// passwordHasher 声明用户管理服务所需的口令安全哈希能力（遵循 Uber Go Guide：接口由消费方定义）。
+type passwordHasher interface {
+	Make(password string) (string, error)
+}
+
 // Deps 声明用户管理服务的外部依赖。
 type Deps struct {
 	Repo   *user.Repository
-	Hasher *hasher.Hasher
+	Hasher passwordHasher
 }
 
 // Service 实现后台用户管理用例。
 type Service struct {
 	repo   *user.Repository
-	hasher *hasher.Hasher
+	hasher passwordHasher
 }
 
 // NewService 构造管理服务。
@@ -60,6 +66,17 @@ func (s *Service) ListUsers(ctx context.Context, query ListUsersQuery) ([]User, 
 		return projectUser(&entity)
 	})
 	return items, response.NewMeta(page, pageSize, total), nil
+}
+
+// ExportUsers 流式导出匹配条件的所有用户数据至目标 io.Writer，采用物理分块拉取杜绝 OOM。
+func (s *Service) ExportUsers(ctx context.Context, query ListUsersQuery, w io.Writer, opts ...excel.ExportOption) error {
+	filter := user.ListFilter{
+		Search: strings.TrimSpace(query.Search),
+		Status: enums.Status(strings.TrimSpace(string(query.Status))),
+		Role:   enums.Role(strings.TrimSpace(string(query.Role))),
+		Sort:   user.NormaliseSort(query.Sort),
+	}
+	return ExportChunkedStream(ctx, w, s.repo, filter, opts...)
 }
 
 // GetUser 返回管理视角的单个用户。
@@ -134,8 +151,8 @@ func (s *Service) buildAdminFields(ctx context.Context, id string, req UpdateUse
 		return nil, err
 	}
 
-	if req.EmailVerified.IsSet() {
-		fields["email_verified"] = *req.EmailVerified.Value
+	if req.EmailVerified.IsValue() {
+		fields["email_verified"] = req.EmailVerified.MustGet()
 	}
 	if err := setRequiredString(fields, "role", req.Role); err != nil {
 		return nil, err
@@ -143,13 +160,13 @@ func (s *Service) buildAdminFields(ctx context.Context, id string, req UpdateUse
 	if err := setRequiredString(fields, "status", req.Status); err != nil {
 		return nil, err
 	}
-	if req.Banned.IsSet() {
-		fields["banned"] = *req.Banned.Value
+	if req.Banned.IsValue() {
+		fields["banned"] = req.Banned.MustGet()
 	}
-	if req.BanReason.Present {
+	if !req.BanReason.IsUnset() {
 		user.SetNullable(fields, "ban_reason", req.BanReason)
 	}
-	if req.BanExpires.Present {
+	if !req.BanExpires.IsUnset() {
 		fields["ban_expires"] = nullableTime(req.BanExpires)
 	}
 
@@ -158,23 +175,23 @@ func (s *Service) buildAdminFields(ctx context.Context, id string, req UpdateUse
 }
 
 // setRequiredString 处理库层 NOT NULL、因而不接受显式 null 的字符串或枚举列。
-func setRequiredString[T ~string](fields map[string]any, column string, value optional.Optional[T]) error {
-	if !value.Present {
+func setRequiredString[T ~string](fields map[string]any, column string, value omitnull.Val[T]) error {
+	if value.IsUnset() {
 		return nil
 	}
-	if value.Value == nil {
+	if value.IsNull() {
 		return user.FieldCannotBeNull(column)
 	}
-	fields[column] = string(*value.Value)
+	fields[column] = string(value.MustGet())
 	return nil
 }
 
 // nullableTime 把三态时间字段转换为可写入列的值，并统一归一到 UTC。
-func nullableTime(value optional.Optional[time.Time]) any {
-	if value.Value == nil {
+func nullableTime(value omitnull.Val[time.Time]) any {
+	if value.IsNull() {
 		return nil
 	}
-	return value.Value.UTC()
+	return value.MustGet().UTC()
 }
 
 // reconcileBanState 保证 banned 布尔值与 status 状态相互协同一致。

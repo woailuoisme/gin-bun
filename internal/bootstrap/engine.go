@@ -16,7 +16,6 @@ import (
 	realtimeFeature "bgin/internal/features/realtime"
 	"bgin/internal/features/system"
 	"bgin/internal/middleware"
-	"bgin/internal/platform/codec"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/validator"
 )
@@ -33,8 +32,6 @@ func buildEngine(
 	realtimeHandler *realtimeFeature.Handler,
 	paymentHandler *paymentFeature.Handler,
 ) (*gin.Engine, error) {
-	// 启用高性能 go-json 运行时编解码器与校验器规则
-	codec.EnableGoJSON()
 	if err := validator.InitEngine(); err != nil {
 		return nil, fmt.Errorf("init validator engine failed: %w", err)
 	}

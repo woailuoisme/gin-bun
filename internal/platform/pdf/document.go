@@ -13,6 +13,19 @@ type Document interface {
 	Build(ctx context.Context, b *Builder) error
 }
 
+// Component 抽象 PDF 可复用视觉组件接口（如企业徽标头、审计签名栏、财务汇总卡）。
+type Component interface {
+	Render(ctx context.Context, b *Builder) error
+}
+
+// ComponentFunc 允许将普通函数转化为 Component。
+type ComponentFunc func(ctx context.Context, b *Builder) error
+
+// Render 执行组件渲染函数。
+func (f ComponentFunc) Render(ctx context.Context, b *Builder) error {
+	return f(ctx, b)
+}
+
 // Concern 标记可选生命周期切面接口。
 type Concern any
 

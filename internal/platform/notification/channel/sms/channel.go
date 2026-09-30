@@ -22,6 +22,8 @@ type Channel struct {
 	templateCode  string
 }
 
+var _ contract.Channel = (*Channel)(nil)
+
 // NewChannel 创建短信通知渠道实例。
 func NewChannel(defaultDriver string) *Channel {
 	return &Channel{
@@ -74,7 +76,7 @@ func (c *Channel) Format(n contract.Notification, notifiable any) (any, error) {
 		}
 	}
 
-	return nil, oops.Code("notification_unsupported_sms").
+	return nil, oops.Code(errs.CodeNotificationUnsupportedSMS).
 		With("notification", n).
 		Errorf("notification does not implement sms.Notification or ChannelFormatter")
 }
@@ -89,7 +91,7 @@ func toSMSMessage(raw any) (*Message, error) {
 		msg := NewMessage().WithContent(v)
 		return msg, nil
 	default:
-		return nil, oops.Code("invalid_sms_message").Errorf("unsupported sms message payload type: %T", raw)
+		return nil, oops.Code(errs.CodeInvalidSMSMessage).Errorf("unsupported sms message payload type: %T", raw)
 	}
 }
 
@@ -111,7 +113,7 @@ func (c *Channel) Send(ctx context.Context, notifiable any, message any) error {
 	}
 
 	if msg.PhoneNumber == "" {
-		return oops.Code("sms_missing_phone").Errorf("sms: no phone number found for notifiable")
+		return oops.Code(errs.CodeSMSMissingPhone).Errorf("sms: no phone number found for notifiable")
 	}
 
 	if msg.SignName == "" {
@@ -123,7 +125,7 @@ func (c *Channel) Send(ctx context.Context, notifiable any, message any) error {
 
 	driver := c.Driver()
 	if driver == nil {
-		return oops.Code("sms_driver_not_found").Errorf("sms: default driver %s is not registered", c.defaultDriver)
+		return oops.Code(errs.CodeSMSDriverNotFound).Errorf("sms: default driver %s is not registered", c.defaultDriver)
 	}
 
 	return driver.Send(ctx, msg)
@@ -141,7 +143,7 @@ func (c *Channel) SendOTP(ctx context.Context, phoneNumber string, code string) 
 
 	driver := c.Driver()
 	if driver == nil {
-		return oops.Code("sms_driver_not_found").Errorf("sms: default driver %s is not registered", c.defaultDriver)
+		return oops.Code(errs.CodeSMSDriverNotFound).Errorf("sms: default driver %s is not registered", c.defaultDriver)
 	}
 
 	return driver.Send(ctx, msg)

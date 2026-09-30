@@ -23,3 +23,13 @@
 
 6. **彻底清除遗留依赖 (Complete Cleanup of Legacy Dependencies)**：
    从 `go.mod` 与 `go.sum` 中彻底剔除 `github.com/urfave/cli/v3`，全量单元测试与静态门禁（`just check`）保持 0 报警 0 错误。
+
+## As-built 现状（复核记录）
+
+第 1、5 条在落地过程中与 `AGENTS.md` §1 的现行契约合流，实现形态与原文有出入，**以 AGENTS 为准**：
+
+1. **命名与别名**：命令的 `Use` 直接就是 Artisan 冒号名（`db:migrate`、`queue:work`、`make:crud`…），靠 `GroupID` 在 `--help` 里按命名空间分组；未再引入 `bgin db migrate` 层级父命令，也没有 `Hidden: true` 的重复别名。
+   冒号名是唯一入口——`justfile` 与 `.air.worker.toml` 都直接调用它，再挂一层父命令只会多一份需要同步维护的命令树。
+2. **分组数量与语言**：实际注册 6 个 `cobra.Group`（`db`/`jwt`/`make`/`queue`/`route`/`scout`），而非原文的 4 个中文分组；原文的 4 组已无法覆盖后续新增的 `make`/`route`/`jwt` 命名空间，且分组标题沿用命名空间本身以保证与命令前缀一致。
+
+第 2、3、4、6 条（零包级全局状态与工厂构造、I/O 流解耦、声明式参数校验与错误收敛、剔除 `urfave/cli/v3`）已按原文落地。

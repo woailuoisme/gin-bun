@@ -3,23 +3,17 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"strings"
+	"fmt"
 )
 
 // ErrDisabled 表示全文搜索未启用或未配置服务地址。
 var ErrDisabled = errors.New("search engine is disabled or not configured")
 
-// New 根据配置智能装配具体的底层驱动客户端（支持 meilisearch 与 noop 安全降级）。
+// New 根据配置智能装配具体的底层驱动客户端（支持 meilisearch、noop 及注册的第三方驱动）。
 func New(cfg Config) (Client, error) {
-	if !cfg.Enabled() {
-		return NewNoop(), nil
-	}
-
-	if strings.EqualFold(strings.TrimSpace(cfg.Driver), "meilisearch") {
-		return NewClientFromConfig(cfg)
-	}
-	return NewNoop(), nil
+	return createDriver(cfg)
 }
 
 // SearchOption 定义搜索查询的 Functional Option 函数签名。
@@ -68,6 +62,83 @@ type SearchResult struct {
 	Limit              int64            `json:"limit"`
 	Offset             int64            `json:"offset"`
 	ProcessingTimeMs   int64            `json:"processingTimeMs"`
+}
+
+// TypedSearchResult 封装泛型强类型检索结果，消除中间 map[string]any 二次转换。
+type TypedSearchResult[T any] struct {
+	Hits               []T   `json:"hits"`
+	EstimatedTotalHits int64 `json:"estimatedTotalHits"`
+	Limit              int64 `json:"limit"`
+	Offset             int64 `json:"offset"`
+	ProcessingTimeMs   int64 `json:"processingTimeMs"`
+}
+
+// TypedSearcher 允许驱动原生支持直接解码为目标类型切片，省去中间反射反序列化。
+type TypedSearcher interface {
+	SearchDirect(ctx context.Context, query string, target any, opts ...SearchOption) (*SearchResult, error)
+}
+
+// SearchTyped 执行全文检索并直接解码为强类型结果切片，消除中间 map[string]any 二次转换的开销。
+func SearchTyped[T any](ctx context.Context, idx Index, query string, opts ...SearchOption) (*TypedSearchResult[T], error) {
+	if idx == nil {
+		return &TypedSearchResult[T]{Hits: []T{}}, nil
+	}
+
+	// 1. 若底层索引驱动原生支持直接解码（如 meilisearchIndex），直接借力 SDK 的 JSON 流解码
+	var typedHits []T
+	if ts, ok := idx.(TypedSearcher); ok {
+		baseRes, err := ts.SearchDirect(ctx, query, &typedHits, opts...)
+		if err != nil {
+			return nil, err
+		}
+		if typedHits == nil {
+			typedHits = make([]T, 0)
+		}
+		return &TypedSearchResult[T]{
+			Hits:               typedHits,
+			EstimatedTotalHits: baseRes.EstimatedTotalHits,
+			Limit:              baseRes.Limit,
+			Offset:             baseRes.Offset,
+			ProcessingTimeMs:   baseRes.ProcessingTimeMs,
+		}, nil
+	}
+
+	// 2. 兜底回退：执行通用 Search 并通过 JSON 转换
+	res, err := idx.Search(ctx, query, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	typed, err := DecodeHits[T](res)
+	if err != nil {
+		return nil, err
+	}
+
+	return &TypedSearchResult[T]{
+		Hits:               typed,
+		EstimatedTotalHits: res.EstimatedTotalHits,
+		Limit:              res.Limit,
+		Offset:             res.Offset,
+		ProcessingTimeMs:   res.ProcessingTimeMs,
+	}, nil
+}
+
+// DecodeHits 将通用 SearchResult 中的 map 切片解码为强类型切片。
+func DecodeHits[T any](res *SearchResult) ([]T, error) {
+	if res == nil || len(res.Hits) == 0 {
+		return make([]T, 0), nil
+	}
+
+	data, err := json.Marshal(res.Hits)
+	if err != nil {
+		return nil, fmt.Errorf("search: failed to marshal hits: %w", err)
+	}
+
+	var typed []T
+	if err := json.Unmarshal(data, &typed); err != nil {
+		return nil, fmt.Errorf("search: failed to unmarshal hits to target type: %w", err)
+	}
+	return typed, nil
 }
 
 // Index 定义单个搜索索引的核心操作契约。

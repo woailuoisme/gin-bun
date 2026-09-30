@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"bgin/internal/platform/errs"
 )
@@ -31,10 +32,10 @@ func (m *Middleware) Timeout() gin.HandlerFunc {
 			return
 		}
 		if m.logger != nil {
-			m.logger.Debug().
-				Str("path", c.Request.URL.Path).
-				Str("method", c.Request.Method).
-				Msg("request timed out after partial response")
+			m.logger.Debug("request timed out after partial response",
+				zap.String("path", c.Request.URL.Path),
+				zap.String("method", c.Request.Method),
+			)
 		}
 	}
 }

@@ -9,17 +9,19 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"bgin/internal/config"
+	platformauth "bgin/internal/platform/authentication"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/i18n"
-	"bgin/internal/platform/identity"
 	"bgin/internal/platform/logger"
 	"bgin/internal/platform/mailer"
-	"bgin/internal/platform/token"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/models"
 	shareduser "bgin/internal/shared/user"
@@ -28,7 +30,8 @@ import (
 // Deps 是认证服务所需的依赖，由 main 装配后注入。
 type Deps struct {
 	Repo       *Repository
-	Tokens     *token.Issuer
+	Guard      *platformauth.Guard[*models.User]
+	Tokens     *platformauth.TokenIssuer
 	Hasher     *hasher.Hasher
 	Cache      *cache.Client
 	Mailer     mailer.Mailer
@@ -39,7 +42,7 @@ type Deps struct {
 // Service 实现认证用例。
 type Service struct {
 	repo       *Repository
-	tokens     *token.Issuer
+	guard      *platformauth.Guard[*models.User]
 	hasher     *hasher.Hasher
 	mailer     mailer.Mailer
 	translator *i18n.Translator
@@ -49,9 +52,25 @@ type Service struct {
 
 // NewService 构造认证服务。
 func NewService(deps Deps) *Service {
+	if deps.Repo != nil && deps.Hasher != nil {
+		deps.Repo.WithHasher(deps.Hasher)
+	}
+	guard := deps.Guard
+	if guard == nil && deps.Tokens != nil && deps.Repo != nil {
+		policy := platformauth.PolicyFunc[*models.User](func(ctx context.Context, u *models.User) error {
+			if err := shareduser.GuardState(u); err != nil {
+				return err
+			}
+			if deps.Config != nil && deps.Config.Auth.RequireEmailVerification && !u.EmailVerified {
+				return errs.New(errs.CodeAuthEmailNotVerified, "The email address has not been verified")
+			}
+			return nil
+		})
+		guard = platformauth.NewGuard(deps.Tokens, deps.Repo, policy)
+	}
 	return &Service{
 		repo:       deps.Repo,
-		tokens:     deps.Tokens,
+		guard:      guard,
 		hasher:     deps.Hasher,
 		mailer:     deps.Mailer,
 		translator: deps.Translator,
@@ -59,6 +78,9 @@ func NewService(deps Deps) *Service {
 		verifier:   newVerifier(deps.Repo, deps.Cache, deps.Config),
 	}
 }
+
+// Guard 返回底层 Guard 实例。
+func (s *Service) Guard() *platformauth.Guard[*models.User] { return s.guard }
 
 // SignUpEmail 注册邮箱密码账号，并按 Q15 的约定直接完成登录。
 func (s *Service) SignUpEmail(ctx context.Context, req SignUpEmailRequest) (SessionResponse, error) {
@@ -83,7 +105,7 @@ func (s *Service) SignUpEmail(ctx context.Context, req SignUpEmailRequest) (Sess
 		return SessionResponse{}, shareduser.MapUniqueConflict(err)
 	}
 
-	session, err := s.issueSession(user)
+	session, err := s.issueSession(ctx, user)
 	if err != nil {
 		return SessionResponse{}, err
 	}
@@ -110,79 +132,57 @@ func (s *Service) SignInUsername(ctx context.Context, req SignInUsernameRequest)
 }
 
 // SignOut 作废当前访问令牌；同时传入刷新令牌时一并作废，否则续签通道仍然敞开。
-func (s *Service) SignOut(ctx context.Context, id identity.Identity, req SignOutRequest) error {
-	if err := s.tokens.RevokeByID(ctx, id.TokenID, id.TokenExpiresAt); err != nil {
-		return errs.Internal(err)
+func (s *Service) SignOut(ctx context.Context, req SignOutRequest) error {
+	if req.RefreshToken != nil {
+		return s.guard.Logout(ctx, *req.RefreshToken)
 	}
-
-	if req.RefreshToken == nil || strings.TrimSpace(*req.RefreshToken) == "" {
-		return nil
-	}
-
-	claims := s.parseRefreshToken(strings.TrimSpace(*req.RefreshToken))
-	if claims == nil || claims.Subject != id.UserID {
-		// 刷新令牌已失效或不属于当前用户时静默跳过：访问令牌已经作废，登出目标已达成。
-		logger.FromContext(ctx).Info().Msg("refresh token invalid on logout, skipped")
-		return nil
-	}
-	if err := s.tokens.Revoke(ctx, claims); err != nil {
-		return errs.Internal(err)
-	}
-	return nil
-}
-
-// parseRefreshToken 解析刷新令牌，失败时返回 nil。
-func (s *Service) parseRefreshToken(raw string) *token.Claims {
-	claims, err := s.tokens.Parse(raw, token.TypeRefresh)
-	if err != nil {
-		return nil
-	}
-	return claims
+	return s.guard.Logout(ctx)
 }
 
 // GetSession 返回当前用户。纯只读、不续签，令牌过期即 401（Q13）。
 func (s *Service) GetSession(ctx context.Context, userID string) (GetSessionResponse, error) {
-	user, err := s.repo.FindByID(ctx, userID)
+	user, err := s.guard.UserOrFail(ctx)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return GetSessionResponse{}, errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
+		var loadErr error
+		user, loadErr = s.loadUser(ctx, userID)
+		if loadErr != nil {
+			return GetSessionResponse{}, loadErr
 		}
-		return GetSessionResponse{}, errs.Internal(err)
-	}
-	if err := s.guardAccountState(user); err != nil {
-		return GetSessionResponse{}, err
 	}
 	return GetSessionResponse{User: projectUser(user)}, nil
 }
 
+// loadUser 兜底从数据库加载用户实体并进行状态校验。
+func (s *Service) loadUser(ctx context.Context, userID string) (*models.User, error) {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
+		}
+		return nil, errs.Internal(err)
+	}
+	if err := s.guardAccountState(u); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
 // Refresh 用刷新令牌换取新的一对令牌，旧的刷新令牌立即失效（轮换）。
 func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (SessionResponse, error) {
-	claims, err := s.tokens.Parse(strings.TrimSpace(req.RefreshToken), token.TypeRefresh)
+	user, sess, err := s.guard.Refresh(ctx, req.RefreshToken)
 	if err != nil {
 		return SessionResponse{}, err
 	}
-
-	revoked, err := s.tokens.IsRevoked(ctx, claims.ID)
-	if err != nil {
-		return SessionResponse{}, errs.Internal(err)
-	}
-	if revoked {
-		return SessionResponse{}, errs.Unauthorized(errs.CodeAuthTokenRevoked, "The token has been revoked")
+	if err := s.guardAccountState(user); err != nil {
+		return SessionResponse{}, err
 	}
 
-	user, err := s.repo.FindByID(ctx, claims.Subject)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return SessionResponse{}, errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
-		}
-		return SessionResponse{}, errs.Internal(err)
-	}
-
-	if err := s.tokens.Revoke(ctx, claims); err != nil {
-		return SessionResponse{}, errs.Internal(err)
-	}
-	// 角色取库里最新值而非旧令牌声明，因此改角色在续签时自动生效。
-	return s.issueSession(user)
+	return SessionResponse{
+		Token:        sess.Token,
+		RefreshToken: sess.RefreshToken,
+		ExpiresIn:    sess.ExpiresIn,
+		User:         projectUser(user),
+	}, nil
 }
 
 // ChangePassword 校验当前口令后写入新口令。
@@ -217,6 +217,8 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, req ChangeP
 	if err := s.repo.UpdatePassword(ctx, userID, hash); err != nil {
 		return errs.Internal(err)
 	}
+	// 密码变更成功后作废该用户在此之前签发的所有会话令牌
+	_ = s.guard.InvalidateAll(ctx, userID)
 	return nil
 }
 
@@ -251,6 +253,8 @@ func (s *Service) ResetPassword(ctx context.Context, req ResetPasswordRequest) (
 		}
 		return StatusResponse{}, errs.Internal(err)
 	}
+	// 重置密码成功后作废该用户在此之前签发的所有会话令牌
+	_ = s.guard.InvalidateAll(ctx, user.ID)
 	return StatusResponse{Status: true}, nil
 }
 
@@ -260,7 +264,7 @@ func (s *Service) SendVerificationOTP(ctx context.Context, language string, req 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// 静默成功：不向未认证调用方暴露邮箱是否已注册。
-			logger.FromContext(ctx).Info().Msg("verification requested for non-existent email, ignored")
+			logger.FromContext(ctx).Info("verification requested for non-existent email, ignored")
 			return StatusResponse{Status: true}, nil
 		}
 		return StatusResponse{}, errs.Internal(err)
@@ -309,18 +313,18 @@ const (
 
 // signInWithCredentials 校验本地密码凭据并签发令牌。
 func (s *Service) signInWithCredentials(ctx context.Context, user *models.User, password string) (SessionResponse, error) {
-	account, err := s.repo.FindCredentialAccount(ctx, user.ID)
+	pwdHash, err := s.repo.FindCredentialPassword(ctx, user.ID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SessionResponse{}, errs.InvalidCredentials()
 		}
 		return SessionResponse{}, errs.Internal(err)
 	}
-	if account.Password == nil {
+	if pwdHash == nil || *pwdHash == "" {
 		return SessionResponse{}, errs.InvalidCredentials()
 	}
 
-	matched, err := s.hasher.Check(*account.Password, password)
+	matched, err := s.hasher.Check(*pwdHash, password)
 	if err != nil {
 		return SessionResponse{}, errs.Internal(err)
 	}
@@ -328,7 +332,7 @@ func (s *Service) signInWithCredentials(ctx context.Context, user *models.User, 
 		return SessionResponse{}, errs.InvalidCredentials()
 	}
 
-	session, err := s.issueSession(user)
+	session, err := s.issueSession(ctx, user)
 	if err != nil {
 		return SessionResponse{}, err
 	}
@@ -337,31 +341,28 @@ func (s *Service) signInWithCredentials(ctx context.Context, user *models.User, 
 }
 
 // issueSession 校验账号状态后签发双令牌并组装响应体，不写库。
-func (s *Service) issueSession(user *models.User) (SessionResponse, error) {
+func (s *Service) issueSession(ctx context.Context, user *models.User) (SessionResponse, error) {
 	if err := s.guardAccountState(user); err != nil {
 		return SessionResponse{}, err
 	}
 
-	pair, err := s.tokens.Issue(user.ID, user.Role)
+	sess, err := s.guard.Login(ctx, user)
 	if err != nil {
-		return SessionResponse{}, errs.Internal(err)
+		return SessionResponse{}, err
 	}
 
 	return SessionResponse{
-		Token:        pair.AccessToken,
-		RefreshToken: pair.RefreshToken,
-		ExpiresIn:    int(time.Until(pair.AccessExpiresAt).Seconds()),
+		Token:        sess.Token,
+		RefreshToken: sess.RefreshToken,
+		ExpiresIn:    sess.ExpiresIn,
 		User:         projectUser(user),
 	}, nil
 }
 
 // guardAccountState 拒绝封禁、未激活与（开启开关时）未验证邮箱的账号。
 func (s *Service) guardAccountState(user *models.User) error {
-	if user.IsBanned(time.Now().UTC()) || user.Status == models.StatusBanned {
-		return errs.New(errs.CodeAuthAccountBanned, "The account has been banned")
-	}
-	if user.Status != models.StatusActive {
-		return errs.Forbidden("The account is not active")
+	if err := shareduser.GuardState(user); err != nil {
+		return err
 	}
 	if s.cfg.Auth.RequireEmailVerification && !user.EmailVerified {
 		return errs.New(errs.CodeAuthEmailNotVerified, "The email address has not been verified")
@@ -372,16 +373,37 @@ func (s *Service) guardAccountState(user *models.User) error {
 // translateLookupFailure 把"账号不存在"统一翻译为凭证错误，避免泄漏账号是否存在。
 func (s *Service) translateLookupFailure(ctx context.Context, err error, identifier string) error {
 	if errors.Is(err, sql.ErrNoRows) {
-		logger.FromContext(ctx).Info().Str("identifier", identifier).Msg("login failed: account not found")
+		s.equaliseLookupTiming(identifier)
+		logger.FromContext(ctx).Info("login failed: account not found", zap.String("identifier", identifier))
 		return errs.InvalidCredentials()
 	}
 	return errs.Internal(err)
 }
 
+// dummyPasswordHash 是时序对齐用的固定哈希载荷，进程内只生成一次。
+var dummyPasswordHash = sync.OnceValue(func() string {
+	encoded, err := hasher.New().Make("bgin-login-timing-equaliser")
+	if err != nil {
+		return ""
+	}
+	return encoded
+})
+
+// equaliseLookupTiming 在账号不存在时补做一次等价的口令校验。
+// "密码错误"路径会执行 Argon2 校验而本路径不会，响应时间差足以枚举账号是否存在。
+func (s *Service) equaliseLookupTiming(identifier string) {
+	if s.hasher == nil {
+		return
+	}
+	if encoded := dummyPasswordHash(); encoded != "" {
+		_, _ = s.hasher.Check(encoded, identifier)
+	}
+}
+
 // recordLogin 记录最近登录信息；失败不影响登录本身。
 func (s *Service) recordLogin(ctx context.Context, userID, method string) {
 	if err := s.repo.RecordLogin(ctx, userID, method); err != nil {
-		logger.FromContext(ctx).Warn().Err(err).Str("user_id", userID).Msg("failed to record last login")
+		logger.FromContext(ctx).Warn("failed to record last login", zap.Error(err), zap.String("user_id", userID))
 	}
 }
 
@@ -390,7 +412,7 @@ func (s *Service) sendResetCredential(ctx context.Context, language, purpose, em
 	user, err := s.repo.FindByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			logger.FromContext(ctx).Info().Msg("password reset requested for non-existent email, ignored")
+			logger.FromContext(ctx).Info("password reset requested for non-existent email, ignored")
 			return StatusResponse{Status: true}, nil
 		}
 		return StatusResponse{}, errs.Internal(err)

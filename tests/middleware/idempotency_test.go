@@ -16,9 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/middleware"
+	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/errs"
-	"bgin/internal/platform/identity"
 )
 
 // memStore 是用于单元测试的内存级 IdempotencyStore 实现。
@@ -349,14 +349,14 @@ func TestIdempotency_UserScopeIsolation(t *testing.T) {
 	// 模拟认证中间件：从 Header 取 X-Test-User-ID 注入 Identity 上下文
 	r.Use(func(c *gin.Context) {
 		if uid := c.GetHeader("X-Test-User-ID"); uid != "" {
-			c.Request = c.Request.WithContext(identity.With(c.Request.Context(), identity.Identity{UserID: uid}))
+			c.Request = c.Request.WithContext(authentication.With(c.Request.Context(), authentication.Identity{UserID: uid}))
 		}
 		c.Next()
 	})
 	r.Use(middleware.NewIdempotency(store))
 
 	r.POST("/user-actions", func(c *gin.Context) {
-		id, _ := identity.FromContext(c.Request.Context())
+		id, _ := authentication.FromContext(c.Request.Context())
 		c.JSON(http.StatusOK, gin.H{"actor": id.UserID})
 	})
 

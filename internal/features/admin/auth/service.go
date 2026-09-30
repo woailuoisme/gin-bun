@@ -4,14 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
-	"time"
 
+	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/hasher"
-	"bgin/internal/platform/identity"
-	"bgin/internal/platform/logger"
-	"bgin/internal/platform/token"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
 	"bgin/internal/shared/models"
@@ -21,180 +17,108 @@ import (
 // Deps 声明管理员认证服务的外部依赖。
 type Deps struct {
 	Repo   Repository
-	Tokens *token.Issuer
+	Guard  *authentication.Guard[*models.User]
+	Tokens *authentication.TokenIssuer
 	Hasher *hasher.Hasher
 }
 
 // Service 实现后台管理员认证的业务逻辑。
 type Service struct {
 	repo   Repository
-	tokens *token.Issuer
+	guard  *authentication.Guard[*models.User]
 	hasher *hasher.Hasher
 }
 
 // NewService 构造 Service。
 func NewService(deps Deps) *Service {
+	guard := deps.Guard
+	if guard == nil && deps.Tokens != nil && deps.Repo != nil {
+		guard = authentication.NewGuard(deps.Tokens, deps.Repo, shareduser.AdminPolicy{})
+	}
 	return &Service{
 		repo:   deps.Repo,
-		tokens: deps.Tokens,
+		guard:  guard,
 		hasher: deps.Hasher,
 	}
 }
 
+// Guard 返回底层 Guard 实例。
+func (s *Service) Guard() *authentication.Guard[*models.User] { return s.guard }
+
 // SignInEmail 管理员邮箱密码登录。
 func (s *Service) SignInEmail(ctx context.Context, req SignInEmailRequest) (SessionResponse, error) {
-	user, err := s.repo.FindByEmail(ctx, req.Email)
+	user, sess, err := s.guard.Attempt(ctx, authentication.Credentials{
+		Account:  req.Email,
+		Password: req.Password,
+	})
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			logger.FromContext(ctx).Info().Str("email", req.Email).Msg("admin login failed: account not found")
+		if errors.Is(err, shareduser.ErrRoleRestricted) {
 			return SessionResponse{}, errs.InvalidCredentials()
 		}
-		return SessionResponse{}, errs.Internal(err)
-	}
-
-	// 权限角色门禁：非系统管理员一律返回凭据错误，防止账号角色与存在性枚举。
-	if user.Role != string(enums.RoleAdmin) {
-		logger.FromContext(ctx).Warn().Str("email", req.Email).Str("role", user.Role).Msg("non-admin account attempted admin login")
-		return SessionResponse{}, errs.InvalidCredentials()
-	}
-
-	// 账号封禁与活跃状态拦截。
-	if err := s.guardAccountState(user); err != nil {
 		return SessionResponse{}, err
 	}
 
-	account, err := s.repo.FindCredentialAccount(ctx, user.ID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return SessionResponse{}, errs.InvalidCredentials()
-		}
-		return SessionResponse{}, errs.Internal(err)
-	}
-	if account.Password == nil {
-		return SessionResponse{}, errs.InvalidCredentials()
-	}
-
-	matched, err := s.hasher.Check(*account.Password, req.Password)
-	if err != nil {
-		return SessionResponse{}, errs.Internal(err)
-	}
-	if !matched {
-		return SessionResponse{}, errs.InvalidCredentials()
-	}
-
-	pair, err := s.tokens.Issue(user.ID, user.Role)
-	if err != nil {
-		return SessionResponse{}, errs.Internal(err)
-	}
-
-	s.recordLogin(ctx, user.ID, string(enums.ProviderCredential))
-
 	return SessionResponse{
-		Token:        pair.AccessToken,
-		RefreshToken: pair.RefreshToken,
-		ExpiresIn:    int(time.Until(pair.AccessExpiresAt).Seconds()),
+		Token:        sess.Token,
+		RefreshToken: sess.RefreshToken,
+		ExpiresIn:    sess.ExpiresIn,
 		User:         shareduser.ProjectProfile(user),
 	}, nil
 }
 
 // GetSession 获取当前有效会话的管理员资料。
 func (s *Service) GetSession(ctx context.Context, userID string) (GetSessionResponse, error) {
-	user, err := s.repo.FindByID(ctx, userID)
+	user, err := s.guard.UserOrFail(ctx)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return GetSessionResponse{}, errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
+		var loadErr error
+		user, loadErr = s.loadAdmin(ctx, userID)
+		if loadErr != nil {
+			return GetSessionResponse{}, loadErr
 		}
-		return GetSessionResponse{}, errs.Internal(err)
-	}
-
-	if user.Role != string(enums.RoleAdmin) {
-		return GetSessionResponse{}, errs.Forbidden("Access restricted to administrators")
-	}
-
-	if err := s.guardAccountState(user); err != nil {
-		return GetSessionResponse{}, err
 	}
 
 	return GetSessionResponse{User: shareduser.ProjectProfile(user)}, nil
 }
 
-// Refresh 刷新管理员双令牌，实现令牌轮换。
-func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (SessionResponse, error) {
-	claims, err := s.tokens.Parse(strings.TrimSpace(req.RefreshToken), token.TypeRefresh)
-	if err != nil {
-		return SessionResponse{}, err
-	}
-
-	revoked, err := s.tokens.IsRevoked(ctx, claims.ID)
-	if err != nil {
-		return SessionResponse{}, errs.Internal(err)
-	}
-	if revoked {
-		return SessionResponse{}, errs.Unauthorized(errs.CodeAuthTokenRevoked, "The token has been revoked")
-	}
-
-	user, err := s.repo.FindByID(ctx, claims.Subject)
+// loadAdmin 兜底从数据库加载管理员实体并进行状态校验。
+func (s *Service) loadAdmin(ctx context.Context, userID string) (*models.User, error) {
+	u, err := s.repo.FindByID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return SessionResponse{}, errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
+			return nil, errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
 		}
-		return SessionResponse{}, errs.Internal(err)
+		return nil, errs.Internal(err)
 	}
-
-	if user.Role != string(enums.RoleAdmin) {
-		return SessionResponse{}, errs.Forbidden("Access restricted to administrators")
+	if u.Role != string(enums.RoleAdmin) {
+		return nil, errs.Forbidden("Access restricted to administrators")
 	}
-
-	if err := s.guardAccountState(user); err != nil {
-		return SessionResponse{}, err
+	if err := shareduser.GuardState(u); err != nil {
+		return nil, err
 	}
+	return u, nil
+}
 
-	if err := s.tokens.Revoke(ctx, claims); err != nil {
-		return SessionResponse{}, errs.Internal(err)
-	}
-
-	pair, err := s.tokens.Issue(user.ID, user.Role)
+// Refresh 刷新管理员双令牌，实现令牌轮换。
+func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (SessionResponse, error) {
+	user, sess, err := s.guard.Refresh(ctx, req.RefreshToken)
 	if err != nil {
-		return SessionResponse{}, errs.Internal(err)
+		return SessionResponse{}, err
 	}
 
 	return SessionResponse{
-		Token:        pair.AccessToken,
-		RefreshToken: pair.RefreshToken,
-		ExpiresIn:    int(time.Until(pair.AccessExpiresAt).Seconds()),
+		Token:        sess.Token,
+		RefreshToken: sess.RefreshToken,
+		ExpiresIn:    sess.ExpiresIn,
 		User:         shareduser.ProjectProfile(user),
 	}, nil
 }
 
 // SignOut 登出并作废当前管理员访问令牌与可选的刷新令牌。
-func (s *Service) SignOut(ctx context.Context, id identity.Identity, req SignOutRequest) error {
-	if err := s.tokens.RevokeByID(ctx, id.TokenID, id.TokenExpiresAt); err != nil {
-		return errs.Internal(err)
+func (s *Service) SignOut(ctx context.Context, req SignOutRequest) error {
+	if req.RefreshToken != nil {
+		return s.guard.Logout(ctx, *req.RefreshToken)
 	}
-
-	if req.RefreshToken == nil || strings.TrimSpace(*req.RefreshToken) == "" {
-		return nil
-	}
-
-	claims := s.parseRefreshToken(strings.TrimSpace(*req.RefreshToken))
-	if claims == nil || claims.Subject != id.UserID {
-		logger.FromContext(ctx).Info().Msg("refresh token invalid or mismatched on logout, skipped")
-		return nil
-	}
-
-	if err := s.tokens.Revoke(ctx, claims); err != nil {
-		return errs.Internal(err)
-	}
-	return nil
-}
-
-// parseRefreshToken 解析刷新令牌，失败时返回 nil。
-func (s *Service) parseRefreshToken(raw string) *token.Claims {
-	claims, err := s.tokens.Parse(raw, token.TypeRefresh)
-	if err != nil {
-		return nil
-	}
-	return claims
+	return s.guard.Logout(ctx)
 }
 
 // ChangePassword 修改当前管理员登录密码。
@@ -203,19 +127,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, req ChangeP
 		return err
 	}
 
-	user, err := s.repo.FindByID(ctx, userID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
-		}
-		return errs.Internal(err)
-	}
-
-	if user.Role != string(enums.RoleAdmin) {
-		return errs.Forbidden("Access restricted to administrators")
-	}
-
-	if err := s.guardAccountState(user); err != nil {
+	if _, err := s.loadAdmin(ctx, userID); err != nil {
 		return err
 	}
 
@@ -246,23 +158,8 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, req ChangeP
 	if err := s.repo.UpdatePassword(ctx, userID, hash); err != nil {
 		return errs.Internal(err)
 	}
-	return nil
-}
 
-// guardAccountState 检查账号封禁与活跃状态。
-func (s *Service) guardAccountState(user *models.User) error {
-	if user.IsBanned(time.Now().UTC()) || user.Status == string(enums.StatusBanned) {
-		return errs.New(errs.CodeAuthAccountBanned, "The account has been banned")
-	}
-	if user.Status != string(enums.StatusActive) {
-		return errs.Forbidden("The account is not active")
-	}
+	// 密码变更成功后作废该管理员在此之前签发的所有会话令牌
+	_ = s.guard.InvalidateAll(ctx, userID)
 	return nil
-}
-
-// recordLogin 记录最近登录信息；失败不影响登录本身。
-func (s *Service) recordLogin(ctx context.Context, userID, method string) {
-	if err := s.repo.RecordLogin(ctx, userID, method); err != nil {
-		logger.FromContext(ctx).Warn().Err(err).Str("user_id", userID).Msg("failed to record admin login metadata")
-	}
 }

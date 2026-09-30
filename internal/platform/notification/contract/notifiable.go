@@ -64,6 +64,8 @@ type Recipient struct {
 	routes map[string]string
 }
 
+var _ Notifiable = (*Recipient)(nil)
+
 // NewRecipient 创建具备指定 ID 与类型的通知接收者。
 func NewRecipient(id string, notifiableType string) *Recipient {
 	if notifiableType == "" {
@@ -142,6 +144,8 @@ type routeForChat interface {
 type adaptedNotifiable struct {
 	raw any
 }
+
+var _ Notifiable = (*adaptedNotifiable)(nil)
 
 func (a *adaptedNotifiable) GetNotifiableID() string {
 	if a.raw == nil {

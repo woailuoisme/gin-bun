@@ -3,6 +3,7 @@
 package money
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 )
@@ -72,16 +73,26 @@ func GetCurrency(code string) (Currency, bool) {
 	return c, ok
 }
 
-// MustGetCurrency 获取货币元数据，若未注册则返回默认 2 位小数的轻量 Currency。
+// ResolveCurrency 严格解析已注册的货币元数据。
+// 代码为空或未注册时返回 ErrUnknownCurrency——金融场景绝不静默捏造一个币种，
+// 否则一次拼写错误（如 "USDD"）会以错误的精度参与后续全部计算。
+func ResolveCurrency(code string) (Currency, error) {
+	normalised := strings.ToUpper(strings.TrimSpace(code))
+	if normalised == "" {
+		return Currency{}, ErrUnknownCurrency
+	}
+	c, ok := GetCurrency(normalised)
+	if !ok {
+		return Currency{}, fmt.Errorf("%w: %s (register it via RegisterCurrency first)", ErrUnknownCurrency, normalised)
+	}
+	return c, nil
+}
+
+// MustGetCurrency 获取已注册币种元数据，未注册时 panic（遵循 Go 的 Must* 约定）。
 func MustGetCurrency(code string) Currency {
-	if c, ok := GetCurrency(code); ok {
-		return c
+	c, err := ResolveCurrency(code)
+	if err != nil {
+		panic(err)
 	}
-	upper := strings.ToUpper(strings.TrimSpace(code))
-	return Currency{
-		Code:     upper,
-		Fraction: 2,
-		Symbol:   upper,
-		Name:     upper,
-	}
+	return c
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/redis/rueidis"
+	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 
 	"bgin/internal/config"
@@ -196,6 +197,18 @@ func (c *Client) Increment(ctx context.Context, key string, ttl time.Duration) (
 	return resp.AsInt64()
 }
 
+// DeleteIfMatch 仅当键的当前值等于 expected 时原子删除该键，返回是否真正删除。
+//
+// 用于分布式锁的安全释放：若持有者的 TTL 已到期、锁被他人重新获取，
+// 无条件 DEL 会误删他人的锁，造成互斥同时失效。
+func (c *Client) DeleteIfMatch(ctx context.Context, key, expected string) (bool, error) {
+	deleted, err := unlockScript.Exec(ctx, c.rdb, []string{key}, []string{expected}).AsInt64()
+	if err != nil {
+		return false, err
+	}
+	return deleted > 0, nil
+}
+
 // TTL 返回键的剩余寿命：键不存在时返回 0，键存在但没有过期时间时返回 -1s。
 func (c *Client) TTL(ctx context.Context, key string) (time.Duration, error) {
 	seconds, err := c.do(ctx, c.rdb.B().Ttl().Key(key).Build()).AsInt64()
@@ -257,7 +270,9 @@ func (c *Client) Remember(
 		}
 
 		if err := c.Set(fillCtx, key, loaded, ttl); err != nil {
-			logger.FromContext(fillCtx).Warn().Err(err).Str("key", key).Msg("failed to write origin data to cache")
+			logger.FromContext(fillCtx).Warn("failed to write origin data to cache",
+				zap.Error(err),
+				zap.String("key", key))
 		}
 		return loaded, nil
 	})
@@ -287,4 +302,12 @@ if count == 1 then
   redis.call('EXPIRE', KEYS[1], ARGV[1])
 end
 return count
+`)
+
+// unlockScript 保证"比对持有者后再删除"原子完成。
+var unlockScript = rueidis.NewLuaScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
 `)

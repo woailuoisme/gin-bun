@@ -2,18 +2,19 @@
 package eventbus
 
 import (
-	"github.com/rs/zerolog"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 )
 
 // RegisterEventBus 依据全局配置与日志器实例化事件总线管理器。
-func RegisterEventBus(cfg *config.Config, log zerolog.Logger, opts ...Option) (*Manager, error) {
+func RegisterEventBus(cfg *config.Config, log *zap.Logger, opts ...Option) (*Manager, error) {
 	if cfg == nil {
 		return NewManager(config.EventBusConfig{
 			Driver:      DriverGoChannel,
 			TopicPrefix: "bgin",
 			LogLevel:    "warn",
+			BufferSize:  2048,
 		}, log, opts...)
 	}
 	return NewManager(cfg.EventBus, log, opts...)

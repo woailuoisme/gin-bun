@@ -5,61 +5,75 @@ import (
 	"maps"
 
 	"github.com/ThreeDotsLabs/watermill"
-	"github.com/rs/zerolog"
+	"go.uber.org/zap"
 )
 
-// ZerologLoggerAdapter 将系统统一的 zerolog.Logger 适配为 Watermill 的 LoggerAdapter 接口。
-type ZerologLoggerAdapter struct {
-	logger zerolog.Logger
+// ZapLoggerAdapter 将系统统一的 *zap.Logger 适配为 Watermill 的 LoggerAdapter 接口。
+type ZapLoggerAdapter struct {
+	logger *zap.Logger
 	fields watermill.LogFields
 }
 
-// NewZerologLoggerAdapter 创建一个新的 ZerologLoggerAdapter 实例。
-func NewZerologLoggerAdapter(logger zerolog.Logger) *ZerologLoggerAdapter {
-	return &ZerologLoggerAdapter{
+// NewZapLoggerAdapter 创建一个新的 ZapLoggerAdapter 实例。
+func NewZapLoggerAdapter(logger *zap.Logger) *ZapLoggerAdapter {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	return &ZapLoggerAdapter{
 		logger: logger,
 	}
 }
 
-func (a *ZerologLoggerAdapter) log(e *zerolog.Event, msg string, fields watermill.LogFields) {
+func (a *ZapLoggerAdapter) toZapFields(fields watermill.LogFields, err error) []zap.Field {
+	count := len(a.fields) + len(fields)
+	if err != nil {
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	out := make([]zap.Field, 0, count)
+	if err != nil {
+		out = append(out, zap.Error(err))
+	}
 	for k, v := range a.fields {
-		e.Interface(k, v)
+		out = append(out, zap.Any(k, v))
 	}
 	for k, v := range fields {
-		e.Interface(k, v)
+		out = append(out, zap.Any(k, v))
 	}
-	e.Msg(msg)
+	return out
 }
 
 // Error 记录错误级别日志。
-func (a *ZerologLoggerAdapter) Error(msg string, err error, fields watermill.LogFields) {
-	a.log(a.logger.Error().Err(err), msg, fields)
+func (a *ZapLoggerAdapter) Error(msg string, err error, fields watermill.LogFields) {
+	a.logger.Error(msg, a.toZapFields(fields, err)...)
 }
 
 // Info 记录信息级别日志。
-func (a *ZerologLoggerAdapter) Info(msg string, fields watermill.LogFields) {
-	a.log(a.logger.Info(), msg, fields)
+func (a *ZapLoggerAdapter) Info(msg string, fields watermill.LogFields) {
+	a.logger.Info(msg, a.toZapFields(fields, nil)...)
 }
 
 // Debug 记录调试级别日志。
-func (a *ZerologLoggerAdapter) Debug(msg string, fields watermill.LogFields) {
-	a.log(a.logger.Debug(), msg, fields)
+func (a *ZapLoggerAdapter) Debug(msg string, fields watermill.LogFields) {
+	a.logger.Debug(msg, a.toZapFields(fields, nil)...)
 }
 
 // Trace 记录跟踪级别日志。
-func (a *ZerologLoggerAdapter) Trace(msg string, fields watermill.LogFields) {
-	a.log(a.logger.Trace(), msg, fields)
+func (a *ZapLoggerAdapter) Trace(msg string, fields watermill.LogFields) {
+	a.logger.Debug(msg, a.toZapFields(fields, nil)...)
 }
 
 // With 返回携带指定上下文字段的新适配器实例。
-func (a *ZerologLoggerAdapter) With(fields watermill.LogFields) watermill.LoggerAdapter {
+func (a *ZapLoggerAdapter) With(fields watermill.LogFields) watermill.LoggerAdapter {
 	if len(fields) == 0 {
 		return a
 	}
 	combined := make(watermill.LogFields, len(a.fields)+len(fields))
 	maps.Copy(combined, a.fields)
 	maps.Copy(combined, fields)
-	return &ZerologLoggerAdapter{
+	return &ZapLoggerAdapter{
 		logger: a.logger,
 		fields: combined,
 	}

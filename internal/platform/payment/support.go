@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samber/lo"
+	"github.com/dromara/carbon/v2"
 
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/payment/enums"
@@ -159,10 +160,7 @@ func resolveScenes(raw []string, channel enums.PaymentChannel) (map[enums.Paymen
 
 // sortedScenes 把场景集合展开为按字典序排序的切片，保证对外暴露顺序稳定。
 func sortedScenes(scenes map[enums.PaymentScene]struct{}) []enums.PaymentScene {
-	values := lo.Keys(scenes)
-	slices.Sort(values)
-
-	return values
+	return slices.Sorted(maps.Keys(scenes))
 }
 
 // validateCreate 校验收款创建请求的公共必填项与场景约束。
@@ -173,7 +171,7 @@ func validateCreate(req CreateRequest) error {
 	if strings.TrimSpace(req.OutTradeNo) == "" {
 		return errs.BadRequest("out trade no is required")
 	}
-	if req.Amount <= 0 {
+	if req.EffectiveAmount() <= 0 {
 		return errs.BadRequest("payment amount must be positive")
 	}
 	if strings.TrimSpace(req.Subject) == "" {
@@ -194,10 +192,12 @@ func validateRefund(req RefundRequest) error {
 	if strings.TrimSpace(req.OutRefundNo) == "" {
 		return errs.BadRequest("out refund no is required")
 	}
-	if req.RefundAmount <= 0 {
+	refundAmount := req.EffectiveRefundAmount()
+	if refundAmount <= 0 {
 		return errs.BadRequest("refund amount must be positive")
 	}
-	if req.TotalAmount > 0 && req.RefundAmount > req.TotalAmount {
+	totalAmount := req.EffectiveTotalAmount()
+	if totalAmount > 0 && refundAmount > totalAmount {
 		return errs.BadRequest("refund amount must not exceed total amount")
 	}
 
@@ -268,20 +268,22 @@ func optionalChannelTime(value string) *time.Time {
 
 var channelTimeLayouts = []string{time.RFC3339, channelTimeLayout}
 
-// parseChannelTime 依次尝试渠道可能返回的多种时间格式。
+// parseChannelTime 解析渠道可能返回的多种时间格式。
+//
+// 多布局模糊解析交给 carbon（AGENTS §4.6：非标日期字符串解析统一用 carbon），
+// 解析结果统一归一到 UTC 再落库比对。
 func parseChannelTime(value string) (time.Time, bool) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return time.Time{}, false
 	}
 
-	for _, layout := range channelTimeLayouts {
-		if parsed, err := time.Parse(layout, trimmed); err == nil {
-			return parsed.UTC(), true
-		}
+	parsed := carbon.ParseByLayouts(trimmed, channelTimeLayouts)
+	if !parsed.IsValid() {
+		return time.Time{}, false
 	}
 
-	return time.Time{}, false
+	return parsed.StdTime().UTC(), true
 }
 
 // truncateForLog 截断过长的渠道错误原文，防止日志被大报文冲垮。

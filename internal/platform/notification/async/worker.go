@@ -7,6 +7,8 @@ import (
 	"runtime/debug"
 	"sync"
 
+	"go.uber.org/zap"
+
 	"bgin/internal/platform/logger"
 )
 
@@ -71,7 +73,8 @@ func (p *Pool) Submit(ctx context.Context, task Task) error {
 
 	// 用闭包承载基上下文与 panic 兜底，而不是把它们塞进队列元素的结构体里：
 	// 上下文属于单次调用的作用域，不应成为跨 goroutine 传递的共享字段。
-	job := func(context.Context) {
+	// 形参刻意忽略：Task 的 ctx 由池在提交时刻派生（见上），执行期没有第二个上下文可选。
+	job := func(_ context.Context) {
 		defer recoverWithLog(baseCtx)
 		task(baseCtx)
 	}
@@ -115,9 +118,8 @@ func (p *Pool) worker() {
 // recoverWithLog 捕获任务执行中的异常防止 Worker 崩溃，并用任务自身的上下文记录堆栈。
 func recoverWithLog(ctx context.Context) {
 	if r := recover(); r != nil {
-		logger.FromContext(ctx).Error().
-			Interface("panic", r).
-			Str("stack", string(debug.Stack())).
-			Msg("panic recovered in async notification task execution")
+		logger.FromContext(ctx).Error("panic recovered in async notification task execution",
+			zap.Any("panic", r),
+			zap.String("stack", string(debug.Stack())))
 	}
 }

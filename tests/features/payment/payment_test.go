@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	featurePayment "bgin/internal/features/payment"
@@ -36,10 +36,10 @@ func setupPaymentTest(t *testing.T) (*gin.Engine, *featurePayment.Service, *plat
 		},
 	}
 
-	mgr, err := platformPayment.NewManager(cfg, zerolog.Nop())
+	mgr, err := platformPayment.NewManager(cfg, zap.NewNop())
 	require.NoError(t, err)
 
-	svc := featurePayment.NewService(mgr, nil, cfg)
+	svc := featurePayment.NewService(mgr, nil, cfg, nil)
 	handler := featurePayment.NewHandler(svc)
 
 	engine := gin.New()
@@ -203,7 +203,9 @@ func TestHandleNotification_AlipayPaymentSuccess(t *testing.T) {
 }
 
 func TestHandleNotification_CustomAppKey(t *testing.T) {
-	engine, _, mgr := setupPaymentTest(t)
+	engine, svc, mgr := setupPaymentTest(t)
+	// 默认回调处理器会失败关闭（未接线业务时不得回执成功），本用例聚焦 app 参数路由，故注入记录器。
+	svc.SetCallbackHandler(&recordingCallbackHandler{})
 	fake := getFakeProvider(t, mgr, enums.PaymentChannelWechat)
 
 	fake.QueueNotification(&platformPayment.Notification{
@@ -377,7 +379,7 @@ func TestHandleNotification_GatewayNotInitialized(t *testing.T) {
 		App: config.AppConfig{URL: "https://shop.example.com"},
 	}
 	// paymentManager 为 nil
-	svc := featurePayment.NewService(nil, nil, cfg)
+	svc := featurePayment.NewService(nil, nil, cfg, nil)
 	handler := featurePayment.NewHandler(svc)
 
 	engine := gin.New()

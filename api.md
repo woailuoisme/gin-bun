@@ -168,7 +168,7 @@ Authorization: Bearer <your_access_token>
 | **`404`** | `NOT_FOUND`             | 请求的资源或 URI 不存在            |
 | **`405`** | `METHOD_NOT_ALLOWED`    | 请求的 HTTP 方法不受支持          |
 | **`409`** | `CONFLICT` 等            | 资源状态冲突（如唯一键重复）            |
-| **`413`** | `REQUEST_TOO_LARGE`     | 请求体超过服务端上限（1 MiB）      |
+| **`413`** | `REQUEST_TOO_LARGE`     | 请求体超过服务端上限（普通请求 1 MiB；multipart 上传按 `MEDIA_MAX_FILE_SIZE`） |
 | **`422`** | `VALIDATION_FAILED` 等   | 请求体字段语义或参数验证规则校验失败        |
 | **`429`** | `RATE_LIMITED`          | 请求频率超出速率配额限制              |
 | **`500`** | `INTERNAL_SERVER_ERROR` | 服务器内部异常，未捕获错误统一转为通用提示     |
@@ -313,7 +313,7 @@ Location: /{version}/tasks/<task_id>
 | `FORBIDDEN`                 |  403   | 凭证有效但无权执行该操作                             |
 | `CONFLICT`                  |  409   | 资源状态冲突（如唯一键重复）                         |
 | `RATE_LIMITED`              |  429   | 超出速率配额                                         |
-| `REQUEST_TOO_LARGE`         |  413   | 请求体超过服务端上限（1 MiB），重试无用、须改小载荷  |
+| `REQUEST_TOO_LARGE`         |  413   | 请求体超过服务端上限（普通请求 1 MiB、multipart 上传按 `MEDIA_MAX_FILE_SIZE`），重试无用、须改小载荷 |
 | `IDEMPOTENCY_REQUIRED`      |  400   | 该端点要求 `Idempotency-Key` 却未提供                |
 | `IDEMPOTENCY_CONFLICT`      |  409   | 同一幂等键的请求正在处理中，请稍后重试               |
 | `IDEMPOTENCY_MISMATCH`      |  422   | 同一幂等键重复提交但载荷不一致                       |
@@ -335,8 +335,38 @@ Location: /{version}/tasks/<task_id>
 | `AUTH_TOKEN_REVOKED`        |  401   | 令牌已被撤销（例如登出后再次使用）                   |
 | `AUTH_PASSWORD_MISMATCH`    |  422   | 修改口令时当前口令不正确                             |
 | `AUTH_PASSWORD_TOO_WEAK`    |  422   | 新口令不满足强度要求                                 |
+| `EXCEL_FILE_TOO_LARGE`      |  413   | 导入文件超过 `MEDIA_MAX_FILE_SIZE` 或 excel 子系统上限 |
+| `EXCEL_OPEN_ERROR`          |  400   | 导入文件无法被解析为合法工作簿（损坏或格式不符）     |
+| `EXCEL_READ_ERROR`          |  400   | 读取上传流失败（连接中断或中途截断）                 |
+| `EXCEL_MAP_ERROR`           |  422   | 行数据无法映射到目标字段类型                         |
+| `EXCEL_ROWS_ERROR`          |  422   | 工作表行结构不合法（如缺少表头行）                   |
+| `EXCEL_READ_ROW_ERROR`      |  422   | 逐行读取时该行内容不合法                             |
+| `EMPTY_SHEETS`              |  400   | 工作簿内没有任何可导入的工作表                       |
+| `CSV_READ_ERROR`            |  400   | CSV 输入流不合法或无法读取                           |
+| `NOTIFICATION_MISSING_RECIPIENT`    |  400   | 通知未指定接收方实体                         |
+| `NOTIFICATION_MISSING_RECIPIENT_ID` |  400   | 接收方实体缺少有效标识                       |
+| `NOTIFICATION_UNSUPPORTED_SMS`      |  400   | 该通知未实现短信承载方式                     |
+| `NOTIFICATION_UNSUPPORTED_MAIL`     |  400   | 该通知未实现邮件承载方式                     |
+| `NOTIFICATION_UNSUPPORTED_DATABASE` |  400   | 该通知未实现数据库承载方式                   |
+| `NOTIFICATION_UNSUPPORTED_REALTIME` |  400   | 该通知未实现实时广播承载方式                 |
+| `NOTIFICATION_UNSUPPORTED_GOTIFY`   |  400   | 该通知未实现 Gotify 承载方式                 |
+| `NOTIFICATION_UNSUPPORTED_CHAT`     |  400   | 该通知未实现即时通讯承载方式                 |
+| `NOTIFICATION_CHANNEL_NOT_FOUND`    |  400   | 请求了未注册的通知渠道                       |
+| `NOTIFICATION_RATE_LIMITED`         |  429   | 同一接收方在同一渠道的通知频次超限           |
+| `NOTIFICATION_DEDUPLICATED`         |  409   | 相同幂等键的通知已投递过                     |
+| `MAIL_MISSING_RECIPIENT`    |  400   | 邮件通知未提供收件地址                               |
+| `SMS_MISSING_PHONE`         |  400   | 短信通知未提供手机号                                 |
+| `INVALID_SMS_MESSAGE`       |  400   | 短信载荷缺少模板或参数                               |
+| `INVALID_GOTIFY_MESSAGE`    |  400   | Gotify 载荷缺少必填字段                              |
+| `INVALID_CHAT_MESSAGE`      |  400   | 即时通讯载荷缺少必填字段                             |
+| `PAYMENT_CAPABILITY_NOT_SUPPORTED` |  400   | 该渠道/应用不支持所请求的支付能力            |
+| `DATABASE_UNAVAILABLE`      |  503   | 数据库依赖暂不可用（可重试）                         |
 
 > 本清单与服务端的错误码定义一一对应，新增错误码必须同时更新此处。
+>
+> 服务端内部还有一批"仅用于日志与堆栈定位"的失败码（如 `EXCEL_SPOOL_COPY_ERROR`、
+> `TENCENT_HTTP_ERROR`）。它们**不会**出现在响应体里：这类失败一律按 `500` 返回
+> `INTERNAL_SERVER_ERROR`，原始码只留在服务端日志中。因此上表即客户端可能收到的全部取值。
 
 #### 5. 追踪与重试
 

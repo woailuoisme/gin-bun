@@ -1,14 +1,26 @@
+// Package excel 提供 Excel/CSV 的流式导入导出能力。
+//
+// 导出存在两条互不重叠的入口，按"数据来源是否在编译期已知"二选一：
+//
+//   - 泛型流式入口（stream.go）：ExportSlice / ExportIterator / ExportBuilder / StreamExport，
+//     数据是已定型的内存切片或迭代器，类型在编译期即可校验；
+//   - 反射管道入口（export.go，经 Service 暴露）：导出对象在运行期确定（SQL 游标、分块查询、
+//     动态列与样式），支持多工作表，内存占用与结果集大小无关。
+//
+// 导入统一走 Concern 协议式入口（import.go / stream.go）：实现 ToModel、WithHeadingRow 等标记接口即可。
+// 调用点请勿在同一链路里混用两条导出入口。
 package excel
 
 import (
 	"cmp"
 	"context"
 	"database/sql"
-	"errors"
+	"fmt"
 	"io"
 	"sync"
 
 	"github.com/samber/oops"
+	"github.com/xuri/excelize/v2"
 
 	"bgin/internal/config"
 )
@@ -67,6 +79,41 @@ type WithSheetChunkSize interface {
 	SheetChunkSize() int
 }
 
+// WithMultipleSheets 允许在单个导出工作簿中生成多个子工作表（对应 Laravel-Excel WithMultipleSheets）。
+type WithMultipleSheets interface {
+	ExportConcern
+	Sheets() []any
+}
+
+// WithStyles 允许深度自定义工作簿与工作表样式（对应 Laravel-Excel WithStyles）。
+type WithStyles interface {
+	ExportConcern
+	Styles(f *excelize.File, sheet string) error
+}
+
+// WithHeaderStyle 声明表头是否启用优雅预设样式（粗体、居中、浅灰背景 #F4F5F7、下边框）。
+type WithHeaderStyle interface {
+	ExportConcern
+	HeaderStyle() *excelize.Style
+}
+
+// WithFreezePanes 声明是否冻结表头首行（行号通常为 1 或自定义）。
+type WithFreezePanes interface {
+	ExportConcern
+	FreezePanes() (col int, row int)
+}
+
+// WithColumnFormatting 声明特定列的单元格格式（如 NumberFormat，对应 Laravel-Excel WithColumnFormatting）。
+type WithColumnFormatting interface {
+	ExportConcern
+	ColumnFormats() map[string]string // 例如 map[string]string{"A": "@", "B": "yyyy-mm-dd", "C": "#,##0.00"}
+}
+
+// RawFormula 包装需要作为原始 Excel 公式执行的值，避免被公式注入安全过滤器转义。
+type RawFormula string
+
+// --- 导入 Concerns ---
+
 // ToSlice 声明将解析后的 Excel 数据反序列化到目标切片中。
 type ToSlice interface {
 	ImportConcern
@@ -109,10 +156,12 @@ type BatchInserter interface {
 	InsertBatch(ctx context.Context, batch []any) error
 }
 
-// WithConcurrency 配置多协程并发处理参数。
-type WithConcurrency interface {
-	ImportConcern
-	Concurrency() int
+// FromChunkedQuery 声明支持物理分块/分页查询拉取导出数据。
+// 适用于海量数据导出，分批拉取释放数据库连接与网络缓冲，维持常数级内存。
+type FromChunkedQuery interface {
+	ExportConcern
+	ChunkSize() int
+	FetchChunk(ctx context.Context, offset int, limit int) ([]any, error)
 }
 
 // WithQueueNotification 定义队列异步任务完成或失败时的回调通知接口。
@@ -121,21 +170,87 @@ type WithQueueNotification interface {
 	OnQueueFailure(ctx context.Context, err error) error
 }
 
+// WithEvents 允许导出/导入生命周期事件挂载钩子（如用于后台任务进度上报）。
+type WithEvents interface {
+	OnProgress(processedRows int, totalRows int)
+}
+
+// WithChunkReading 声明分块读取或分批处理时的 Chunk 大小（默认 1000）。
+type WithChunkReading interface {
+	ImportConcern
+	ChunkSize() int
+}
+
+// ToChunk 声明支持分批交付行数据（二维字符串切片），每批交付后底层清空复用切片，保证 O(1) 恒定内存。
+type ToChunk interface {
+	ImportConcern
+	Chunk(ctx context.Context, rows [][]string) error
+}
+
+// RowFailure 记录单行数据在解析或业务校验失败时的上下文信息。
+type RowFailure struct {
+	Row    int      // Excel 文件实际行号（1-based）
+	Values []string // 当前行原始字符串切片
+	Field  string   // 校验失败的具体字段（若有）
+	Error  error    // 具体失败错误原因
+}
+
+func (f RowFailure) String() string {
+	if f.Field != "" {
+		return fmt.Sprintf("row %d [%s]: %v", f.Row, f.Field, f.Error)
+	}
+	return fmt.Sprintf("row %d: %v", f.Row, f.Error)
+}
+
+// SkipsOnFailure 声明在单行解析或校验出错时不熔断中断，而是记录并继续执行（对应 Laravel-Excel SkipsOnFailure）。
+type SkipsOnFailure interface {
+	ImportConcern
+	OnFailure(failure RowFailure)
+}
+
+// WithMultipleSheetsImport 允许为不同工作表分配不同的导入处理器。
+type WithMultipleSheetsImport interface {
+	ImportConcern
+	Sheets() map[string]any
+}
+
+// ImportResult 封装导入操作的统计信息与失败归集列表。
+type ImportResult struct {
+	TotalRows     int          // 总数据行数（不含表头与被跳过的空行）
+	ImportedCount int          // 成功解析/持久化的行数
+	SkippedCount  int          // 跳过的无效/失败行数
+	Failures      []RowFailure // 校验或解析失败记录列表
+}
+
+// HasFailures 检查导入过程中是否产生任何失败记录。
+func (r *ImportResult) HasFailures() bool {
+	return r != nil && len(r.Failures) > 0
+}
+
 // ExportOption 配置导出操作的函数式选项。
 type ExportOption func(*exportConfig)
 
 type exportConfig struct {
-	sheetName      string
-	db             *sql.DB
-	autoWidth      *bool
-	columnWidths   map[string]float64
-	sheetChunkSize int
+	sheetName        string
+	db               *sql.DB
+	autoWidth        *bool
+	columnWidths     map[string]float64
+	sheetChunkSize   int
+	sanitizeFormulas bool
+	headerStyle      *excelize.Style
+	freezePanes      bool
+	columnFormats    map[string]string
+	headings         []string
+	mapping          func(item any) []any
+	maxRows          int
+	onProgress       func(processedRows int)
 }
 
 func newDefaultExportConfig() *exportConfig {
 	return &exportConfig{
-		sheetName:      defaultSheetName,
-		sheetChunkSize: defaultMaxRowsPerSheet,
+		sheetName:        defaultSheetName,
+		sheetChunkSize:   defaultMaxRowsPerSheet,
+		sanitizeFormulas: true, // 默认开启 CWE-1236 公式注入防御
 	}
 }
 
@@ -178,20 +293,96 @@ func WithMaxRowsPerSheet(size int) ExportOption {
 	}
 }
 
+// WithSanitizeFormulas 配置是否对单元格字符串前缀执行公式转义（防注入）。
+func WithSanitizeFormulas(sanitize bool) ExportOption {
+	return func(c *exportConfig) {
+		c.sanitizeFormulas = sanitize
+	}
+}
+
+// WithHeaderStyleOption 为表头启用或配置自定义样式。
+func WithHeaderStyleOption(style *excelize.Style) ExportOption {
+	return func(c *exportConfig) {
+		c.headerStyle = style
+	}
+}
+
+// WithFreezeHeader 配置是否自动冻结表头首行。
+func WithFreezeHeader(freeze bool) ExportOption {
+	return func(c *exportConfig) {
+		c.freezePanes = freeze
+	}
+}
+
+// WithColumnFormatsOption 配置特定列的 NumberFormat 样式。
+func WithColumnFormatsOption(formats map[string]string) ExportOption {
+	return func(c *exportConfig) {
+		c.columnFormats = formats
+	}
+}
+
+// WithHeadingsOption 显式指定表头切片。
+func WithHeadingsOption(headings ...string) ExportOption {
+	return func(c *exportConfig) {
+		c.headings = headings
+	}
+}
+
+// WithMappingOption 显式指定行数据映射函数。
+func WithMappingOption(fn func(item any) []any) ExportOption {
+	return func(c *exportConfig) {
+		c.mapping = fn
+	}
+}
+
+// WithMaxExportRows 设置最大允许导出的数据行数上限（防御恶意或无限制全表拖库）。
+func WithMaxExportRows(max int) ExportOption {
+	return func(c *exportConfig) {
+		if max > 0 {
+			c.maxRows = max
+		}
+	}
+}
+
+// WithExportProgress 注册导出进度回调函数。
+func WithExportProgress(fn func(processedRows int)) ExportOption {
+	return func(c *exportConfig) {
+		c.onProgress = fn
+	}
+}
+
+const (
+	defaultMemorySpoolThreshold = 10 * 1024 * 1024  // 10MB: 小于 10MB 内存处理，大于 10MB 自动溢出到磁盘临时文件
+	defaultMaxFileSize          = 50 * 1024 * 1024  // 50MB: 上传文件物理大小上限
+	defaultUnzipSizeLimit       = 256 * 1024 * 1024 // 256MB: 解压安全上限（防止 Zip Bomb / XML Entity Expansion）
+	defaultUnzipXMLSizeLimit    = 256 * 1024 * 1024 // 256MB: XML 单文件解压上限
+	defaultChunkSize            = 1000              // 默认批次大小
+)
+
 // ImportOption 配置导入操作的函数式选项。
 type ImportOption func(*importConfig)
 
 type importConfig struct {
-	sheetName       string
-	headerRowIndex  int
-	skipInvalidRows bool
-	batchSize       int
+	sheetName            string
+	headerRowIndex       int
+	skipInvalidRows      bool
+	batchSize            int
+	maxRows              int
+	maxFileSize          int64
+	memorySpoolThreshold int64
+	unzipSizeLimit       int64
+	unzipXMLSizeLimit    int64
+	onProgress           func(processedRows int, totalRows int)
 }
 
 func newDefaultImportConfig() *importConfig {
 	return &importConfig{
-		sheetName:      defaultSheetName,
-		headerRowIndex: 1,
+		sheetName:            defaultSheetName,
+		headerRowIndex:       1,
+		maxFileSize:          defaultMaxFileSize,
+		memorySpoolThreshold: defaultMemorySpoolThreshold,
+		unzipSizeLimit:       defaultUnzipSizeLimit,
+		unzipXMLSizeLimit:    defaultUnzipXMLSizeLimit,
 	}
 }
 
@@ -213,7 +404,7 @@ func WithHeadingRowIndex(idx int) ImportOption {
 	}
 }
 
-// WithSkipInvalidRows 设置是否跳过无效或校验失败的数据行。
+// WithSkipInvalidRows 设置是否跳过无效或校验失败的数据行（收集至 ImportResult）。
 func WithSkipInvalidRows(skip bool) ImportOption {
 	return func(c *importConfig) {
 		c.skipInvalidRows = skip
@@ -226,6 +417,58 @@ func WithImportBatchSize(size int) ImportOption {
 		if size > 0 {
 			c.batchSize = size
 		}
+	}
+}
+
+// WithMaxImportRows 设置最大允许解析的数据行数限制（防御过大文件内存耗尽）。
+func WithMaxImportRows(max int) ImportOption {
+	return func(c *importConfig) {
+		if max > 0 {
+			c.maxRows = max
+		}
+	}
+}
+
+// WithMaxFileSize 设置最大允许上传/读取的文件物理字节数（默认 50MB）。
+func WithMaxFileSize(limit int64) ImportOption {
+	return func(c *importConfig) {
+		if limit > 0 {
+			c.maxFileSize = limit
+		}
+	}
+}
+
+// WithMemorySpoolThreshold 设置内存溢出到磁盘临时文件的字节阈值（默认 10MB）。
+func WithMemorySpoolThreshold(threshold int64) ImportOption {
+	return func(c *importConfig) {
+		if threshold > 0 {
+			c.memorySpoolThreshold = threshold
+		}
+	}
+}
+
+// WithUnzipSizeLimit 设置解压安全上限字节数（默认 256MB，防止 Zip Bomb 攻击）。
+func WithUnzipSizeLimit(limit int64) ImportOption {
+	return func(c *importConfig) {
+		if limit > 0 {
+			c.unzipSizeLimit = limit
+		}
+	}
+}
+
+// WithUnzipXMLSizeLimit 设置单个 XML 文件的解压上限字节数（默认 256MB）。
+func WithUnzipXMLSizeLimit(limit int64) ImportOption {
+	return func(c *importConfig) {
+		if limit > 0 {
+			c.unzipXMLSizeLimit = limit
+		}
+	}
+}
+
+// WithImportProgress 注册导入进度回调函数。
+func WithImportProgress(fn func(processedRows int, totalRows int)) ImportOption {
+	return func(c *importConfig) {
+		c.onProgress = fn
 	}
 }
 
@@ -289,9 +532,14 @@ func Export(ctx context.Context, export any, w io.Writer, opts ...ExportOption) 
 	return DefaultService().Export(ctx, export, w, opts...)
 }
 
-// Import 是统一的全局导入入口，自动派发到具体的 Concern 实现。
+// Import 是统一的全局导入入口，自动派发到具体的 Concern 实现（100% 保持既有签名向后兼容）。
 func Import(ctx context.Context, importObj any, r io.Reader, opts ...ImportOption) error {
 	return DefaultService().Import(ctx, importObj, r, opts...)
+}
+
+// ImportWithResult 执行导入并返回完整的统计与校验失败信息列表。
+func ImportWithResult(ctx context.Context, importObj any, r io.Reader, opts ...ImportOption) (*ImportResult, error) {
+	return DefaultService().ImportWithResult(ctx, importObj, r, opts...)
 }
 
 // Export 在当前服务实例上执行导出操作。
@@ -324,15 +572,21 @@ func (s *Service) Export(ctx context.Context, export any, w io.Writer, opts ...E
 
 // Import 在当前服务实例上执行导入操作。
 func (s *Service) Import(ctx context.Context, importObj any, r io.Reader, opts ...ImportOption) error {
+	_, err := s.ImportWithResult(ctx, importObj, r, opts...)
+	return err
+}
+
+// ImportWithResult 在当前服务实例上执行导入操作并返回详细统计报告。
+func (s *Service) ImportWithResult(ctx context.Context, importObj any, r io.Reader, opts ...ImportOption) (*ImportResult, error) {
 	if importObj == nil {
-		return oops.
+		return nil, oops.
 			Code("excel_nil_pointer").
 			In("excel.Import").
 			Errorf("importObj cannot be nil")
 	}
 
 	if r == nil {
-		return oops.
+		return nil, oops.
 			Code("excel_nil_pointer").
 			In("excel.Import").
 			Errorf("reader cannot be nil")
@@ -348,16 +602,4 @@ func (s *Service) Import(ctx context.Context, importObj any, r io.Reader, opts .
 	}
 
 	return newImportPipeline(s, importObj, cfg).Run(ctx, r)
-}
-
-func (s *Service) insertBatch(ctx context.Context, importObj any, batch []any) error {
-	if len(batch) == 0 {
-		return nil
-	}
-
-	if inserter, ok := importObj.(BatchInserter); ok {
-		return inserter.InsertBatch(ctx, batch)
-	}
-
-	return errors.New("import object must implement BatchInserter to persist models to database")
 }

@@ -3,13 +3,12 @@ package excel
 import (
 	"cmp"
 	"fmt"
-	"math"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/golang-module/carbon/v2"
+	"github.com/dromara/carbon/v2"
 	"github.com/samber/lo"
 	"github.com/spf13/cast"
 	"github.com/xuri/excelize/v2"
@@ -67,39 +66,6 @@ func getStructFields(typ reflect.Type) []structFieldInfo {
 	return fields
 }
 
-// adjustColumnWidths 调整工作表中各列的显示宽度。
-func adjustColumnWidths(export any, f *excelize.File, sheetName string) error {
-	if w, ok := export.(WithColumnWidths); ok {
-		for col, width := range w.ColumnWidths() {
-			_ = f.SetColWidth(sheetName, col, col, width)
-		}
-
-		return nil
-	}
-
-	if autosize, ok := export.(ShouldAutoSize); ok && autosize.ShouldAutoSize() {
-		cols, err := f.GetCols(sheetName)
-		if err != nil {
-			return err
-		}
-
-		for idx, col := range cols {
-			maxLen := 0
-			for _, val := range col {
-				maxLen = max(maxLen, len([]rune(val)))
-			}
-
-			colName, err := excelize.ColumnNumberToName(idx + 1)
-			if err == nil {
-				width := math.Max(float64(maxLen)+3, 10)
-				_ = f.SetColWidth(sheetName, colName, colName, width)
-			}
-		}
-	}
-
-	return nil
-}
-
 // getRowValuesFromStruct 基于缓存的结构体元数据提取字段值切片。
 func getRowValuesFromStruct(item any) []any {
 	if item == nil {
@@ -124,13 +90,77 @@ func getRowValuesFromStruct(item any) []any {
 	return vals
 }
 
+// 标准单元格数字格式常量（对标 Laravel-Excel NumberFormat）。
+const (
+	FormatGeneral    = "General"
+	FormatText       = "@"
+	FormatDate       = "yyyy-mm-dd"
+	FormatDateTime   = "yyyy-mm-dd hh:mm:ss"
+	FormatCurrency   = "$#,##0.00"
+	FormatInteger    = "#,##0"
+	FormatDecimal2   = "#,##0.00"
+	FormatPercentage = "0.00%"
+)
+
+// DefaultHeaderStyle 返回开箱即用的优雅表头样式（粗体、居中、浅灰背景 #F4F5F7、底部细边框）。
+func DefaultHeaderStyle() *excelize.Style {
+	return &excelize.Style{
+		Font: &excelize.Font{
+			Bold:   true,
+			Color:  "#1F2937",
+			Size:   11,
+			Family: "Arial",
+		},
+		Fill: excelize.Fill{
+			Type:    "pattern",
+			Color:   []string{"#F4F5F7"},
+			Pattern: 1,
+		},
+		Alignment: &excelize.Alignment{
+			Horizontal: "center",
+			Vertical:   "center",
+		},
+		Border: []excelize.Border{
+			{Type: "bottom", Color: "#D1D5DB", Style: 1},
+		},
+	}
+}
+
+// SanitizeFormula 转义可能引发 CWE-1236 公式注入的危险前缀字符（=, +, -, @, \t, \r）。
+func SanitizeFormula(val string) string {
+	if IsFormulaRisk(val) {
+		return "'" + val
+	}
+	return val
+}
+
+// IsFormulaRisk 检查字符串是否以 Excel 公式触发字符开头。
+func IsFormulaRisk(val string) bool {
+	if len(val) == 0 {
+		return false
+	}
+	switch val[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
 // formatValue 将任意 Go 数据类型规格化为适合写入 Excel 单元格的值。
 func formatValue(val any) any {
+	return formatValueWithOptions(val, false)
+}
+
+// formatValueWithOptions 将任意 Go 数据类型规格化，可选择开启防公式注入转义。
+func formatValueWithOptions(val any, sanitizeFormulas bool) any {
 	if val == nil {
 		return ""
 	}
 
 	switch v := val.(type) {
+	case RawFormula:
+		return string(v)
 	case time.Time:
 		if v.IsZero() {
 			return ""
@@ -144,17 +174,22 @@ func formatValue(val any) any {
 
 		return carbon.CreateFromStdTime(*v).ToDateTimeString()
 	case bool:
-		if v {
-			return "Yes"
-		}
-
-		return "No"
+		return lo.Ternary(v, "Yes", "No")
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return v
 	case float32, float64:
 		return v
+	case string:
+		if sanitizeFormulas {
+			return SanitizeFormula(v)
+		}
+		return v
 	default:
-		return fmt.Sprintf("%v", v)
+		str := fmt.Sprintf("%v", v)
+		if sanitizeFormulas {
+			return SanitizeFormula(str)
+		}
+		return str
 	}
 }
 

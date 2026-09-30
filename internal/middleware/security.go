@@ -2,14 +2,19 @@ package middleware
 
 import (
 	"bytes"
+	"cmp"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-// maxBodyBytes 请求体大小上限（1 MiB）。
+// maxBodyBytes 非上传请求的请求体大小上限（1 MiB），与 api.md 的 413 契约保持一致。
 const maxBodyBytes = 1 << 20
+
+// defaultUploadBodyBytes multipart 上传请求的兜底上限（32 MiB，与 gin 的默认内存阈值一致）。
+const defaultUploadBodyBytes = 32 << 20
 
 // CacheBody 将请求体读取并缓存至上下文（gin.BodyBytesKey），避免下游多道读取流 EOF。
 func (m *Middleware) CacheBody() gin.HandlerFunc {
@@ -36,11 +41,25 @@ func (m *Middleware) CacheBody() gin.HandlerFunc {
 }
 
 // BodyLimit 限制请求体大小上限，防止超大请求耗尽内存。
+//
+// multipart/form-data 上传按 UploadMaxBody（媒体配额）单独放行，
+// 否则 20MB 的媒体上传会被 1 MiB 的普通请求上限提前拦掉。
 func (m *Middleware) BodyLimit() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if c.Request.Body != nil {
-			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodyBytes)
+		if c.Request.Body == nil {
+			c.Next()
+			return
 		}
+
+		limit := m.maxBody
+		if limit <= 0 {
+			limit = maxBodyBytes
+		}
+		if strings.HasPrefix(c.ContentType(), "multipart/form-data") {
+			limit = cmp.Or(m.uploadMaxBody, int64(defaultUploadBodyBytes))
+		}
+
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 		c.Next()
 	}
 }

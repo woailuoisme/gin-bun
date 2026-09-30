@@ -37,12 +37,13 @@ type Service struct {
 }
 
 // buildCheck 统一为基础组件装配具备 Driver 与 Enabled 自动感知能力的探测规范。
-func buildCheck(name string, pinger Pinger, critical bool, defaultDriver ...string) ready.Check {
+// defaultDriver 传空串表示不指定默认驱动名（由探测实现自行声明）。
+func buildCheck(name string, pinger Pinger, critical bool, defaultDriver string) ready.Check {
 	opts := []ready.CheckOption{
 		ready.WithCritical(critical),
 	}
-	if len(defaultDriver) > 0 && defaultDriver[0] != "" {
-		opts = append(opts, ready.WithDriver(defaultDriver[0]))
+	if defaultDriver != "" {
+		opts = append(opts, ready.WithDriver(defaultDriver))
 	}
 	if da, ok := pinger.(interface{ Driver() string }); ok {
 		opts = append(opts, ready.WithDriver(da.Driver()))
@@ -56,28 +57,28 @@ func buildCheck(name string, pinger Pinger, critical bool, defaultDriver ...stri
 // NewService 构造探针服务，注册默认的核心与可选组件探针。
 func NewService(deps Deps) *Service {
 	agg := ready.New(
-		buildCheck(ComponentDatabase, deps.Database, true, "postgres"),
-		buildCheck(ComponentCache, deps.Cache, false, "valkey"),
+		buildCheck(ComponentDatabase, deps.Database, true /* critical */, "postgres"),
+		buildCheck(ComponentCache, deps.Cache, false /* critical */, "valkey"),
 	)
 
 	if deps.Storage != nil {
-		agg.Register(buildCheck(ComponentStorage, deps.Storage, false))
+		agg.Register(buildCheck(ComponentStorage, deps.Storage, false /* critical */, ""))
 	}
 
 	if deps.Search != nil {
-		agg.Register(buildCheck(ComponentSearch, deps.Search, false))
+		agg.Register(buildCheck(ComponentSearch, deps.Search, false /* critical */, ""))
 	}
 
 	if deps.Realtime != nil {
-		agg.Register(buildCheck(ComponentRealtime, deps.Realtime, false))
+		agg.Register(buildCheck(ComponentRealtime, deps.Realtime, false /* critical */, ""))
 	}
 
 	if deps.Imgproxy != nil {
-		agg.Register(buildCheck(ComponentImgproxy, deps.Imgproxy, false))
+		agg.Register(buildCheck(ComponentImgproxy, deps.Imgproxy, false /* critical */, ""))
 	}
 
 	if deps.Mailer != nil {
-		agg.Register(buildCheck(ComponentMailer, deps.Mailer, false))
+		agg.Register(buildCheck(ComponentMailer, deps.Mailer, false /* critical */, ""))
 	}
 
 	return &Service{aggregator: agg}

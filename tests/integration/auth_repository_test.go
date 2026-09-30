@@ -35,7 +35,7 @@ func cleanupUser(db *bun.DB, userID, identifier string) {
 // TestRepositoryUserLifecycle 覆盖用户与凭据的完整读写路径。
 func TestRepositoryUserLifecycle(t *testing.T) {
 	db := openTestDB(t)
-	repo := auth.NewRepository(db)
+	repo := auth.NewRepository(db, nil)
 	ctx := t.Context()
 	email := uniqueEmail()
 
@@ -111,7 +111,7 @@ func TestRepositoryUserLifecycle(t *testing.T) {
 // TestRepositoryVerificationLifecycle 覆盖一次性凭据的写入、读取与核销。
 func TestRepositoryVerificationLifecycle(t *testing.T) {
 	db := openTestDB(t)
-	repo := auth.NewRepository(db)
+	repo := auth.NewRepository(db, nil)
 	ctx := t.Context()
 
 	identifier := "email-verify:" + uniqueEmail()
@@ -140,7 +140,7 @@ func TestRepositoryVerificationLifecycle(t *testing.T) {
 // 这依赖 schema 里 idx_user_email 的 WHERE deleted_at IS NULL 部分唯一索引。
 func TestSoftDeleteFreesEmail(t *testing.T) {
 	db := openTestDB(t)
-	repo := auth.NewRepository(db)
+	repo := auth.NewRepository(db, nil)
 	ctx := t.Context()
 	email := uniqueEmail()
 
@@ -171,7 +171,7 @@ func TestSoftDeleteFreesEmail(t *testing.T) {
 // TestSchemaEnforcesRoleAndStatusChecks 校验库层的 CHECK 约束确实生效（ADR-0004）。
 func TestSchemaEnforcesRoleAndStatusChecks(t *testing.T) {
 	db := openTestDB(t)
-	repo := auth.NewRepository(db)
+	repo := auth.NewRepository(db, nil)
 	ctx := t.Context()
 
 	t.Run("非法角色被拒绝", func(t *testing.T) {

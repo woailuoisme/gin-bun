@@ -16,7 +16,7 @@
 - **鉴权与授权**：无状态 JWT 令牌 (`golang-jwt/jwt/v5`) + 基于 [Casbin v3](file:///Users/seaside/Projects/go/gin-bun/internal/platform/authz/authz.go) 的 RBAC 静态权限矩阵。
 - **CLI 命令行体系**：基于 [`spf13/cobra`](file:///Users/seaside/Projects/go/gin-bun/internal/console/root.go) 的现代工业级分层命令行系统，分组管理子命令并提供隐式 Artisan 风格冒号别名兼容。
 - **对象存储与邮件**：S3/MinIO (`minio/minio-go/v7`) 与本地存储抽象；Mailpit 邮件测试系统 (`wneessen/go-mail`)。
-- **结构化日志与错误处理**：`rs/zerolog` 结构化上下文日志；`samber/oops` 业务错误堆栈与语义化错误码。
+- **结构化日志与错误处理**：[Zap](https://github.com/uber-go/zap) (`go.uber.org/zap`) 高性能结构化上下文日志；`samber/oops` 业务错误堆栈与语义化错误码。
 - **时间推导与数据格式化**：[Carbon v2](https://github.com/golang-module/carbon) (`golang-module/carbon/v2`) 链式时间计算与多语言相对时间 + [go-humanize](https://github.com/dustin/go-humanize) (`dustin/go-humanize`) 字节容量与大数字千分位格式化。
 - **高精度金融与货币体系**：基于 [`shopspring/decimal`](https://github.com/shopspring/decimal) 与 [internal/platform/money](file:///Users/seaside/Projects/go/gin-bun/internal/platform/money/money.go) 的不可变 Money 值对象体系，原生映射 Postgres `NUMERIC`，提供 ISO-4217 元数据、金融舍入、Fowler 无损均摊及收单网关适配。
 - **接口契约与文档**：基于 [api.md](file:///Users/seaside/Projects/go/gin-bun/api.md) 契约，使用 `swag` 自动化生成 OpenAPI 规范并嵌入二进制。
@@ -76,19 +76,17 @@ internal/
 │   └── system/                 # 系统探针与元信息（livez, readyz）
 ├── middleware/                 # 全局与路由级 HTTP 中间件（认证、限流、CORS、监控）
 ├── platform/                   # 横切基础设施与跨切片基座（纯原子组件）
-│   ├── authz/                  # Casbin RBAC 静态策略与权限校验
+│   ├── authentication/         # 统一认证守卫 (Guard)、双令牌生命周期与用户认证门禁
+│   ├── authorization/          # Casbin RBAC 静态策略与权限校验（策略矩阵见本目录下 rbac/policy.csv）
 │   ├── cache/                  # Valkey 客户端与缓存存取
 │   ├── errs/                   # Oops 错误模型、全局错误码与多语言错误渲染
 │   ├── hasher/                 # Argon2id / Bcrypt 密码哈希
 │   ├── i18n/                   # 基于 TOML 的多语言字段与提示信息翻译
-│   ├── identity/               # 上下文用户身份抽取
-│   ├── logger/                 # Zerolog 结构化日志包装
+│   ├── logger/                 # Zap 结构化日志包装
 │   ├── mailer/                 # SMTP 邮件发送抽象
 │   ├── money/                  # 不可变高精度货币值对象 (Money)、ISO-4217 元数据、金融舍入与无损分摊
-│   ├── optional/               # PATCH 局部更新三态值包装（Unset, Null, Value）
 │   ├── response/               # HTTP 成功响应封装（扁平对象与分页信封）
 │   ├── storage/                # 本地与 S3/MinIO 对象存储适配
-│   ├── token/                  # JWT 颁发、验签与撤销
 │   └── validator/              # Go-Playground 校验器与国际化翻译集成
 ├── shared/                     # 跨领域共享内核
 │   ├── apidocs/                # 嵌入式 OpenAPI 规范与文档契约
@@ -114,6 +112,17 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 4. **Middleware 传输层协议隔离与就地内聚**：
    - `internal/middleware/` 是专属于 HTTP Delivery/Transport 传输层的通用横切逻辑（认证、鉴权、限流、CORS、监控、全局错误转换），与 Web 协议强绑定。**严禁将 `middleware` 迁入协议无关的 `internal/shared/`**，避免污染纯净的领域共享内核。
    - 通用传输层中间件集中于 `internal/middleware/`；若未来存在仅限单一 Feature 使用的特定业务拦截器，**直接就地内聚于对应的 `internal/features/<feature>/` 内部**。
+5. **统一错误与契约协议基座定位 (`internal/platform/errs`)**：
+   - `internal/platform/errs` 是全系统严格对齐 [api.md](file:///Users/seaside/Projects/go/gin-bun/api.md) 契约的**统一错误与传输协议基座**（定义机器可读错误码 `Code`、封装 `samber/oops` 堆栈追踪、PostgreSQL 驱动约束翻译及 `Render` HTTP 最终写回）。
+   - **绝对严禁将 `platform/errs` 迁入 `internal/shared/`**：防止 `render.go` 将 `gin.Context` 与 Web 传输协议污染进纯领域共享内核，同时杜绝 `storage`、`mailer`、`queue` 等底层技术原子反向依赖业务共享包。
+   - 业务错误码（如 `AUTH_*`、`PAYMENT_*`）作为系统对外契约常量统一集中于 `platform/errs/codes.go`，由状态码映射字典 `statuses` 集中内聚管理，避免分散配置导致的契约漂移。
+6. **常量与枚举作用域规约与就近内聚原则 (`internal/shared/enums`)**：
+   - **核心领域枚举集中于 `internal/shared/enums`**：仅当枚举属于全系统跨垂直切片共享的**核心业务领域实体概念**（如 `Role`、`UserStatus`、`OTPType`、`ProviderID`）时，方可在 `internal/shared/enums` 中定义，且必须使用强类型 `type X string` 并提供 `IsValid()` / `String()` 等纯粹契约。
+   - **严禁「集中式常量垃圾桶」反模式 (No God Enum / No Centralized Technical Constants)**：严禁将任何特定技术实现常量、中间件键名、基础设施细节直接堆入 `internal/shared/enums`：
+     - **Gin Context Key**：必须就近定义在对应传输层中间件或认证包内部，推荐使用非导出类型（如 `type authCtxKey struct{}`）或私有常量，通过强类型 Helper 函数（如 `auth.FromContext(c)`）对外暴露存取，严禁全局暴露原生 Context 字符串键。
+     - **Cache Key / Redis 前缀**：必须就近封装在具体的 Cache Repository 或 Platform Cache 内部，外部调用方通过高阶仓储方法存取，严禁将原始键名前缀向外部全局扩散。
+     - **异步任务与队列名 (Queue / Job Tasks)**：必须就近内聚在调度该任务的 Feature 切片或 `platform/queue` 内部，各业务独立维护 Job 签名。
+     - **严禁投机性死代码与 UI 徽标元数据 (YAGNI)**：严禁预先编写全系统 0 调用的投机性常量文件，严禁在后端枚举中硬编码前端展示类元数据（如 CSS 徽标颜色、选项字典映射）。
 
 ---
 
@@ -147,7 +156,7 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 - **注释保留精简中文**：所有包注释、结构体/类型文档注释、函数/方法文档注释、行内逻辑说明**统一强制保留精炼、地道的简体中文**，严禁书写英文注释，严禁中英文机械混杂。
 - **代码中所有字符串字面量、操作名、结构化日志与底层错误统一为标准英文（绝对红线）**：
   - 代码中的所有字符串字面量、底层驱动与库操作名（如 `"write local object"`、`"open upload file"`、`"read s3 object"` 等）、Go 哨兵错误以及 `errors.New` / `fmt.Errorf` 错误信息**必须全部统一使用标准英文**。**绝对严禁在代码中出现中文字符串字面量、中文操作名或中文内部错误**。
-  - **结构化运行日志全英文**：所有结构化运行日志文本（`.Msg("...")`）统一强制使用标准英文表达（如 `logger.Warn().Msg("failed to write cache")`），以契合现代化 APM 检索分析与业界标准，彻底杜绝中文日志说明。
+  - **结构化运行日志全英文**：所有结构化运行日志文本统一强制使用标准英文表达（如 `logger.Warn("failed to write cache", zap.Error(err))`），以契合现代化 APM 检索分析与业界标准，彻底杜绝中文日志说明。
   - 面向终端用户的多语言展示文案与字段校验提示，**绝对严禁直接硬编码在业务代码中**，必须统一由 `lang/` 目录下的 i18n 资源文件（TOML）承载。
 - **Swagger 接口文档全中文**：所有 API 接口文档注解（`@Summary`、`@Description`、`@Tags`、字段说明）必须为纯中文表达，面向国内调用与研发协同保持地道语义。
 - **语法级标识符保持英文**：Go 语言语法标识符（包名、结构体名、字段名、函数/方法名、接口名）以及协议级标签（`json:"..."`、`validate:"..."`、HTTP 头部字段）严格遵循标准英文命名与 CamelCase 驼峰规范。
@@ -157,7 +166,7 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 | **代码注释 (`// ...`)** | 强制精简中文 | `// ensureDir 递归创建目标文件的父目录。` | `// ensureDir recursively creates...` |
 | **代码内字符串与操作名** | **强制标准英文** | `opFailed("write local object", path, err)` | `opFailed("写入本地对象", path, err)` |
 | **底层与内部错误信息** | **强制标准英文** | `errors.New("storage: local root path cannot be empty")` | `errors.New("本地存储根目录不能为空")` |
-| **结构化运行日志** | **强制标准英文** | `logger.Warn().Msg("failed to write cache")` | `logger.Warn().Msg("回源数据写入缓存失败")` |
+| **结构化运行日志** | **强制标准英文** | `logger.Warn("failed to write cache")` | `logger.Warn("回源数据写入缓存失败")` |
 | **API 接口文档注解** | 强制地道中文 | `// @Summary 邮箱密码登录` | `// @Summary Email password login` |
 | **终端用户错误提示** | 统一 i18n 资源 | `lang/zh-CN/*.toml`, `lang/en/*.toml` | 在业务代码中直接硬编码中文提示 |
 
@@ -165,6 +174,32 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 - **Model 与 DTO 原生时间红线（绝对红线）**：数据库实体 Model（`internal/shared/models/`）与对外传输对象 DTO（`request.go` / `response.go`）**必须严格使用 Go 原生 `time.Time`**。严禁在数据库映射模型或对外契约中引入 `carbon.Carbon` / `carbon.DateTime` 等第三方包装类型，彻底确保 Bun ORM、PostgreSQL `timestamptz` 原生驱动与 OpenAPI RFC 3339 序列化的极致性能、类型安全与契约稳定。
 - **业务时间推导统一 Carbon**：在业务逻辑层（Service）、计划任务（Worker）、CLI 命令与报表导出（Excel）中，凡涉及复杂时间计算（如有效期加减、封禁时间推导、自然日跨度）、相对时间展示（`DiffForHumans`）以及非标日期字符串解析时，**统一使用 `github.com/golang-module/carbon/v2`**（全局时区与 Locale 自动与 `.env` 中 `APP_TIMEZONE` 和 `APP_LOCALE` 同步）。
 - **容量与数字人性化统一 Humanize**：在 CLI 报表输出、运维日志、存储元数据与监控统计中，文件/对象字节容量展示（`humanize.Bytes` / `humanize.IBytes`）、大数字千分位分割（`humanize.Comma`）**统一使用 `github.com/dustin/go-humanize`**，严禁手动编写冗余的除法换算或格式化逻辑。
+
+### 4.7 Uber Go 工业级编码规范约束 (Uber Go Style Guide Enforcement)
+
+全项目代码编写、重构与 Review **强制遵循 [Uber Go Style Guide](https://github.com/uber-go/guide/blob/master/style.md) 工业级规范**，重点固化以下刚性工程纪律：
+
+1. **接收者类型严格一致性 (Consistent Receiver Type)**：
+   - 同一个类型的所有方法，其接收者要么统一使用指针接收者 `(t *Type)`，要么统一使用值接收者 `(t Type)`，**绝对严禁混用**。
+   - 凡结构体包含可变状态、互斥锁、内部 Map/Slice、复杂生命周期或大对象，所有方法必须一律使用**指针接收者**。
+   - 唯有无状态的微型不可变值对象（如纯坐标、简单度量值）且无修改方法时，方可统一采用值接收者。
+2. **单一错误处理原则 (Handle Errors Once / Log OR Return, Never Both)**：
+   - 对任何发生的错误，**要么在当前层记录日志并降级处理，要么封装上下文向调用方抛出，绝对严禁既记日志又返回错误**。
+   - 杜绝底层与外层多重重复打标造成的日志雪崩与排障噪音。所有底层系统错误统一通过 `samber/oops` 向上冒泡，交由传输层统一拦截渲染与结构化审计。
+3. **互斥锁与并发模型纪律 (Zero-value Mutexes & No Value Copy)**：
+   - `sync.Mutex` 和 `sync.RWMutex` 必须作为非导出私有字段（如 `mu sync.RWMutex`），**严禁直接导出公开**。
+   - 互斥锁零值即完全可用，严禁对其执行多余的指针堆分配或非必要封装。
+   - **严禁拷贝包含 Mutex 的结构体**：凡内嵌或拥有互斥锁的结构体，在跨函数、方法或通道传递时**必须严格使用指针传参**。
+4. **Channel 尺寸约束与最小化原则 (Channel Buffering: 0 or 1)**：
+   - Channel 默认必须为无缓冲通道（Unbuffered / 容量为 0），用于确定性的同步握手协作。
+   - 仅在明确用于防阻塞单飞信号（如 HTTP 停机等待、并发结果首个捕获、系统退出通道）时，显式指定缓冲容量为 1（`make(chan error, 1)`）。
+   - **绝对严禁随意编写无确切背压依据的魔数大缓冲通道**（如 `make(chan T, 100)`），避免内存无序积压与隐藏的死锁风险。
+5. **边界切片与 Map 防御性拷贝 (Copy Slices and Maps at Boundaries)**：
+   - 结构体接收外部切片/Map 作为构造入参，或对外公开返回内部内部切片/Map 时，**必须使用浅拷贝或深拷贝进行防御隔离**（如 `slices.Clone` 或预分配拷贝），严禁直接将内部切片底层指针暴露，杜绝外部并发读写引发的数据篡改与 Data Race。
+6. **平坦控制流与卫语句优先 (Reduce Nesting & Guard Clauses)**：
+   - 严格避免深层 `if-else` 分支嵌套，优先使用错误与边界条件的卫语句提前 `return`，保持主逻辑处于最浅缩进层级。
+7. **面向使用者定义最小接口 (Accept Interfaces, Return Structs)**：
+   - 服务构造器统一返回具体的结构体指针（如 `*Service`），避免过早抽象导致调用方受制于肥接口；接口由具体的消费方（Caller）在依赖处按需就地定义最小接口契约。
 
 ---
 
@@ -247,7 +282,7 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 - ⚠️ **`swag` 跨包类型解析缺陷与别名避坑**：
   - **现象**：`swag` 在解析跨包结构体引用（如跨包直接声明 `{object} user.Profile`）时存在编译器缺陷，极易偶发报 `cannot find type definition` 导致 `just docs` 失败。
   - **强制规则**：涉及跨包引用的结构体，必须在当前 handler 包内定义一层本地同名类型别名（例如在 [internal/features/client/profile/](file:///Users/seaside/Projects/go/gin-bun/internal/features/client/profile/response.go) 中显式声明 `type Profile = user.Profile`）。修改或重构相关代码时**严禁误删此类类型别名**！
-- **三态字段 Swagger 类型修正**：使用 `optional.Optional[T]` 的字段必须显式附加 `swaggertype:"string" extensions:"x-nullable"`（或对应基础标量类型），防止泛型容器被展开为 `{present, value}`。
+- **三态字段 Swagger 类型修正**：使用三态值容器 `omitnull.Val[T]` (`aarondl/opt`) 的字段必须显式附加 `swaggertype:"string" extensions:"x-nullable"`（或对应基础标量类型），防止泛型容器被展开为 `{state, val}`。
 
 ---
 

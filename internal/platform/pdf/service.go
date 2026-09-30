@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/johnfercher/maroto/v2"
 	marotoconfig "github.com/johnfercher/maroto/v2/pkg/config"
 	"github.com/johnfercher/maroto/v2/pkg/consts/fontstyle"
@@ -20,18 +19,22 @@ import (
 	"github.com/johnfercher/maroto/v2/pkg/core"
 	"github.com/johnfercher/maroto/v2/pkg/core/entity"
 	"github.com/johnfercher/maroto/v2/pkg/props"
-	"github.com/rs/zerolog"
 	"github.com/samber/oops"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/storage"
 )
 
 // Service 统一管理 PDF 文档的排版、渲染与多通道交付。
+//
+// 交付只依赖标准库的 http.ResponseWriter：任何 Web 框架（Gin/chi/net-http）
+// 都可以直接把自己的响应写入器传进来，平台层不感知具体框架。
+// 不在此定义消费方接口：调用方按需在自己一侧声明最小接口即可。
 type Service struct {
 	cfg        config.PDFConfig
 	storage    storage.Disk
-	log        *zerolog.Logger
+	log        *zap.Logger
 	fonts      []entity.CustomFont
 	fontFamily string
 }
@@ -42,7 +45,7 @@ var (
 )
 
 // NewService 实例化 PDF 服务。
-func NewService(cfg config.PDFConfig, disk storage.Disk, log *zerolog.Logger) *Service {
+func NewService(cfg config.PDFConfig, disk storage.Disk, log *zap.Logger) *Service {
 	fonts, resolvedFamily := ResolveFontConfig(cfg.FontPath, cfg.FontFamily, log)
 
 	return &Service{
@@ -55,7 +58,7 @@ func NewService(cfg config.PDFConfig, disk storage.Disk, log *zerolog.Logger) *S
 }
 
 // RegisterPDF 注册并初始化全局默认 PDF 服务。
-func RegisterPDF(cfg *config.Config, disk storage.Disk, log *zerolog.Logger) (*Service, error) {
+func RegisterPDF(cfg *config.Config, disk storage.Disk, log *zap.Logger) (*Service, error) {
 	pdfCfg := config.PDFConfig{
 		FontFamily: "SourceHanSans",
 		PageSize:   "A4",
@@ -109,15 +112,6 @@ func StreamToHTTP(ctx context.Context, w http.ResponseWriter, filename string, d
 		return oops.Errorf("pdf: default service not initialized")
 	}
 	return s.StreamToHTTP(ctx, w, filename, doc, mode)
-}
-
-// StreamToResponse 全局快捷 HTTP 响应分发入口（兼容 Gin）。
-func StreamToResponse(c *gin.Context, filename string, doc Document, mode DeliveryMode) error {
-	s := DefaultService()
-	if s == nil {
-		return oops.Errorf("pdf: default service not initialized")
-	}
-	return s.StreamToResponse(c, filename, doc, mode)
 }
 
 // SaveToStorage 全局快捷转存入口。
@@ -192,11 +186,6 @@ func (s *Service) StreamToHTTP(ctx context.Context, w http.ResponseWriter, filen
 		return oops.Wrap(err)
 	}
 	return nil
-}
-
-// StreamToResponse 为 Gin 框架提供便捷流式响应分发（基于 StreamToHTTP 委托）。
-func (s *Service) StreamToResponse(c *gin.Context, filename string, doc Document, mode DeliveryMode) error {
-	return s.StreamToHTTP(c.Request.Context(), c.Writer, filename, doc, mode)
 }
 
 // sanitizeHeaderFilename 清洗用于 Content-Disposition 的兜底文件名。

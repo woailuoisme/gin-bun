@@ -4,8 +4,10 @@ package validator_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -207,4 +209,52 @@ func assertBadRequest(t *testing.T, err error) {
 	status, resp := errs.Map(err)
 	assert.Equal(t, http.StatusBadRequest, status)
 	assert.Equal(t, string(errs.CodeBadRequest), resp.Code)
+}
+
+// TestUsernameSlugAndE164LengthGuards 验证长度截断防护，防止超长字符串进入正则。
+func TestUsernameSlugAndE164LengthGuards(t *testing.T) {
+	translator := newTranslator(t, "en")
+
+	// 1. 用户名超长 (65 字符)
+	longUsername := "a" + string(bytes.Repeat([]byte("b"), 65))
+	ctx1 := newContext(`{"email":"ok@example.com","password":"password1","username":"` + longUsername + `"}`)
+	var payload1 signupPayload
+	err1 := bindJSON(t, ctx1, &payload1, translator)
+	require.Error(t, err1)
+	_, resp1 := errs.Map(err1)
+	assert.Contains(t, resp1.Errors, "username")
+
+	// 2. 手机号超长 (> 20 字符)
+	longPhone := "+86138" + string(bytes.Repeat([]byte("0"), 20))
+	ctx2 := newContext(`{"email":"ok@example.com","password":"password1","phoneNumber":"` + longPhone + `"}`)
+	var payload2 signupPayload
+	err2 := bindJSON(t, ctx2, &payload2, translator)
+	require.Error(t, err2)
+	_, resp2 := errs.Map(err2)
+	assert.Contains(t, resp2.Errors, "phoneNumber")
+
+	// 3. 手机号过短 (< 8 字符)
+	shortPhone := "+86"
+	ctx3 := newContext(`{"email":"ok@example.com","password":"password1","phoneNumber":"` + shortPhone + `"}`)
+	var payload3 signupPayload
+	err3 := bindJSON(t, ctx3, &payload3, translator)
+	require.Error(t, err3)
+	_, resp3 := errs.Map(err3)
+	assert.Contains(t, resp3.Errors, "phoneNumber")
+}
+
+// TestCustomTagConcurrentSafety 验证 sync.Map 高并发注册与查询自定义规则的线程安全。
+func TestCustomTagConcurrentSafety(t *testing.T) {
+	var wg sync.WaitGroup
+	for i := range 50 {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			tag := fmt.Sprintf("custom_rule_%d", idx)
+			_ = validator.RegisterRule(tag, func(fl govalidator.FieldLevel) bool {
+				return true
+			}, "custom_msg_key")
+		}(i)
+	}
+	wg.Wait()
 }

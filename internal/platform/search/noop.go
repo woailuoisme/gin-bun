@@ -7,8 +7,9 @@ import (
 type noopClient struct{}
 
 var (
-	_ Client = (*noopClient)(nil)
-	_ Index  = (*noopIndex)(nil)
+	_ Client        = (*noopClient)(nil)
+	_ Index         = (*noopIndex)(nil)
+	_ TypedSearcher = (*noopIndex)(nil)
 )
 
 // NewNoop 创建安全的静默降级搜索客户端。
@@ -26,7 +27,7 @@ func (n *noopClient) Enabled() bool {
 }
 
 func (n *noopClient) Driver() string {
-	return "noop"
+	return DriverNoop
 }
 
 func (n *noopClient) Ping(_ context.Context) error {
@@ -66,6 +67,16 @@ func (n *noopIndex) DeleteAllDocuments(_ context.Context) error {
 }
 
 func (n *noopIndex) Search(_ context.Context, _ string, _ ...SearchOption) (*SearchResult, error) {
+	return &SearchResult{
+		Hits:               []map[string]any{},
+		EstimatedTotalHits: 0,
+		Limit:              0,
+		Offset:             0,
+		ProcessingTimeMs:   0,
+	}, nil
+}
+
+func (n *noopIndex) SearchDirect(_ context.Context, _ string, _ any, _ ...SearchOption) (*SearchResult, error) {
 	return &SearchResult{
 		Hits:               []map[string]any{},
 		EstimatedTotalHits: 0,

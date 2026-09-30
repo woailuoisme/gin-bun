@@ -6,10 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hibiken/asynq"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/features/client/auth"
@@ -39,18 +38,6 @@ func (m *mockMailer) Close() error {
 	return nil
 }
 
-type mockDispatcher struct {
-	mu         sync.Mutex
-	dispatched []queue.Job
-}
-
-func (d *mockDispatcher) Dispatch(_ context.Context, job queue.Job, _ ...asynq.Option) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.dispatched = append(d.dispatched, job)
-	return nil
-}
-
 func TestWelcomeEmailJobExecution(t *testing.T) {
 	t.Parallel()
 
@@ -71,13 +58,13 @@ func TestWelcomeEmailJobExecution(t *testing.T) {
 func TestAuthEventListener(t *testing.T) {
 	t.Parallel()
 
-	dispatcher := &mockDispatcher{}
+	dispatcher := queue.NewMemoryDispatcher()
 
 	cfg := config.EventBusConfig{
 		Driver:   eventbus.DriverGoChannel,
 		LogLevel: "error",
 	}
-	bus, err := eventbus.NewManager(cfg, zerolog.Nop())
+	bus, err := eventbus.NewManager(cfg, zap.NewNop())
 	require.NoError(t, err)
 	defer func() { _ = bus.Close() }()
 
@@ -111,17 +98,14 @@ func TestAuthEventListener(t *testing.T) {
 
 	// 轮询验证 Dispatcher 收到派发的任务
 	require.Eventually(t, func() bool {
-		dispatcher.mu.Lock()
-		defer dispatcher.mu.Unlock()
-		return len(dispatcher.dispatched) > 0
+		return dispatcher.Count() > 0
 	}, 3*time.Second, 50*time.Millisecond)
 
-	dispatcher.mu.Lock()
-	require.Len(t, dispatcher.dispatched, 1)
-	dispatchedJob, ok := dispatcher.dispatched[0].(*auth.WelcomeEmailJob)
-	dispatcher.mu.Unlock()
-
-	require.True(t, ok)
-	assert.Equal(t, "user@example.com", dispatchedJob.Email)
-	assert.Equal(t, "John Doe", dispatchedJob.Name)
+	dispatcher.AssertDispatched(t, auth.TaskSendWelcomeEmail, 1)
+	dispatcher.AssertDispatchedJob(t, func(j queue.Job) bool {
+		if welcomeJob, ok := j.(*auth.WelcomeEmailJob); ok {
+			return welcomeJob.Email == "user@example.com" && welcomeJob.Name == "John Doe"
+		}
+		return false
+	})
 }

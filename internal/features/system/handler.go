@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog"
+	"go.uber.org/zap"
 
 	"bgin/internal/platform/ready"
 	"bgin/internal/platform/response"
@@ -17,11 +17,14 @@ const probeTimeout = 2 * time.Second
 // Handler 是探针端点的 HTTP 适配层。
 type Handler struct {
 	service *Service
-	logger  *zerolog.Logger
+	logger  *zap.Logger
 }
 
 // NewHandler 构造系统探针 Handler。
-func NewHandler(service *Service, logger *zerolog.Logger) *Handler {
+func NewHandler(service *Service, logger *zap.Logger) *Handler {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &Handler{service: service, logger: logger}
 }
 
@@ -42,7 +45,7 @@ func (h *Handler) Readiness(c *gin.Context) {
 
 	result, errs := h.service.Check(ctx)
 	for name, err := range errs {
-		h.logger.Warn().Err(err).Str("component", name).Msg("readiness probe failed")
+		h.logger.Warn("readiness probe failed", zap.Error(err), zap.String("component", name))
 	}
 
 	if result.Status == ready.StatusNotReady {

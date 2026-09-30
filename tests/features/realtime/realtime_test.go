@@ -20,8 +20,9 @@ import (
 
 	"bgin/internal/config"
 	featureRealtime "bgin/internal/features/realtime"
-	"bgin/internal/platform/identity"
+	"bgin/internal/platform/authentication"
 	platformRealtime "bgin/internal/platform/realtime"
+	"bgin/internal/shared/enums"
 )
 
 func generateTestSig(secret string, body []byte) string {
@@ -144,9 +145,9 @@ func TestHandlerHTTP(t *testing.T) {
 
 	// 模拟已认证中间件
 	router.GET("/v1/realtime/token", func(c *gin.Context) {
-		ctx := identity.With(c.Request.Context(), identity.Identity{
+		ctx := authentication.With(c.Request.Context(), authentication.Identity{
 			UserID: "user_777",
-			Role:   "user",
+			Role:   string(enums.RoleUser),
 		})
 		c.Request = c.Request.WithContext(ctx)
 		handler.GetToken(c)

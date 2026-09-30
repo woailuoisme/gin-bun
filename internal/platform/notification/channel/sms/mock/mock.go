@@ -17,6 +17,8 @@ type Driver struct {
 	otps     map[string][]string
 }
 
+var _ sms.Driver = (*Driver)(nil)
+
 // NewDriver 创建内存 Mock 短信驱动实例。
 func NewDriver() *Driver {
 	return &Driver{
@@ -38,10 +40,13 @@ func (d *Driver) Send(_ context.Context, msg *sms.Message) error {
 	phone := msg.PhoneNumber
 	d.messages[phone] = append(d.messages[phone], msg)
 
-	// 提取 OTP 验证码（支持 TemplateParam["code"]、["otp"] 或直接 Content）
+	// 提取 OTP 验证码（支持 TemplateParam["code"]、["otp"]、ParamSet 或直接 Content）
 	code := msg.TemplateParam["code"]
 	if code == "" {
 		code = msg.TemplateParam["otp"]
+	}
+	if code == "" && len(msg.ParamSet) > 0 {
+		code = msg.ParamSet[0]
 	}
 	if code == "" {
 		code = msg.Content

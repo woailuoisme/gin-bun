@@ -46,6 +46,20 @@ type ShouldQueueWithOptions interface {
 	Delay() time.Duration
 }
 
+// IdempotentNotification 声明具备幂等防重键的通知契约。
+type IdempotentNotification interface {
+	Notification
+	// IdempotentKey 返回该通知针对指定接收者的全局唯一防重键。
+	IdempotentKey(notifiable any) string
+}
+
+// RateLimitedNotification 允许单个通知自声明频控规则。
+type RateLimitedNotification interface {
+	Notification
+	// RateLimitKey 返回用于频控的唯一键；若返回空串则由中间件使用默认规则。
+	RateLimitKey(channel string, notifiable any) string
+}
+
 // 标准哨兵错误定义。
 var (
 	ErrNoChannel      = errors.New("notification: channel not registered")
@@ -53,6 +67,8 @@ var (
 	ErrNoRoute        = errors.New("notification: notifiable has no route for channel")
 	ErrNoFormatter    = errors.New("notification: notification has no formatter for channel")
 	ErrClosed         = errors.New("notification: notifier closed")
+	ErrRateLimited    = errors.New("notification: rate limit exceeded")
+	ErrDeduplicated   = errors.New("notification: duplicate notification ignored")
 )
 
 // SendOption 定义单次 Send 调用的 Functional Option。

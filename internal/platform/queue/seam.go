@@ -14,7 +14,7 @@ import (
 // 调用方在 opts 中传入与自声明同名的选项时覆盖自声明 —— Asynq 的选项后写入者生效，
 // 因此「本次派发需要特殊约束」由调用方决定，其余情况交给 Job 自己表达。
 type Dispatcher interface {
-	Dispatch(ctx context.Context, job Job, opts ...asynq.Option) error
+	Dispatch(ctx context.Context, job Job, opts ...DispatchOption) error
 }
 
 // Inspector 是运维巡检面：队列状态与归档失败任务的跨队列与单队列重试、删除、清空。

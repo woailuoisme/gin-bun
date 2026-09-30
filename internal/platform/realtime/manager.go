@@ -7,52 +7,16 @@ import (
 	"errors"
 	"time"
 
-	"github.com/avast/retry-go/v4"
 	"github.com/centrifugal/gocent/v3"
-	"github.com/rs/zerolog"
 	"github.com/samber/oops"
 
 	"bgin/internal/config"
-	"bgin/internal/platform/logger"
-	"bgin/internal/platform/txhook"
+	"bgin/internal/platform/errs"
+	"bgin/internal/platform/resilience"
 )
 
 // Config 为 config.CentrifugoConfig 的类型别名，消除重复定义并直接复用统一配置结构。
 type Config = config.CentrifugoConfig
-
-// Manager 定义实时通信完整驱动接口（涵盖发布、广播、连接控制、频道策略及状态查询）。
-type Manager interface {
-	Dispatch(channel, event string, data any) error
-	DispatchContext(ctx context.Context, channel, event string, data any) error
-	DispatchAfterCommit(ctx context.Context, channel, event string, data any) error
-	Broadcast(channels []string, event string, data any) error
-	BroadcastContext(ctx context.Context, channels []string, event string, data any) error
-	BroadcastAfterCommit(ctx context.Context, channels []string, event string, data any) error
-	Disconnect(ctx context.Context, userID string) error
-	Unsubscribe(ctx context.Context, userID, channel string) error
-	History(ctx context.Context, channel string, limit int) ([]gocent.Publication, error)
-	Presence(ctx context.Context, channel string) (map[string]gocent.ClientInfo, error)
-	PresenceStats(ctx context.Context, channel string) (gocent.PresenceStatsResult, error)
-	GenerateConnectionToken(userID string, expireAt time.Time, info, meta map[string]any, channels ...string) (string, error)
-	Token(userID string, expireAt time.Time, info, meta map[string]any, channels ...string) (string, error)
-	Registry() *Registry
-	GetNodeID() string
-	Client() *gocent.Client
-	Config() *Config
-	Enabled() bool
-	Ping(ctx context.Context) error
-	Driver() string
-}
-
-// AfterCommit 注册在事务提交后执行的钩子；若上下文中未注入事务钩子机制，则立即执行。
-func AfterCommit(ctx context.Context, fn func()) {
-	txhook.AfterCommit(ctx, fn)
-}
-
-// WithAfterCommit 为 context 注入事务提交后回调收集器，并返回触发器函数。
-func WithAfterCommit(ctx context.Context) (context.Context, func()) {
-	return txhook.WithAfterCommit(ctx)
-}
 
 // Option 定义 Manager 配置选项函数。
 type Option func(*ManagerImpl)
@@ -66,30 +30,17 @@ func WithRegistry(reg *Registry) Option {
 	}
 }
 
-// WithLogger 注入结构化日志器。
-func WithLogger(l *zerolog.Logger) Option {
-	return func(m *ManagerImpl) {
-		if l != nil {
-			m.logger = l
-		}
-	}
-}
-
-// WithAfterCommitHandler 注入外部事务提交后钩子派发器。
-func WithAfterCommitHandler(h func(ctx context.Context, fn func())) Option {
-	return func(m *ManagerImpl) {
-		m.afterCommit = h
-	}
-}
-
-// ManagerImpl 实现 Centrifugo 实时通信 Manager 接口。
+// ManagerImpl 实现 Centrifugo 实时通信 Manager 接口及各原子角色接口。
 type ManagerImpl struct {
-	cfg         *Config
-	client      *gocent.Client
-	registry    *Registry
-	logger      *zerolog.Logger
-	afterCommit func(ctx context.Context, fn func())
+	cfg      *Config
+	client   *gocent.Client
+	registry *Registry
 }
+
+var (
+	_ Manager         = (*ManagerImpl)(nil)
+	_ RealtimeGateway = (*ManagerImpl)(nil)
+)
 
 // NewManager 创建 Centrifugo 实时通信管理器实例。
 func NewManager(cfg *Config, opts ...Option) *ManagerImpl {
@@ -117,25 +68,13 @@ func NewManager(cfg *Config, opts ...Option) *ManagerImpl {
 	return m
 }
 
-func (m *ManagerImpl) log(ctx context.Context) *zerolog.Logger {
-	// 必须用 FromContextOK 判断：FromContext 恒返回非 nil（缺省退回包级兜底日志器），
-	// 用它做 nil 判断会让这里永远走第一条分支，注入的 m.logger 变成死代码。
-	if l, ok := logger.FromContextOK(ctx); ok {
-		return l
-	}
-	if m.logger != nil {
-		return m.logger
-	}
-	return logger.FromContext(ctx)
-}
-
 // Config 返回当前实时模块基础设施配置。
 func (m *ManagerImpl) Config() *Config {
 	return m.cfg
 }
 
-// Client 导出底层 gocent 客户端指针。
-func (m *ManagerImpl) Client() *gocent.Client {
+// Client 导出底层客户端连接指针。
+func (m *ManagerImpl) Client() *Client {
 	return m.client
 }
 
@@ -174,31 +113,19 @@ func (m *ManagerImpl) Ping(ctx context.Context) error {
 	}
 	_, err := m.client.Info(ctx)
 	if err != nil {
-		return oops.Code("INTERNAL_SERVER_ERROR").In("ManagerImpl.Ping").Wrap(err)
+		return oops.Code(errs.CodeInternal).In("ManagerImpl.Ping").Wrap(err)
 	}
 	return nil
 }
 
+var realtimeExecutor = resilience.NewNetworkExecutor(3, 50*time.Millisecond, 2*time.Second)
+
 // retryCall 以统一重试策略（3 次、50ms 起指数退避）执行 Centrifugo 出站调用。
 func retryCall(ctx context.Context, fn func() error) error {
-	return retry.Do(
-		fn,
-		retry.Context(ctx),
-		retry.Attempts(3),
-		retry.Delay(50*time.Millisecond),
-		retry.DelayType(retry.BackOffDelay),
-	)
+	return resilience.Run(ctx, realtimeExecutor, fn)
 }
 
-// Dispatch 向单个频道推送事件消息。
-//
-// 便捷重载：刻意使用后台上下文，使推送与调用方请求的生命周期解耦；
-// 需要取消、超时或链路追踪传播时，请改用 DispatchContext。
-func (m *ManagerImpl) Dispatch(channelName, event string, data any) error {
-	return m.DispatchContext(context.Background(), channelName, event, data)
-}
-
-// DispatchContext 向单个频道推送事件消息（携带上下文）。
+// DispatchContext 向单个频道推送事件消息（受调用方 Context 生命周期控制）。
 func (m *ManagerImpl) DispatchContext(ctx context.Context, channelName, event string, data any) error {
 	if m.disabled() {
 		return nil
@@ -211,39 +138,15 @@ func (m *ManagerImpl) DispatchContext(ctx context.Context, channelName, event st
 			Errorf("missing channel or event")
 	}
 
-	payload, err := json.Marshal(map[string]any{
-		"event": event,
-		"data":  data,
-	})
+	payload, err := marshalEventMessage("Dispatch", event, data)
 	if err != nil {
-		return oops.
-			Code("INTERNAL_SERVER_ERROR").
-			In("ManagerImpl.Dispatch.Marshal").
-			Wrap(err)
-	}
-
-	publishErr := retryCall(ctx, func() error {
-		_, err := m.client.Publish(ctx, channelName, payload)
 		return err
-	})
-	if publishErr != nil {
-		return oops.
-			Code("INTERNAL_SERVER_ERROR").
-			In("ManagerImpl.Dispatch.Publish").
-			With("channel", channelName).
-			With("event", event).
-			Wrap(publishErr)
 	}
 
-	return nil
+	return m.PublishRaw(ctx, channelName, payload)
 }
 
-// Broadcast 批量向多个频道推送同一事件消息。
-func (m *ManagerImpl) Broadcast(channels []string, event string, data any) error {
-	return m.BroadcastContext(context.Background(), channels, event, data)
-}
-
-// BroadcastContext 批量向多个频道推送同一事件消息（携带上下文）。
+// BroadcastContext 批量向多个频道推送同一事件消息（受 Context 控制）。
 func (m *ManagerImpl) BroadcastContext(ctx context.Context, channels []string, event string, data any) error {
 	if m.disabled() || len(channels) == 0 {
 		return nil
@@ -256,26 +159,70 @@ func (m *ManagerImpl) BroadcastContext(ctx context.Context, channels []string, e
 			Errorf("missing event")
 	}
 
-	payload, err := json.Marshal(map[string]any{
-		"event": event,
-		"data":  data,
+	payload, err := marshalEventMessage("Broadcast", event, data)
+	if err != nil {
+		return err
+	}
+
+	return m.BroadcastRaw(ctx, channels, payload)
+}
+
+func marshalEventMessage(op, event string, data any) ([]byte, error) {
+	payload, err := json.Marshal(EventMessage{
+		Event: event,
+		Data:  data,
 	})
 	if err != nil {
-		return oops.
+		return nil, oops.
 			Code("INTERNAL_SERVER_ERROR").
-			In("ManagerImpl.Broadcast.Marshal").
+			In("ManagerImpl." + op + ".Marshal").
 			Wrap(err)
+	}
+	return payload, nil
+}
+
+// PublishRaw 向单个频道直接发布原始字节数据（规避二次 JSON 序列化开销）。
+func (m *ManagerImpl) PublishRaw(ctx context.Context, channelName string, data []byte) error {
+	if m.disabled() {
+		return nil
+	}
+
+	if channelName == "" {
+		return oops.
+			Code("BAD_REQUEST").
+			In("ManagerImpl.PublishRaw").
+			Errorf("missing channel")
 	}
 
 	publishErr := retryCall(ctx, func() error {
-		_, err := m.client.Broadcast(ctx, channels, payload)
+		_, err := m.client.Publish(ctx, channelName, data)
 		return err
 	})
 	if publishErr != nil {
 		return oops.
 			Code("INTERNAL_SERVER_ERROR").
-			In("ManagerImpl.Broadcast.Execute").
-			With("event", event).
+			In("ManagerImpl.PublishRaw.Publish").
+			With("channel", channelName).
+			Wrap(publishErr)
+	}
+
+	return nil
+}
+
+// BroadcastRaw 批量向多个频道直接发布原始字节数据。
+func (m *ManagerImpl) BroadcastRaw(ctx context.Context, channels []string, data []byte) error {
+	if m.disabled() || len(channels) == 0 {
+		return nil
+	}
+
+	publishErr := retryCall(ctx, func() error {
+		_, err := m.client.Broadcast(ctx, channels, data)
+		return err
+	})
+	if publishErr != nil {
+		return oops.
+			Code("INTERNAL_SERVER_ERROR").
+			In("ManagerImpl.BroadcastRaw.Execute").
 			Wrap(publishErr)
 	}
 
@@ -305,7 +252,7 @@ func (m *ManagerImpl) Unsubscribe(ctx context.Context, userID, channel string) e
 }
 
 // History 查询指定频道的历史消息记录。
-func (m *ManagerImpl) History(ctx context.Context, channel string, limit int) ([]gocent.Publication, error) {
+func (m *ManagerImpl) History(ctx context.Context, channel string, limit int) ([]Publication, error) {
 	if m.disabled() || channel == "" {
 		return nil, nil
 	}
@@ -333,9 +280,9 @@ func (m *ManagerImpl) History(ctx context.Context, channel string, limit int) ([
 }
 
 // Presence 查询指定频道的在线成员信息列表。
-func (m *ManagerImpl) Presence(ctx context.Context, channel string) (map[string]gocent.ClientInfo, error) {
+func (m *ManagerImpl) Presence(ctx context.Context, channel string) (map[string]ClientInfo, error) {
 	if m.disabled() || channel == "" {
-		return make(map[string]gocent.ClientInfo), nil
+		return make(map[string]ClientInfo), nil
 	}
 
 	var res gocent.PresenceResult
@@ -356,9 +303,9 @@ func (m *ManagerImpl) Presence(ctx context.Context, channel string) (map[string]
 }
 
 // PresenceStats 查询指定频道的成员在线统计数据（客户端数与独立用户数）。
-func (m *ManagerImpl) PresenceStats(ctx context.Context, channel string) (gocent.PresenceStatsResult, error) {
+func (m *ManagerImpl) PresenceStats(ctx context.Context, channel string) (PresenceStatsResult, error) {
 	if m.disabled() || channel == "" {
-		return gocent.PresenceStatsResult{}, nil
+		return PresenceStatsResult{}, nil
 	}
 
 	var res gocent.PresenceStatsResult
@@ -368,7 +315,7 @@ func (m *ManagerImpl) PresenceStats(ctx context.Context, channel string) (gocent
 		return sErr
 	})
 	if err != nil {
-		return gocent.PresenceStatsResult{}, oops.
+		return PresenceStatsResult{}, oops.
 			Code("INTERNAL_SERVER_ERROR").
 			In("ManagerImpl.PresenceStats").
 			With("channel", channel).
@@ -376,71 +323,6 @@ func (m *ManagerImpl) PresenceStats(ctx context.Context, channel string) (gocent
 	}
 
 	return res, nil
-}
-
-// DispatchAfterCommit 在当前数据库事务提交后向单个频道推送事件。
-// 若无活动事务，则立即执行。使用 context.WithoutCancel 防止 HTTP 请求取消中断推送。
-func (m *ManagerImpl) DispatchAfterCommit(ctx context.Context, channelName, event string, data any) error {
-	if m.disabled() {
-		return nil
-	}
-	if channelName == "" || event == "" {
-		return oops.
-			Code("BAD_REQUEST").
-			In("ManagerImpl.DispatchAfterCommit").
-			Errorf("missing channel or event")
-	}
-
-	bgCtx := context.WithoutCancel(ctx)
-	dispatch := func() {
-		if err := m.DispatchContext(bgCtx, channelName, event, data); err != nil {
-			m.log(bgCtx).Error().
-				Err(err).
-				Str("channel", channelName).
-				Str("event", event).
-				Msg("failed to asynchronously dispatch realtime event after commit")
-		}
-	}
-
-	if m.afterCommit != nil {
-		m.afterCommit(ctx, dispatch)
-		return nil
-	}
-
-	AfterCommit(ctx, dispatch)
-	return nil
-}
-
-// BroadcastAfterCommit 在当前数据库事务提交后批量向多个频道推送事件。
-// 若无活动事务，则立即执行。使用 context.WithoutCancel 防止 HTTP 请求取消中断推送。
-func (m *ManagerImpl) BroadcastAfterCommit(ctx context.Context, channels []string, event string, data any) error {
-	if m.disabled() || len(channels) == 0 {
-		return nil
-	}
-	if event == "" {
-		return oops.
-			Code("BAD_REQUEST").
-			In("ManagerImpl.BroadcastAfterCommit").
-			Errorf("missing event")
-	}
-
-	bgCtx := context.WithoutCancel(ctx)
-	dispatch := func() {
-		if err := m.BroadcastContext(bgCtx, channels, event, data); err != nil {
-			m.log(bgCtx).Error().
-				Err(err).
-				Str("event", event).
-				Msg("failed to asynchronously broadcast realtime event after commit")
-		}
-	}
-
-	if m.afterCommit != nil {
-		m.afterCommit(ctx, dispatch)
-		return nil
-	}
-
-	AfterCommit(ctx, dispatch)
-	return nil
 }
 
 // GenerateConnectionToken 为指定用户签发 Centrifugo 客户端连接凭证。
@@ -455,6 +337,18 @@ func (m *ManagerImpl) GenerateConnectionToken(
 		return "", errors.New("realtime config is nil")
 	}
 	return GenerateConnectionToken(m.cfg.Secret, userID, expireAt, info, meta, channels...)
+}
+
+// GenerateSubscriptionToken 为特定频道签发客户端订阅凭证（支持免 Webhook 高性能直连）。
+func (m *ManagerImpl) GenerateSubscriptionToken(
+	userID, channel string,
+	expireAt time.Time,
+	opts ...SubscriptionTokenOption,
+) (string, error) {
+	if m.cfg == nil {
+		return "", errors.New("realtime config is nil")
+	}
+	return GenerateSubscriptionToken(m.cfg.Secret, userID, channel, expireAt, opts...)
 }
 
 // Token 快捷签发用于客户端认证的连接凭证（GenerateConnectionToken 的便捷别名）。

@@ -5,8 +5,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/errs"
-	"bgin/internal/platform/identity"
+	platformRealtime "bgin/internal/platform/realtime"
 	"bgin/internal/platform/response"
 )
 
@@ -33,7 +34,7 @@ func NewHandler(service *Service) *Handler {
 // @x-order      1
 // @Router       /realtime/token [get]
 func (h *Handler) GetToken(c *gin.Context) {
-	id, ok := identity.FromContext(c.Request.Context())
+	id, ok := authentication.FromContext(c.Request.Context())
 	if !ok {
 		_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
 		return
@@ -67,9 +68,9 @@ func (h *Handler) ProxySubscribe(c *gin.Context) {
 	}
 
 	// 签名头优先读取 X-Centrifugo-Signature 或 X-Signature
-	sig := c.GetHeader("X-Centrifugo-Signature")
+	sig := c.GetHeader(platformRealtime.CentrifugoSignatureHeader)
 	if sig == "" {
-		sig = c.GetHeader("X-Signature")
+		sig = c.GetHeader(platformRealtime.CentrifugoSignatureLegacyHeader)
 	}
 
 	resp, err := h.service.AuthorizeSubscribe(c.Request.Context(), body, sig)

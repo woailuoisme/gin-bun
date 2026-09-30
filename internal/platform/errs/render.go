@@ -9,14 +9,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/samber/oops"
+	"go.uber.org/zap"
 
+	"bgin/internal/platform/i18n"
 	"bgin/internal/platform/logger"
 )
 
@@ -35,6 +39,51 @@ type Response struct {
 	Errors  map[string][]string `json:"errors,omitempty"`
 }
 
+// 敏感词特征，用于安全脱敏防止底层 SQL、连接信息与凭证外泄。
+var sensitivePatterns = []string{
+	"password=", "secret=", "token=", "authorization:",
+	"select ", "insert into", "update ", "delete from", "drop table",
+	"pq: ", "pgx: ", "sql: ",
+}
+
+// SanitizeMessage 对对外输出的错误描述进行脱敏与安全清洗。
+func SanitizeMessage(msg string) string {
+	lower := strings.ToLower(msg)
+	for _, p := range sensitivePatterns {
+		if strings.Contains(lower, p) {
+			return msgInternal
+		}
+	}
+	return msg
+}
+
+// errorCodeContextKey 是 gin 上下文里承载已渲染错误码的键。
+//
+// 键名只在本包出现，读写一律走下面两个 Helper：AGENTS §3.6 禁止跨包裸字符串 Context 键，
+// 且这一对读写分散在 errs 与 middleware 两个包，裸字符串极易改一边漏一边。
+const errorCodeContextKey = "error_code"
+
+// SetErrorCodeContext 把最终错误码写入 gin 上下文，供访问日志与监控采集。
+func SetErrorCodeContext(c *gin.Context, code string) {
+	if c == nil || code == "" {
+		return
+	}
+	c.Set(errorCodeContextKey, code)
+}
+
+// ErrorCodeFromContext 读取 gin 上下文中的错误码，缺失或类型不符时返回空串。
+func ErrorCodeFromContext(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	code, ok := c.Get(errorCodeContextKey)
+	if !ok {
+		return ""
+	}
+	str, _ := code.(string)
+	return str
+}
+
 // Render 映射统一错误响应并写回客户端。
 //
 // 5xx 记录错误根因与调用堆栈；4xx 由外层 AccessLog 统一输出访问日志，避免重复告警。
@@ -44,7 +93,18 @@ func Render(c *gin.Context, err error) {
 	}
 
 	status, resp := Map(err)
-	c.Set("error_code", resp.Code)
+
+	// 敏感错误信息脱敏保护
+	resp.Message = SanitizeMessage(resp.Message)
+
+	// 针对携带待翻译 fieldKeys 的业务错误，自动尝试使用全局 i18n 与请求头 Accept-Language 完成翻译
+	if len(resp.Errors) == 0 {
+		if translated := resolveTranslatedFieldKeys(c, err); translated != nil {
+			resp.Errors = translated
+		}
+	}
+
+	SetErrorCodeContext(c, resp.Code)
 	if len(c.Errors) == 0 {
 		_ = c.Error(err)
 	}
@@ -52,13 +112,68 @@ func Render(c *gin.Context, err error) {
 	if status >= http.StatusInternalServerError {
 		// 5xx 记录底层根因与调用堆栈，避免对外统一文案遮蔽排错细节。
 		log := logger.FromContext(c.Request.Context())
-		log.Error().
-			Str("stack", Stack(err)).
-			Err(RootCause(err)).
-			Int("status", status).Str("code", resp.Code).Msg("request processing failed")
+		zapFields := []zap.Field{
+			zap.String("stack", Stack(err)),
+			zap.Error(RootCause(err)),
+			zap.Int("status", status),
+			zap.String("code", resp.Code),
+		}
+		if extra := OopsFields(err); len(extra) > 0 {
+			zapFields = append(zapFields, extra...)
+		}
+		log.Error("request processing failed", zapFields...)
 	}
 
 	c.AbortWithStatusJSON(status, resp)
+}
+
+var sensitiveKeyFragments = []string{
+	"password", "secret", "token", "credential", "auth", "key",
+}
+
+func isSensitiveKey(k string) bool {
+	lower := strings.ToLower(k)
+	for _, frag := range sensitiveKeyFragments {
+		if strings.Contains(lower, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeValue(v any) any {
+	if s, ok := v.(string); ok {
+		return SanitizeMessage(s)
+	}
+	return v
+}
+
+// OopsFields 提取错误链中 oops 绑定的上下文信息，并自动对敏感键与敏感值执行脱敏处理。
+func OopsFields(err error) []zap.Field {
+	oopsErr, ok := oops.AsOops(err)
+	if !ok {
+		return nil
+	}
+
+	ctxMap := oopsErr.Context()
+	if len(ctxMap) == 0 {
+		return nil
+	}
+
+	fields := make([]zap.Field, 0, len(ctxMap))
+	for k, v := range ctxMap {
+		if isSensitiveKey(k) {
+			fields = append(fields, zap.String(k, "***"))
+			continue
+		}
+		fields = append(fields, zap.Any(k, sanitizeValue(v)))
+	}
+
+	slices.SortFunc(fields, func(a, b zap.Field) int {
+		return cmp.Compare(a.Key, b.Key)
+	})
+
+	return fields
 }
 
 // RootCause 提取用于日志记录的底层真实错误。
@@ -107,12 +222,13 @@ func Map(err error) (int, Response) {
 	}
 
 	// 识别已在 statuses 登记过的 oops 错误。
+	// 未主动声明对外文案时按状态码兜底，避免 4xx 也回一句"意外错误"。
 	if oopsErr, ok := oops.AsOops(err); ok {
 		code := Code(fmt.Sprintf("%v", oopsErr.Code()))
-		if _, registered := statuses[code]; registered {
-			return Status(code), Response{
+		if status, registered := statuses[code]; registered {
+			return status, Response{
 				Code:    string(code),
-				Message: cmp.Or(oopsErr.Public(), msgInternal),
+				Message: cmp.Or(oopsErr.Public(), MessageForStatus(status)),
 			}
 		}
 	}
@@ -156,4 +272,33 @@ func mapPgError(err *pgconn.PgError) (int, Response) {
 	default:
 		return http.StatusInternalServerError, Response{Code: string(CodeInternal), Message: msgInternal}
 	}
+}
+
+// resolveTranslatedFieldKeys 针对携带待翻译 fieldKeys 的业务错误，自动使用全局 i18n 完成翻译。
+func resolveTranslatedFieldKeys(c *gin.Context, err error) map[string][]string {
+	bizErr, ok := As(err)
+	if !ok || len(bizErr.fieldKeys) == 0 {
+		return nil
+	}
+
+	translator := i18n.Default()
+	if translator == nil {
+		return nil
+	}
+
+	lang := translator.Language(c.GetHeader("Accept-Language"))
+	translated := make(map[string][]string, len(bizErr.fieldKeys))
+	for field, msgKeys := range bizErr.fieldKeys {
+		for _, mk := range msgKeys {
+			rendered := translator.ValidationMessage(lang, mk.Key, field, mk.Param)
+			if rendered != "" {
+				translated[field] = append(translated[field], rendered)
+			}
+		}
+	}
+
+	if len(translated) == 0 {
+		return nil
+	}
+	return translated
 }

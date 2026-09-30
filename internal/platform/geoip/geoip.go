@@ -2,6 +2,8 @@
 package geoip
 
 import (
+	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -11,13 +13,13 @@ import (
 	"sync/atomic"
 
 	"github.com/lionsoul2014/ip2region/binding/golang/xdb"
-	"github.com/rs/zerolog"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 )
 
 // fallbackLogger 是装配期未注入日志器时的兜底输出。
-var fallbackLogger = zerolog.New(os.Stderr).With().Timestamp().Logger()
+var fallbackLogger = zap.L()
 
 const (
 	// internalIP 表示内网/局域网/环回地址的默认标识。
@@ -32,7 +34,8 @@ const (
 type addrKind int
 
 const (
-	addrKindPublicIPv4 addrKind = iota
+	addrKindUnknown addrKind = iota
+	addrKindPublicIPv4
 	addrKindInternal
 	addrKindIPv6
 )
@@ -84,7 +87,7 @@ func parseIPString(ipStr string) (netip.Addr, error) {
 
 func classifyAddr(addr netip.Addr) (addrKind, error) {
 	if !addr.IsValid() {
-		return addrKindPublicIPv4, errors.New("invalid ip address")
+		return addrKindUnknown, errors.New("invalid ip address")
 	}
 	if isInternalAddr(addr) {
 		return addrKindInternal, nil
@@ -96,8 +99,8 @@ func classifyAddr(addr netip.Addr) (addrKind, error) {
 }
 
 func resolveDBPath(defaultPath string, overrides ...string) string {
-	if len(overrides) > 0 && strings.TrimSpace(overrides[0]) != "" {
-		return strings.TrimSpace(overrides[0])
+	if len(overrides) > 0 {
+		return cmp.Or(strings.TrimSpace(overrides[0]), defaultPath)
 	}
 	return defaultPath
 }
@@ -187,16 +190,25 @@ func sanitizePart(s string) string {
 	return s
 }
 
-// Service 定义 IP 归属地检索服务的标准契约。
+// Provider 定义 IP 物理地理归属地检索驱动规范，遵循依赖倒置与开闭原则。
+type Provider interface {
+	// SearchAddr 检索指定公网 netip.Addr 的归属地数据。
+	SearchAddr(ctx context.Context, addr netip.Addr) (*Location, error)
+	// Close 释放驱动底层资源。
+	Close() error
+}
+
+// Service 定义 IP 归属地检索服务的标准契约，支持 Context 贯穿与零堆分配路径。
 type Service interface {
-	// Lookup 解析指定 IP 字符串并返回结构化归属地数据。
-	Lookup(ip string) (*Location, error)
-	// LookupAddr 解析指定 netip.Addr 并返回结构化归属地数据（零堆分配快速路径）。
-	LookupAddr(addr netip.Addr) (*Location, error)
-	// Summary 便捷获取指定 IP 的人性化地域描述字符串，支持函数式格式化选项。
-	Summary(ip string, opts ...FormatOption) string
-	// SummaryAddr 便捷获取指定 netip.Addr 的人性化地域描述字符串。
-	SummaryAddr(addr netip.Addr, opts ...FormatOption) string
+	// LookupCtx 解析指定 IP 字符串并返回结构化归属地数据（带 Context 传播与超时控制）。
+	LookupCtx(ctx context.Context, ip string) (*Location, error)
+	// LookupAddrCtx 解析指定 netip.Addr 并返回结构化归属地数据（零堆分配快速路径）。
+	LookupAddrCtx(ctx context.Context, addr netip.Addr) (*Location, error)
+	// SummaryCtx 便捷获取指定 IP 的人性化地域描述字符串。
+	SummaryCtx(ctx context.Context, ip string, opts ...FormatOption) string
+	// SummaryAddrCtx 便捷获取指定 netip.Addr 的人性化地域描述字符串。
+	SummaryAddrCtx(ctx context.Context, addr netip.Addr, opts ...FormatOption) string
+
 	// Reload 重新加载 IP 归属地数据库（支持热重载，可选指定新路径）。
 	Reload(dbPath ...string) error
 	// Close 释放检索器占用的内存与文件句柄。
@@ -231,7 +243,7 @@ func newEngine(dbPath string, cBuff []byte) (*xdbEngine, error) {
 	eng.pool.New = func() any {
 		searcher, err := xdb.NewWithBuffer(eng.version, eng.cBuff)
 		if err != nil {
-			fallbackLogger.Error().Err(err).Msg("failed to create pooled ip2region searcher")
+			fallbackLogger.Error("failed to create pooled ip2region searcher", zap.Error(err))
 			return nil
 		}
 		return searcher
@@ -262,23 +274,72 @@ func (e *xdbEngine) search(ipBytes []byte) (string, error) {
 	return searcher.Search(ipBytes)
 }
 
-// xdbService 基于 ip2region 内存全缓冲模式与 atomic.Pointer 无锁热重载的检索服务实现。
-type xdbService struct {
-	cfg    config.GeoIPConfig
+// xdbProvider 实现基于 ip2region 的 Provider 驱动。
+type xdbProvider struct {
 	engine atomic.Pointer[xdbEngine]
 }
 
-// Lookup 执行 IP 字符串地址检索。
-func (s *xdbService) Lookup(ipStr string) (*Location, error) {
+var _ Provider = (*xdbProvider)(nil)
+
+func newXDBProvider(eng *xdbEngine) *xdbProvider {
+	p := &xdbProvider{}
+	p.engine.Store(eng)
+	return p
+}
+
+func (p *xdbProvider) SearchAddr(_ context.Context, addr netip.Addr) (*Location, error) {
+	eng := p.engine.Load()
+	if eng == nil {
+		return &unknownLocationModel, nil
+	}
+
+	ip4 := addr.As4()
+	raw, err := eng.search(ip4[:])
+	if err != nil {
+		return nil, fmt.Errorf("ip2region search failed: %w", err)
+	}
+
+	parsed := ParseRaw(raw)
+	return &parsed, nil
+}
+
+func (p *xdbProvider) Close() error {
+	p.engine.Store(nil)
+	return nil
+}
+
+// noopProvider 是降级空驱动。
+type noopProvider struct{}
+
+var _ Provider = (*noopProvider)(nil)
+
+func (n *noopProvider) SearchAddr(_ context.Context, _ netip.Addr) (*Location, error) {
+	return &unknownLocationModel, nil
+}
+
+func (n *noopProvider) Close() error {
+	return nil
+}
+
+// defaultService 统一封装 IP 地址分类、缓存及底层 Provider 调度的门面服务。
+type defaultService struct {
+	cfg      config.GeoIPConfig
+	provider atomic.Pointer[Provider]
+}
+
+var _ Service = (*defaultService)(nil)
+
+// LookupCtx 解析指定 IP 字符串并返回结构化归属地数据（带 Context 传播与超时控制）。
+func (s *defaultService) LookupCtx(ctx context.Context, ipStr string) (*Location, error) {
 	addr, err := parseIPString(ipStr)
 	if err != nil {
 		return nil, err
 	}
-	return s.LookupAddr(addr)
+	return s.LookupAddrCtx(ctx, addr)
 }
 
-// LookupAddr 执行 netip.Addr 原生地址检索（零堆分配快速路径）。
-func (s *xdbService) LookupAddr(addr netip.Addr) (*Location, error) {
+// LookupAddrCtx 解析指定 netip.Addr 并返回结构化归属地数据（零堆分配快速路径）。
+func (s *defaultService) LookupAddrCtx(ctx context.Context, addr netip.Addr) (*Location, error) {
 	unmapped := addr.Unmap()
 	kind, err := classifyAddr(unmapped)
 	if err != nil {
@@ -293,33 +354,26 @@ func (s *xdbService) LookupAddr(addr netip.Addr) (*Location, error) {
 	case addrKindPublicIPv4:
 	}
 
-	eng := s.engine.Load()
-	if eng == nil {
+	p := s.provider.Load()
+	if p == nil || *p == nil {
 		return &unknownLocationModel, nil
 	}
 
-	ip4 := unmapped.As4()
-	raw, err := eng.search(ip4[:])
-	if err != nil {
-		return nil, fmt.Errorf("ip2region search failed: %w", err)
-	}
-
-	parsed := ParseRaw(raw)
-	return &parsed, nil
+	return (*p).SearchAddr(ctx, unmapped)
 }
 
-// Summary 获取指定 IP 的精简地域描述。
-func (s *xdbService) Summary(ipStr string, opts ...FormatOption) string {
-	loc, err := s.Lookup(ipStr)
+// SummaryCtx 便捷获取指定 IP 的人性化地域描述字符串。
+func (s *defaultService) SummaryCtx(ctx context.Context, ipStr string, opts ...FormatOption) string {
+	loc, err := s.LookupCtx(ctx, ipStr)
 	if err != nil || loc == nil {
 		return unknownLocation
 	}
 	return loc.Format(opts...)
 }
 
-// SummaryAddr 获取指定 netip.Addr 的精简地域描述。
-func (s *xdbService) SummaryAddr(addr netip.Addr, opts ...FormatOption) string {
-	loc, err := s.LookupAddr(addr)
+// SummaryAddrCtx 便捷获取指定 netip.Addr 的人性化地域描述字符串。
+func (s *defaultService) SummaryAddrCtx(ctx context.Context, addr netip.Addr, opts ...FormatOption) string {
+	loc, err := s.LookupAddrCtx(ctx, addr)
 	if err != nil || loc == nil {
 		return unknownLocation
 	}
@@ -327,8 +381,11 @@ func (s *xdbService) SummaryAddr(addr netip.Addr, opts ...FormatOption) string {
 }
 
 // Reload 无锁原子替换底层检索器（零停机热重载）。
-func (s *xdbService) Reload(dbPaths ...string) error {
+func (s *defaultService) Reload(dbPaths ...string) error {
 	targetPath := resolveDBPath(s.cfg.DBPath, dbPaths...)
+	if targetPath == "" {
+		return nil
+	}
 	if _, err := os.Stat(targetPath); err != nil {
 		return fmt.Errorf("geoip database file stat failed: %w", err)
 	}
@@ -338,73 +395,33 @@ func (s *xdbService) Reload(dbPaths ...string) error {
 		return err
 	}
 
-	s.engine.Store(eng)
+	var p Provider = newXDBProvider(eng)
+	s.provider.Store(&p)
 	return nil
 }
 
 // Close 释放检索服务底层引用。
-func (s *xdbService) Close() {
-	s.engine.Store(nil)
-}
-
-// noopService 当数据库文件不存在或配置关闭时的降级空实现。
-type noopService struct{}
-
-// Lookup 返回内网、IPv6 或默认未知归属地。
-func (n *noopService) Lookup(ipStr string) (*Location, error) {
-	addr, err := parseIPString(ipStr)
-	if err != nil {
-		return nil, err
+func (s *defaultService) Close() {
+	p := s.provider.Load()
+	if p != nil && *p != nil {
+		_ = (*p).Close()
 	}
-	return n.LookupAddr(addr)
+	s.provider.Store(nil)
 }
-
-// LookupAddr 返回基于 netip.Addr 的分类归属地。
-func (n *noopService) LookupAddr(addr netip.Addr) (*Location, error) {
-	kind, err := classifyAddr(addr.Unmap())
-	if err != nil {
-		return nil, err
-	}
-
-	switch kind {
-	case addrKindInternal:
-		return &internalLocation, nil
-	case addrKindIPv6:
-		return &ipv6Location, nil
-	default:
-		return &unknownLocationModel, nil
-	}
-}
-
-// Summary 获取降级模式下的地域描述。
-func (n *noopService) Summary(ipStr string, opts ...FormatOption) string {
-	loc, err := n.Lookup(ipStr)
-	if err != nil || loc == nil {
-		return unknownLocation
-	}
-	return loc.Format(opts...)
-}
-
-// SummaryAddr 获取降级模式下的 netip.Addr 地域描述。
-func (n *noopService) SummaryAddr(addr netip.Addr, opts ...FormatOption) string {
-	loc, err := n.LookupAddr(addr)
-	if err != nil || loc == nil {
-		return unknownLocation
-	}
-	return loc.Format(opts...)
-}
-
-// Reload 空操作。
-func (n *noopService) Reload(_ ...string) error {
-	return nil
-}
-
-// Close 空操作。
-func (n *noopService) Close() {}
 
 // NewNoop 创建安全的降级空实现。
 func NewNoop() Service {
-	return &noopService{}
+	var p Provider = &noopProvider{}
+	svc := &defaultService{}
+	svc.provider.Store(&p)
+	return svc
+}
+
+// NewWithProvider 允许外部显式注入自定义 Provider 构建服务。
+func NewWithProvider(p Provider) Service {
+	svc := &defaultService{}
+	svc.provider.Store(&p)
+	return svc
 }
 
 // NewService 根据配置构建 GeoIP 服务实例。若数据库文件缺失则自动启用安全降级。
@@ -414,22 +431,21 @@ func NewService(cfg config.GeoIPConfig) (Service, error) {
 	}
 
 	if _, err := os.Stat(cfg.DBPath); os.IsNotExist(err) {
-		fallbackLogger.Warn().
-			Str("path", cfg.DBPath).
-			Msg("geoip database file does not exist, degrading to noop service")
+		fallbackLogger.Warn("geoip database file does not exist, degrading to noop service",
+			zap.String("path", cfg.DBPath))
 		return NewNoop(), nil
 	}
 
 	eng, err := loadEngine(cfg.DBPath)
 	if err != nil {
-		fallbackLogger.Warn().
-			Err(err).
-			Str("path", cfg.DBPath).
-			Msg("failed to load geoip xdb engine, degrading to noop service")
+		fallbackLogger.Warn("failed to load geoip xdb engine, degrading to noop service",
+			zap.Error(err),
+			zap.String("path", cfg.DBPath))
 		return NewNoop(), nil
 	}
 
-	svc := &xdbService{cfg: cfg}
-	svc.engine.Store(eng)
+	var p Provider = newXDBProvider(eng)
+	svc := &defaultService{cfg: cfg}
+	svc.provider.Store(&p)
 	return svc, nil
 }

@@ -4,26 +4,22 @@ package notification
 import (
 	"cmp"
 	"context"
-	"strings"
 	"sync"
-
-	"github.com/uptrace/bun"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/mailer"
 	chatChannel "bgin/internal/platform/notification/channel/chat"
 	telegramDriver "bgin/internal/platform/notification/channel/chat/telegram"
-	dbChannel "bgin/internal/platform/notification/channel/database"
+	gotifyChannel "bgin/internal/platform/notification/channel/gotify"
+	gotifyHTTP "bgin/internal/platform/notification/channel/gotify/http"
 	mailChannel "bgin/internal/platform/notification/channel/mail"
 	rtChannel "bgin/internal/platform/notification/channel/realtime"
 	smsChannel "bgin/internal/platform/notification/channel/sms"
 	aliyunSMS "bgin/internal/platform/notification/channel/sms/aliyun"
 	logSMS "bgin/internal/platform/notification/channel/sms/log"
-	mockSMS "bgin/internal/platform/notification/channel/sms/mock"
 	smsbaoSMS "bgin/internal/platform/notification/channel/sms/smsbao"
 	tencentSMS "bgin/internal/platform/notification/channel/sms/tencent"
 	"bgin/internal/platform/realtime"
-	"bgin/internal/platform/txhook"
 )
 
 var (
@@ -46,7 +42,10 @@ func DefaultManager() *Notifier {
 }
 
 // New 根据配置与基础依赖构建统一多渠道通知引擎实例。
-func New(cfg config.NotificationConfig, db *bun.DB, m mailer.Mailer, rt realtime.Manager) (*Notifier, error) {
+//
+// 需要访问 shared 领域表的渠道（如 database）不在此处装配：平台层不得反向依赖
+// shared 业务包，改由 bootstrap 构造后经 extra 参数注入。
+func New(cfg config.NotificationConfig, m mailer.Mailer, rt realtime.Manager, extra ...Channel) (*Notifier, error) {
 	poolSize := cmp.Or(cfg.WorkerPool, 10)
 	queueSize := cmp.Or(cfg.QueueSize, 100)
 
@@ -57,9 +56,12 @@ func New(cfg config.NotificationConfig, db *bun.DB, m mailer.Mailer, rt realtime
 		n.Extend("mail", mailChannel.NewChannel(m))
 	}
 
-	// 2. 数据库渠道 (database)
-	if db != nil {
-		n.Extend("database", dbChannel.NewChannel(db))
+	// 2. 由调用方注入的渠道（database 等）
+	for _, ch := range extra {
+		if ch == nil {
+			continue
+		}
+		n.Extend(ch.Name(), ch)
 	}
 
 	// 3. 实时广播渠道 (realtime)
@@ -68,48 +70,7 @@ func New(cfg config.NotificationConfig, db *bun.DB, m mailer.Mailer, rt realtime
 	}
 
 	// 4. 短信渠道 (sms)
-	smsDriver := cmp.Or(strings.ToLower(strings.TrimSpace(cfg.SMS.Driver)), "log")
-	smsCh := smsChannel.NewChannel(smsDriver)
-	smsCh.RegisterDriver("log", logSMS.NewDriver())
-	smsCh.RegisterDriver("mock", mockSMS.NewDriver())
-
-	if cfg.SMS.Aliyun.AccessKeyID != "" && cfg.SMS.Aliyun.AccessKeySecret != "" {
-		aliDriver, err := aliyunSMS.NewDriver(aliyunSMS.Config{
-			AccessKeyID:     cfg.SMS.Aliyun.AccessKeyID,
-			AccessKeySecret: cfg.SMS.Aliyun.AccessKeySecret,
-			SignName:        cmp.Or(cfg.SMS.Aliyun.SignName, cfg.SMS.DefaultSignName),
-			TemplateCode:    cfg.SMS.Aliyun.TemplateCode,
-		})
-		if err == nil {
-			smsCh.RegisterDriver("aliyun", aliDriver)
-		}
-	}
-
-	if cfg.SMS.Tencent.SecretID != "" && cfg.SMS.Tencent.SecretKey != "" {
-		tcDriver, err := tencentSMS.NewDriver(tencentSMS.Config{
-			SecretID:   cfg.SMS.Tencent.SecretID,
-			SecretKey:  cfg.SMS.Tencent.SecretKey,
-			AppID:      cfg.SMS.Tencent.AppID,
-			SignName:   cmp.Or(cfg.SMS.Tencent.SignName, cfg.SMS.DefaultSignName),
-			TemplateID: cfg.SMS.Tencent.TemplateID,
-			Region:     cfg.SMS.Tencent.Region,
-		})
-		if err == nil {
-			smsCh.RegisterDriver("tencent", tcDriver)
-		}
-	}
-
-	if cfg.SMS.SMSBao.Username != "" && cfg.SMS.SMSBao.APIKey != "" {
-		smsbaoDriver, err := smsbaoSMS.NewDriver(smsbaoSMS.Config{
-			Username: cfg.SMS.SMSBao.Username,
-			APIKey:   cfg.SMS.SMSBao.APIKey,
-		})
-		if err == nil {
-			smsCh.RegisterDriver("smsbao", smsbaoDriver)
-		}
-	}
-
-	n.Extend("sms", smsCh)
+	n.Extend("sms", buildSMSChannel(cfg))
 
 	// 5. 即时通讯渠道 (chat - telegram)
 	chatCh := chatChannel.NewChannel("telegram")
@@ -125,6 +86,22 @@ func New(cfg config.NotificationConfig, db *bun.DB, m mailer.Mailer, rt realtime
 	}
 	n.Extend("chat", chatCh)
 
+	// 6. Gotify 实时推送渠道 (gotify)
+	gotifyCh := gotifyChannel.NewChannel("http").
+		WithDefaults(cfg.Gotify.ServerURL, cfg.Gotify.AppToken, cfg.Gotify.Priority)
+
+	if cfg.Gotify.ServerURL != "" || cfg.Gotify.AppToken != "" {
+		httpDriver, err := gotifyHTTP.NewDriver(gotifyHTTP.Config{
+			ServerURL: cfg.Gotify.ServerURL,
+			AppToken:  cfg.Gotify.AppToken,
+			Priority:  cfg.Gotify.Priority,
+		})
+		if err == nil {
+			gotifyCh.RegisterDriver("http", httpDriver)
+		}
+	}
+	n.Extend("gotify", gotifyCh)
+
 	SetDefaultManager(n)
 	return n, nil
 }
@@ -137,13 +114,6 @@ func Send(ctx context.Context, notifiables any, notif Notification, opts ...Send
 	return nil
 }
 
-// SendAfterCommit 在当前数据库事务成功提交后投递通知。
-func SendAfterCommit(ctx context.Context, notifiables any, notif Notification, opts ...SendOption) {
-	txhook.AfterCommit(ctx, func() {
-		_ = Send(ctx, notifiables, notif, opts...)
-	})
-}
-
 // SendParallel 使用默认管理器并发发送通知。
 func SendParallel(ctx context.Context, notifiables any, notif Notification, opts ...SendOption) error {
 	if mgr := DefaultManager(); mgr != nil {
@@ -152,45 +122,11 @@ func SendParallel(ctx context.Context, notifiables any, notif Notification, opts
 	return nil
 }
 
-// SendParallelAfterCommit 在当前数据库事务成功提交后并发投递通知。
-func SendParallelAfterCommit(ctx context.Context, notifiables any, notif Notification, opts ...SendOption) {
-	txhook.AfterCommit(ctx, func() {
-		_ = SendParallel(ctx, notifiables, notif, opts...)
-	})
-}
-
-// NewNotificationManager 为向后兼容提供构造函数。
-func NewNotificationManager(m mailer.Mailer) *Notifier {
-	n := NewNotifier(10, 100)
-	if m != nil {
-		n.Extend("mail", mailChannel.NewChannel(m))
+// Use 为全局默认管理器注册管道中间件。
+func Use(mw ...Middleware) {
+	if mgr := DefaultManager(); mgr != nil {
+		mgr.Use(mw...)
 	}
-	return n
-}
-
-// NewMailChannel 创建邮件通知渠道（直接注入底层 Mailer）。
-func NewMailChannel(m mailer.Mailer) *mailChannel.Channel {
-	return mailChannel.NewChannel(m)
-}
-
-// NewRealtimeChannel 创建实时广播通知渠道。
-func NewRealtimeChannel(rt realtime.Manager) *rtChannel.Channel {
-	return rtChannel.NewChannel(rt)
-}
-
-// NewDatabaseChannel 创建数据库通知渠道。
-func NewDatabaseChannel(db *bun.DB) *dbChannel.Channel {
-	return dbChannel.NewChannel(db)
-}
-
-// NewSMSChannel 创建短信通知渠道。
-func NewSMSChannel(defaultDriver string) *smsChannel.Channel {
-	return smsChannel.NewChannel(defaultDriver)
-}
-
-// NewChatChannel 创建即时通讯通知渠道。
-func NewChatChannel(defaultDriver string) *chatChannel.Channel {
-	return chatChannel.NewChannel(defaultDriver)
 }
 
 // 类型别名以保持与现有业务领域的无缝兼容。
@@ -199,11 +135,6 @@ type (
 	RealtimeNotification = rtChannel.Notification
 	// RealtimeMessage 实时广播消息载荷。
 	RealtimeMessage = rtChannel.Message
-
-	// DatabaseNotification 数据库持久化通知接口。
-	DatabaseNotification = dbChannel.Notification
-	// DatabaseMessage 数据库持久化消息载荷。
-	DatabaseMessage = dbChannel.Message
 
 	// MailNotification 邮件通知接口。
 	MailNotification = mailChannel.Notification
@@ -219,6 +150,11 @@ type (
 	ChatNotification = chatChannel.Notification
 	// ChatMessage 即时通讯通知消息载荷。
 	ChatMessage = chatChannel.Message
+
+	// GotifyNotification Gotify 推送通知接口。
+	GotifyNotification = gotifyChannel.Notification
+	// GotifyMessage Gotify 推送通知消息载荷。
+	GotifyMessage = gotifyChannel.Message
 )
 
 // NewSMSMessage 创建短信载荷构建器。
@@ -234,4 +170,56 @@ func NewMailMessage() *MailMessage {
 // NewChatMessage 创建即时通讯载荷构建器。
 func NewChatMessage() *ChatMessage {
 	return chatChannel.NewMessage()
+}
+
+// NewGotifyMessage 创建 Gotify 载荷构建器。
+func NewGotifyMessage(msg ...string) *GotifyMessage {
+	return gotifyChannel.NewMessage(msg...)
+}
+
+// buildSMSChannel 按配置装配短信渠道并注册全部可用驱动。
+// 驱动构造失败（凭据不完整）时静默跳过：配置校验已在启动期拦下必填项缺失。
+func buildSMSChannel(cfg config.NotificationConfig) *smsChannel.Channel {
+	smsCh := smsChannel.NewChannel(cmp.Or(cfg.SMS.NormalizedDriver(), "log"))
+	smsCh.RegisterDriver("log", logSMS.NewDriver())
+
+	if cfg.SMS.Aliyun.AccessKeyID != "" && cfg.SMS.Aliyun.AccessKeySecret != "" {
+		driver, err := aliyunSMS.NewDriver(aliyunSMS.Config{
+			AccessKeyID:     cfg.SMS.Aliyun.AccessKeyID,
+			AccessKeySecret: cfg.SMS.Aliyun.AccessKeySecret,
+			SignName:        cmp.Or(cfg.SMS.Aliyun.SignName, cfg.SMS.DefaultSignName),
+			TemplateCode:    cfg.SMS.Aliyun.TemplateCode,
+		})
+		if err == nil {
+			smsCh.RegisterDriver("aliyun", driver)
+		}
+	}
+
+	if cfg.SMS.Tencent.SecretID != "" && cfg.SMS.Tencent.SecretKey != "" {
+		driver, err := tencentSMS.NewDriver(tencentSMS.Config{
+			SecretID:   cfg.SMS.Tencent.SecretID,
+			SecretKey:  cfg.SMS.Tencent.SecretKey,
+			AppID:      cfg.SMS.Tencent.AppID,
+			SignName:   cmp.Or(cfg.SMS.Tencent.SignName, cfg.SMS.DefaultSignName),
+			TemplateID: cfg.SMS.Tencent.TemplateID,
+			Region:     cfg.SMS.Tencent.Region,
+		})
+		if err == nil {
+			smsCh.RegisterDriver("tencent", driver)
+		}
+	}
+
+	if cfg.SMS.SMSBao.Username != "" && cfg.SMS.SMSBao.APIKey != "" {
+		driver, err := smsbaoSMS.NewDriver(smsbaoSMS.Config{
+			Username: cfg.SMS.SMSBao.Username,
+			APIKey:   cfg.SMS.SMSBao.APIKey,
+			SignName: cmp.Or(cfg.SMS.SMSBao.SignName, cfg.SMS.DefaultSignName),
+			Template: cfg.SMS.SMSBao.Template,
+		})
+		if err == nil {
+			smsCh.RegisterDriver("smsbao", driver)
+		}
+	}
+
+	return smsCh
 }

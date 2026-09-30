@@ -10,8 +10,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"bgin/internal/config"
+	"bgin/internal/platform/cache"
 	"bgin/internal/platform/queue"
 )
 
@@ -139,6 +143,65 @@ func TestScheduleCronExpressions(t *testing.T) {
 			next, err := tt.entry.NextRun()
 			require.NoError(t, err)
 			assert.True(t, next.After(time.Now()))
+		})
+	}
+}
+
+// TestScheduleInvalidTimeWarns 锁定非法调度时间"不注册且可见告警"。
+//
+// 这条同时是回归防线：队列包的内部告警走包级兜底日志器，若它退回 Nop，
+// 非法配置会被静默吞掉——修复就形同虚设。
+func TestScheduleInvalidTimeWarns(t *testing.T) {
+	core, logs := observer.New(zapcore.ErrorLevel)
+	queue.SetFallbackLogger(zap.New(core))
+	t.Cleanup(func() { queue.SetFallbackLogger(nil) })
+
+	sched := queue.NewSchedule()
+	entry := sched.Job(&dummyJob{JobMeta: queue.NewJobMeta("report:bad-time")}).DailyAt("25:00")
+
+	require.False(t, entry.IsValid())
+	require.Equal(t, 1, logs.Len(), "非法调度时间必须留下一条 Error 告警")
+	assert.Contains(t, logs.All()[0].Message, "invalid schedule time")
+}
+
+// TestScheduleOptionalDefaultTime 锁定"省略时间即默认零点"的便利语义。
+func TestScheduleOptionalDefaultTime(t *testing.T) {
+	sched := queue.NewSchedule()
+	job := &dummyJob{JobMeta: queue.NewJobMeta("report:weekly")}
+
+	assert.Equal(t, "0 0 * * 5", sched.Job(job).WeeklyOn(time.Friday).Spec())
+	assert.Equal(t, "0 0 10 * *", sched.Job(job).MonthlyOn(10).Spec())
+	assert.Equal(t, "0 0 10 * *", sched.Job(job).MonthlyOn(10, "").Spec())
+}
+
+// TestScheduleRejectsInvalidTime 锁定非法入参不得静默退化为 00:00。
+//
+// 退化会让配置写错的定时任务在错误时间执行且毫无提示；正确行为是留下空 spec
+// （Register 阶段跳过并告警），并让配置阶段即可由 IsValid 观察到失败。
+func TestScheduleRejectsInvalidTime(t *testing.T) {
+	newEntry := func(name string) *queue.ScheduleEntry {
+		return queue.NewSchedule().Job(&dummyJob{JobMeta: queue.NewJobMeta(name)})
+	}
+
+	tests := []struct {
+		name  string
+		entry *queue.ScheduleEntry
+	}{
+		{"DailyAt 小时越界", newEntry("t1").DailyAt("25:00")},
+		{"DailyAt 分钟越界", newEntry("t2").DailyAt("12:60")},
+		{"DailyAt 非时间串", newEntry("t3").DailyAt("abc")},
+		{"DailyAt 缺分钟", newEntry("t4").DailyAt("04")},
+		{"HourlyAt 越界", newEntry("t5").HourlyAt(99)},
+		{"WeeklyOn 时间非法", newEntry("t6").WeeklyOn(time.Friday, "1:99")},
+		{"WeeklyOn 星期越界", newEntry("t7").WeeklyOn(time.Weekday(9))},
+		{"MonthlyOn 日期越界", newEntry("t8").MonthlyOn(0)},
+		{"MonthlyOn 时间非法", newEntry("t9").MonthlyOn(10, "abc")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Empty(t, tt.entry.Spec(), "非法入参不得退化成任何可执行表达式")
+			assert.False(t, tt.entry.IsValid())
 		})
 	}
 }
@@ -306,4 +369,43 @@ func TestClientConcurrencyAndShutdownTimeout(t *testing.T) {
 
 	c.SetShutdownTimeout(30 * time.Second)
 	assert.Equal(t, 30*time.Second, c.ShutdownTimeout())
+}
+
+func TestAdaptLocker(t *testing.T) {
+	ctx := t.Context()
+
+	// 1. 空接口处理
+	assert.Nil(t, queue.AdaptLocker(nil))
+
+	// 2. 正常适配 cache.MemoryLocker
+	memLocker := cache.NewMemoryLocker()
+	defer func() { _ = memLocker.Close() }()
+
+	adapted := queue.AdaptLocker(memLocker)
+	require.NotNil(t, adapted)
+
+	const lockKey = "order:1001"
+
+	// 第一次 Acquire 成功
+	release1, ok1, err1 := adapted.Acquire(ctx, lockKey, time.Minute)
+	require.NoError(t, err1)
+	assert.True(t, ok1)
+	require.NotNil(t, release1)
+
+	// 第二次获取相同 key 被占用拒绝
+	release2, ok2, err2 := adapted.Acquire(ctx, lockKey, time.Minute)
+	require.NoError(t, err2)
+	assert.False(t, ok2)
+	assert.Nil(t, release2)
+
+	// 释放第一次锁
+	err := release1(ctx)
+	require.NoError(t, err)
+
+	// 释放后应能再次成功抢占
+	release3, ok3, err3 := adapted.Acquire(ctx, lockKey, time.Minute)
+	require.NoError(t, err3)
+	assert.True(t, ok3)
+	require.NotNil(t, release3)
+	_ = release3(ctx)
 }

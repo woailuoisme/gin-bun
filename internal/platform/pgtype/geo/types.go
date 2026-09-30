@@ -39,14 +39,26 @@ func (p Point) Lat() float64 {
 	return p.Point[1]
 }
 
-// SetLng 设置经度坐标。
+// SetLng 设置经度坐标。在值对象传递场景推荐使用 WithLng。
 func (p *Point) SetLng(lng float64) {
 	p.Point[0] = lng
 }
 
-// SetLat 设置纬度坐标。
+// SetLat 设置纬度坐标。在值对象传递场景推荐使用 WithLat。
 func (p *Point) SetLat(lat float64) {
 	p.Point[1] = lat
+}
+
+// WithLng 返回更新经度坐标后的新空间点副本（不可变值对象范式）。
+func (p Point) WithLng(lng float64) Point {
+	p.Point[0] = lng
+	return p
+}
+
+// WithLat 返回更新纬度坐标后的新空间点副本（不可变值对象范式）。
+func (p Point) WithLat(lat float64) Point {
+	p.Point[1] = lat
+	return p
 }
 
 // IsZero 判定当前点坐标是否全为零且未定义有效空间标识。
@@ -109,8 +121,8 @@ func NewPolygonWithSRID(rings []orb.Ring, srid int) Polygon {
 }
 
 // String 输出多边形的 WKT 表达。
-func (poly Polygon) String() string {
-	return wkt.MarshalString(poly.Polygon)
+func (p Polygon) String() string {
+	return wkt.MarshalString(p.Polygon)
 }
 
 // MultiPolygon 表示由多个互不重叠的多边形构成的复合几何区划，内嵌 orb.MultiPolygon。

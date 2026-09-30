@@ -82,6 +82,11 @@ func NewS3Disk(cfg config.S3StorageConfig) (Disk, error) {
 	}, nil
 }
 
+// SupportsPresign 显式声明 S3 兼容驱动原生具备预签名能力。
+func (d *s3Disk) SupportsPresign() bool {
+	return true
+}
+
 // isNotFound 判断底层错误是否为对象不存在（404 / NoSuchKey）。
 func isNotFound(err error) bool {
 	if err == nil {

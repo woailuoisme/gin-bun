@@ -11,6 +11,7 @@ import (
 
 	"github.com/samber/oops"
 	"github.com/uptrace/bun"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/errs"
@@ -210,11 +211,11 @@ func (m *Manager) Attach(
 	// 2. 单文件模式下先清理旧的物理文件与记录；失败不阻断新文件绑定
 	if conf.SingleFile && m.db != nil {
 		if err := m.clearOldFiles(ctx, modelType, modelID, collection); err != nil {
-			logger.FromContext(ctx).Debug().
-				Err(err).
-				Str("model_type", modelType).
-				Str("model_id", modelID).
-				Msg("failed to clear old media files, proceeding with new upload")
+			logger.FromContext(ctx).Debug("failed to clear old media files, proceeding with new upload",
+				zap.Error(err),
+				zap.String("model_type", modelType),
+				zap.String("model_id", modelID),
+			)
 		}
 	}
 
@@ -240,10 +241,10 @@ func (m *Manager) Attach(
 		if err != nil {
 			// 入库失败时尝试回滚删除刚上传的物理文件
 			if delErr := m.pipeline.Delete(ctx, fileInfo.Path); delErr != nil {
-				logger.FromContext(ctx).Warn().
-					Err(delErr).
-					Str("path", fileInfo.Path).
-					Msg("failed to clean up orphaned media file after DB insert failure")
+				logger.FromContext(ctx).Warn("failed to clean up orphaned media file after DB insert failure",
+					zap.Error(delErr),
+					zap.String("path", fileInfo.Path),
+				)
 			}
 			return nil, oops.Code(errs.CodeInternal).In("media.Manager.Attach").Wrap(err)
 		}
@@ -298,7 +299,7 @@ func (m *Manager) Get(ctx context.Context, target any, collection ...string) ([]
 	}
 
 	if m.db == nil {
-		return nil, oops.Code("database_unavailable").Errorf("media: database connection is not available")
+		return nil, oops.Code(errs.CodeDatabaseUnavailable).Errorf("media: database connection is not available")
 	}
 
 	q := m.db.NewSelect().
@@ -337,7 +338,7 @@ func (m *Manager) FindByUUID(ctx context.Context, uuid string) (*models.Media, e
 	}
 
 	if m.db == nil {
-		return nil, oops.Code("database_unavailable").Errorf("media: database connection is not available")
+		return nil, oops.Code(errs.CodeDatabaseUnavailable).Errorf("media: database connection is not available")
 	}
 
 	var item models.Media
@@ -358,7 +359,7 @@ func (m *Manager) FindByUUID(ctx context.Context, uuid string) (*models.Media, e
 // FindByID 根据自增物理主键 ID 查询媒体附件记录。
 func (m *Manager) FindByID(ctx context.Context, id int64) (*models.Media, error) {
 	if m.db == nil {
-		return nil, oops.Code("database_unavailable").Errorf("media: database connection is not available")
+		return nil, oops.Code(errs.CodeDatabaseUnavailable).Errorf("media: database connection is not available")
 	}
 
 	var item models.Media
@@ -405,7 +406,7 @@ func (m *Manager) ClearCollection(ctx context.Context, target any, collection st
 		return oops.Code(errs.CodeBadRequest).Errorf("media: invalid attachable target")
 	}
 	if m.db == nil {
-		return oops.Code("database_unavailable").Errorf("media: database connection is not available")
+		return oops.Code(errs.CodeDatabaseUnavailable).Errorf("media: database connection is not available")
 	}
 
 	return m.clearOldFiles(ctx, attachable.GetModelType(), attachable.GetModelID(), strings.TrimSpace(collection))

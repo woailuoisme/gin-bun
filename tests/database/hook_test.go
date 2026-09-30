@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"bgin/internal/config"
 	"bgin/internal/database"
@@ -19,17 +20,25 @@ import (
 )
 
 // setupTestLogger 构造将日志输出到内存 buffer 的上下文 logger。
-func setupTestLogger(level zerolog.Level, reqID string) (context.Context, *bytes.Buffer) {
+func setupTestLogger(level zapcore.Level, reqID string) (context.Context, *bytes.Buffer) {
 	buf := &bytes.Buffer{}
-	l := zerolog.New(buf).Level(level).With().Timestamp().Logger()
-	ctx := logger.WithContext(context.Background(), &l, reqID)
+	encCfg := zap.NewProductionEncoderConfig()
+	encCfg.EncodeTime = zapcore.TimeEncoderOfLayout(time.RFC3339)
+	encCfg.EncodeDuration = zapcore.StringDurationEncoder
+	core := zapcore.NewCore(
+		zapcore.NewJSONEncoder(encCfg),
+		zapcore.AddSync(buf),
+		level,
+	)
+	l := zap.New(core)
+	ctx := logger.WithContext(context.Background(), l, reqID)
 	return ctx, buf
 }
 
-func TestZerologQueryHook_NormalQueryDebug(t *testing.T) {
-	ctx, buf := setupTestLogger(zerolog.DebugLevel, "test-req-1")
+func TestZapQueryHook_NormalQueryDebug(t *testing.T) {
+	ctx, buf := setupTestLogger(zapcore.DebugLevel, "test-req-1")
 
-	hook := database.NewZerologQueryHook(200*time.Millisecond, true)
+	hook := database.NewZapQueryHook(200*time.Millisecond, true)
 
 	ctx = hook.BeforeQuery(ctx, nil)
 
@@ -44,13 +53,13 @@ func TestZerologQueryHook_NormalQueryDebug(t *testing.T) {
 	assert.Contains(t, out, `"level":"debug"`)
 	assert.Contains(t, out, "SELECT * FROM users WHERE id = 1")
 	assert.Contains(t, out, `"request_id":"test-req-1"`)
-	assert.Contains(t, out, `"message":"database query executed"`)
+	assert.Contains(t, out, "database query executed")
 }
 
-func TestZerologQueryHook_FailedQuery(t *testing.T) {
-	ctx, buf := setupTestLogger(zerolog.InfoLevel, "test-req-2")
+func TestZapQueryHook_FailedQuery(t *testing.T) {
+	ctx, buf := setupTestLogger(zapcore.InfoLevel, "test-req-2")
 
-	hook := database.NewZerologQueryHook(200*time.Millisecond, false)
+	hook := database.NewZapQueryHook(200*time.Millisecond, false)
 
 	event := &bun.QueryEvent{
 		StartTime: time.Now().Add(-5 * time.Millisecond),
@@ -64,13 +73,13 @@ func TestZerologQueryHook_FailedQuery(t *testing.T) {
 	assert.Contains(t, out, `"level":"error"`)
 	assert.Contains(t, out, "table does not exist")
 	assert.Contains(t, out, `"request_id":"test-req-2"`)
-	assert.Contains(t, out, `"message":"database query failed"`)
+	assert.Contains(t, out, "database query failed")
 }
 
-func TestZerologQueryHook_ErrNoRowsNotTreatedAsError(t *testing.T) {
-	ctx, buf := setupTestLogger(zerolog.InfoLevel, "test-req-3")
+func TestZapQueryHook_ErrNoRowsNotTreatedAsError(t *testing.T) {
+	ctx, buf := setupTestLogger(zapcore.InfoLevel, "test-req-3")
 
-	hook := database.NewZerologQueryHook(200*time.Millisecond, false)
+	hook := database.NewZapQueryHook(200*time.Millisecond, false)
 
 	event := &bun.QueryEvent{
 		StartTime: time.Now().Add(-5 * time.Millisecond),
@@ -85,10 +94,10 @@ func TestZerologQueryHook_ErrNoRowsNotTreatedAsError(t *testing.T) {
 	assert.NotContains(t, out, "database query failed")
 }
 
-func TestZerologQueryHook_SlowQueryWarning(t *testing.T) {
-	ctx, buf := setupTestLogger(zerolog.InfoLevel, "test-req-4")
+func TestZapQueryHook_SlowQueryWarning(t *testing.T) {
+	ctx, buf := setupTestLogger(zapcore.InfoLevel, "test-req-4")
 
-	hook := database.NewZerologQueryHook(50*time.Millisecond, false)
+	hook := database.NewZapQueryHook(50*time.Millisecond, false)
 
 	event := &bun.QueryEvent{
 		StartTime: time.Now().Add(-100 * time.Millisecond),
@@ -101,7 +110,7 @@ func TestZerologQueryHook_SlowQueryWarning(t *testing.T) {
 	assert.Contains(t, out, `"level":"warn"`)
 	assert.Contains(t, out, "SELECT pg_sleep(1)")
 	assert.Contains(t, out, `"threshold":"50ms"`)
-	assert.Contains(t, out, `"message":"slow database query detected"`)
+	assert.Contains(t, out, "slow database query detected")
 }
 
 func TestAddQueryHooks(t *testing.T) {

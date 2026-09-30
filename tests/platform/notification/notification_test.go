@@ -12,14 +12,16 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/config"
+	"bgin/internal/platform/cache"
 	"bgin/internal/platform/notification"
 	"bgin/internal/platform/notification/async"
 	"bgin/internal/platform/notification/channel/chat"
-	"bgin/internal/platform/notification/channel/database"
 	"bgin/internal/platform/notification/channel/mail"
 	"bgin/internal/platform/notification/channel/realtime"
 	"bgin/internal/platform/notification/channel/sms"
 	"bgin/internal/platform/notification/contract"
+	"bgin/internal/platform/queue"
+	"bgin/internal/shared/notification/database"
 )
 
 // mockNotifiable 模拟实现 Notifiable 契约的测试用户实体。
@@ -105,7 +107,7 @@ func TestNotificationAssembly(t *testing.T) {
 		},
 	}
 
-	notifier, err := notification.New(cfg, nil, nil, nil)
+	notifier, err := notification.New(cfg, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, notifier)
 	defer func() {
@@ -116,10 +118,10 @@ func TestNotificationAssembly(t *testing.T) {
 	assert.NotNil(t, notifier.SMS())
 	assert.NotNil(t, notifier.Chat())
 
-	// Database, Mail, Realtime 在传入 nil 依赖时不被默认注册或返回 nil
-	assert.Nil(t, notifier.Database())
+	// Mail、Realtime 与注入型渠道（database）在传入 nil 依赖时不被默认注册
 	assert.Nil(t, notifier.Mail())
 	assert.Nil(t, notifier.Realtime())
+	assert.Nil(t, notifier.Channel("database"))
 }
 
 // TestChannelFormatting 验证各渠道针对强类型通知的载荷格式化。
@@ -139,6 +141,12 @@ func TestChannelFormatting(t *testing.T) {
 	dbMsg, ok := dbPayload.(*database.Message)
 	require.True(t, ok)
 	assert.Equal(t, "系统升级维护提醒", dbMsg.Data["message"])
+
+	// 验证 Paginate 与 PaginateUnread 边界防护 (db=nil 优雅报错)
+	_, _, err = dbCh.Paginate(context.Background(), user, 1, 20, false)
+	require.Error(t, err)
+	_, _, err = dbCh.PaginateUnread(context.Background(), user, 1, 20)
+	require.Error(t, err)
 
 	// 2. Mail 渠道格式化
 	mailCh := mail.NewChannel(nil)
@@ -370,3 +378,173 @@ func TestAsyncPoolPreservesContextMetadata(t *testing.T) {
 
 // asyncTestKey 是异步池测试专用的上下文键。
 type asyncTestKey struct{}
+
+// 声明自定义频控通知
+type rateLimitedMockNotif struct {
+	key string
+}
+
+func (r *rateLimitedMockNotif) Via(target any) []string { return []string{"test_mock"} }
+func (r *rateLimitedMockNotif) RateLimitKey(channel string, target any) string {
+	return r.key
+}
+
+// 声明幂等通知
+type idempotentMockNotif struct {
+	key string
+}
+
+func (d *idempotentMockNotif) Via(target any) []string { return []string{"test_mock"} }
+func (d *idempotentMockNotif) IdempotentKey(target any) string {
+	return d.key
+}
+
+func TestNotificationRateLimitMiddleware(t *testing.T) {
+	ctx := t.Context()
+	memStore := cache.NewMemoryStore()
+	defer func() { _ = memStore.Close() }()
+
+	notifier := notification.NewNotifier(2, 10)
+	defer func() { _ = notifier.Close() }()
+
+	mockCh := &mockChannel{}
+	notifier.Extend("test_mock", mockCh)
+
+	// 配置频控中间件：最多允许 2 次，窗口 1 分钟
+	notifier.Use(notification.RateLimitMiddleware(memStore, 2, time.Minute))
+
+	user := &mockNotifiable{ID: "user_rate_1"}
+
+	// 1. 测试常规通知根据 target ID 自动限流
+	notif := &singleChannelNotification{}
+	require.NoError(t, notifier.Send(ctx, user, notif))
+	require.NoError(t, notifier.Send(ctx, user, notif))
+
+	// 第 3 次应当被限流
+	err := notifier.Send(ctx, user, notif)
+	require.ErrorIs(t, err, contract.ErrRateLimited)
+
+	// 换一个用户应当不受影响
+	userOther := &mockNotifiable{ID: "user_rate_2"}
+	require.NoError(t, notifier.Send(ctx, userOther, notif))
+
+	// 2. 测试显式实现 RateLimitedNotification 契约
+	customNotif := &rateLimitedMockNotif{key: "custom_vip_sms"}
+	require.NoError(t, notifier.Send(ctx, user, customNotif))
+	require.NoError(t, notifier.Send(ctx, user, customNotif))
+
+	err = notifier.Send(ctx, user, customNotif)
+	require.ErrorIs(t, err, contract.ErrRateLimited)
+}
+
+func TestNotificationDeduplicateMiddleware(t *testing.T) {
+	ctx := t.Context()
+	memStore := cache.NewMemoryStore()
+	defer func() { _ = memStore.Close() }()
+
+	notifier := notification.NewNotifier(2, 10)
+	defer func() { _ = notifier.Close() }()
+
+	mockCh := &mockChannel{}
+	notifier.Extend("test_mock", mockCh)
+
+	// 配置防重幂等中间件
+	notifier.Use(notification.DeduplicateMiddleware(memStore, time.Hour))
+
+	user := &mockNotifiable{ID: "user_dedup_1"}
+
+	// 1. 普通通知未声明 IdempotentNotification，多次发送不被拦截
+	normalNotif := &singleChannelNotification{}
+	require.NoError(t, notifier.Send(ctx, user, normalNotif))
+	require.NoError(t, notifier.Send(ctx, user, normalNotif))
+
+	// 2. 幂等通知首次发送成功，重复发送同一 key 被防重拦截
+	dedupNotif := &idempotentMockNotif{key: "msg_evt_order_1001"}
+	require.NoError(t, notifier.Send(ctx, user, dedupNotif))
+
+	err := notifier.Send(ctx, user, dedupNotif)
+	require.ErrorIs(t, err, contract.ErrDeduplicated)
+
+	// 不同的幂等 key 应当成功
+	dedupNotif2 := &idempotentMockNotif{key: "msg_evt_order_1002"}
+	require.NoError(t, notifier.Send(ctx, user, dedupNotif2))
+}
+
+type panicChannel struct{}
+
+func (p *panicChannel) Name() string { return "panic_ch" }
+func (p *panicChannel) Send(ctx context.Context, notifiable any, message any) error {
+	panic("unexpected internal panic in panicChannel")
+}
+
+type panicNotification struct{}
+
+func (p *panicNotification) Via(notifiable any) []string { return []string{"panic_ch"} }
+
+func TestNotificationRecoveryMiddleware(t *testing.T) {
+	ctx := t.Context()
+	notifier := notification.NewNotifier(2, 10)
+	defer func() { _ = notifier.Close() }()
+
+	notifier.Extend("panic_ch", &panicChannel{})
+
+	// 注入 RecoveryMiddleware 捕获异常
+	notifier.Use(notification.RecoveryMiddleware())
+
+	user := &mockNotifiable{ID: "user_panic"}
+	err := notifier.Send(ctx, user, &panicNotification{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected internal panic")
+}
+
+type mockQueueDispatcher struct {
+	dispatchedJob  queue.Job
+	dispatchedOpts []queue.DispatchOption
+}
+
+func (m *mockQueueDispatcher) Dispatch(ctx context.Context, job queue.Job, opts ...queue.DispatchOption) error {
+	m.dispatchedJob = job
+	m.dispatchedOpts = opts
+	return nil
+}
+
+type queuedNotification struct {
+	taskName string
+}
+
+func (q *queuedNotification) Via(target any) []string { return []string{"test_mock"} }
+func (q *queuedNotification) ShouldQueue() bool       { return true }
+func (q *queuedNotification) QueueName() string       { return "priority_high" }
+func (q *queuedNotification) MaxRetries() int         { return 5 }
+func (q *queuedNotification) Delay() time.Duration    { return 15 * time.Second }
+func (q *queuedNotification) TaskName() string        { return q.taskName }
+func (q *queuedNotification) Handle(ctx context.Context) error {
+	return nil
+}
+
+func TestNotificationWithQueue(t *testing.T) {
+	ctx := t.Context()
+	notifier := notification.NewNotifier(2, 10)
+	defer func() { _ = notifier.Close() }()
+
+	dispatcher := &mockQueueDispatcher{}
+	notifier.WithQueue(dispatcher)
+
+	user := &mockNotifiable{ID: "user_queue"}
+	jobNotif := &queuedNotification{taskName: "notif:user_welcome"}
+
+	err := notifier.Send(ctx, user, jobNotif)
+	require.NoError(t, err)
+
+	require.NotNil(t, dispatcher.dispatchedJob)
+	assert.Equal(t, "notif:user_welcome", dispatcher.dispatchedJob.TaskName())
+	assert.Len(t, dispatcher.dispatchedOpts, 3)
+
+	var cfg queue.DispatchConfig
+	for _, opt := range dispatcher.dispatchedOpts {
+		opt(&cfg)
+	}
+	assert.Equal(t, "priority_high", cfg.QueueName)
+	assert.Equal(t, 5, cfg.MaxRetries)
+	assert.Equal(t, 15*time.Second, cfg.Delay)
+}

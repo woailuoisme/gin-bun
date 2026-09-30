@@ -35,16 +35,17 @@ func InitEngine() error {
 }
 
 var (
-	customTagMu          sync.RWMutex
-	customTagMessageKeys = make(map[string]string)
+	registerMu           sync.Mutex
+	customTagMessageKeys sync.Map // tag -> messageKey string
 )
 
 // RegisterRule 注册自定义校验标签与对应函数，并可选指定文案映射键。
 func RegisterRule(tag string, fn govalidator.Func, messageKey ...string) error {
+	registerMu.Lock()
+	defer registerMu.Unlock()
+
 	if len(messageKey) > 0 && messageKey[0] != "" {
-		customTagMu.Lock()
-		customTagMessageKeys[tag] = messageKey[0]
-		customTagMu.Unlock()
+		customTagMessageKeys.Store(tag, messageKey[0])
 	}
 	if v, ok := binding.Validator.Engine().(*govalidator.Validate); ok {
 		return v.RegisterValidation(tag, fn)
@@ -95,14 +96,23 @@ var reservedShortNames = map[string]struct{}{
 	"bgin":   {},
 }
 
-// validateUsernameSlug 校验用户名的字符集。
+// validateUsernameSlug 校验用户名的字符集。前置长度守卫（1-64 字符），防御恶意超长串造成正则回溯。
 func validateUsernameSlug(field govalidator.FieldLevel) bool {
-	return usernameSlugPattern.MatchString(field.Field().String())
+
+	str := field.Field().String()
+	if len(str) == 0 || len(str) > 64 {
+		return false
+	}
+	return usernameSlugPattern.MatchString(str)
 }
 
-// validateE164 校验手机号是否符合 E.164 规范。
+// validateE164 校验手机号是否符合 E.164 规范。前置长度截断保护（8-20 字符）。
 func validateE164(field govalidator.FieldLevel) bool {
-	return e164Pattern.MatchString(field.Field().String())
+	str := field.Field().String()
+	if len(str) < 8 || len(str) > 20 {
+		return false
+	}
+	return e164Pattern.MatchString(str)
 }
 
 // validateNotReserved 拒绝保留短名，大小写不敏感。
@@ -149,11 +159,10 @@ func Translate(translator *i18n.Translator, language string, valErr govalidator.
 // MessageKey 选择文案键：优先查询自定义规则文案映射，随后区分数值与字符串的 min/max 措辞。
 func MessageKey(fe govalidator.FieldError) string {
 	tag := fe.Tag()
-	customTagMu.RLock()
-	mapped, ok := customTagMessageKeys[tag]
-	customTagMu.RUnlock()
-	if ok {
-		return mapped
+	if mapped, ok := customTagMessageKeys.Load(tag); ok {
+		if key, isStr := mapped.(string); isStr {
+			return key
+		}
 	}
 
 	switch tag {

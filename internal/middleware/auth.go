@@ -1,18 +1,18 @@
 package middleware
 
 import (
+	"errors"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/errs"
-	"bgin/internal/platform/identity"
-	"bgin/internal/platform/token"
 )
 
-// RequireAuth 校验 Bearer 访问令牌与黑名单状态，并将身份载荷注入请求上下文。
-func (m *Middleware) RequireAuth() gin.HandlerFunc {
+// RequireAuth 校验 Bearer 访问令牌、黑名单与指定守卫策略，并将认证身份载荷注入请求上下文。
+// 可选指定 guardName 参数（例如 "admin"、"client"）；未指定时自动回退至默认守卫。
+func (m *Middleware) RequireAuth(guardName ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw, err := bearerToken(c)
 		if err != nil {
@@ -20,33 +20,47 @@ func (m *Middleware) RequireAuth() gin.HandlerFunc {
 			return
 		}
 
-		claims, err := m.tokens.Parse(raw, token.TypeAccess)
+		if m.authManager != nil {
+			guard, err := m.authManager.Resolve(guardName...)
+			if err != nil {
+				abortWithError(c, errs.Internal(err))
+				return
+			}
+
+			ctx, _, err := guard.AuthenticateToken(c.Request.Context(), raw)
+			if err != nil {
+				abortWithError(c, err)
+				return
+			}
+
+			if m.authz != nil {
+				ctx = authentication.WithGate(ctx, m.authz)
+			}
+			c.Request = c.Request.WithContext(ctx)
+			c.Next()
+			return
+		}
+
+		if len(guardName) > 0 {
+			abortWithError(c, errs.Internal(errors.New("middleware: auth manager required for named guard")))
+			return
+		}
+
+		if m.tokens == nil {
+			abortWithError(c, errs.Internal(errors.New("middleware: token issuer not configured")))
+			return
+		}
+
+		// 兜底降级：若未注入 AuthManager，则仅允许回退至默认基础令牌校验
+		ctx, _, err := m.tokens.AuthenticateToken(c.Request.Context(), raw)
 		if err != nil {
 			abortWithError(c, err)
 			return
 		}
 
-		revoked, err := m.tokens.IsRevoked(c.Request.Context(), claims.ID)
-		if err != nil {
-			abortWithError(c, errs.Internal(err))
-			return
+		if m.authz != nil {
+			ctx = authentication.WithGate(ctx, m.authz)
 		}
-		if revoked {
-			abortWithError(c, errs.Unauthorized(errs.CodeAuthTokenRevoked, "The token has been revoked"))
-			return
-		}
-
-		var tokenExpiresAt time.Time
-		if claims.ExpiresAt != nil {
-			tokenExpiresAt = claims.ExpiresAt.Time
-		}
-
-		ctx := identity.With(c.Request.Context(), identity.Identity{
-			UserID:         claims.Subject,
-			Role:           claims.Role,
-			TokenID:        claims.ID,
-			TokenExpiresAt: tokenExpiresAt,
-		})
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
@@ -55,18 +69,17 @@ func (m *Middleware) RequireAuth() gin.HandlerFunc {
 // RequirePermission 基于令牌角色执行 Casbin RBAC 权限校验。
 func (m *Middleware) RequirePermission(resource, action string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id, ok := identity.FromContext(c.Request.Context())
-		if !ok {
+		if _, ok := authentication.FromContext(c.Request.Context()); !ok {
 			abortWithError(c, errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
 			return
 		}
 
-		allowed, err := m.authz.Can(id.Role, resource, action)
-		if err != nil {
-			abortWithError(c, errs.Internal(err))
+		if m.authz == nil {
+			abortWithError(c, errs.Internal(errors.New("middleware: authz enforcer not configured")))
 			return
 		}
-		if !allowed {
+
+		if !m.authz.Can(c.Request.Context(), resource, action) {
 			abortWithError(c, errs.Forbidden("You are not allowed to perform this action"))
 			return
 		}

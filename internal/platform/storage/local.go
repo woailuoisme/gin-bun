@@ -46,8 +46,17 @@ func NewLocalDisk(rootPath, baseURL string) (Disk, error) {
 	return &localDisk{rootPath: rootPath, baseURL: strings.TrimSuffix(baseURL, "/")}, nil
 }
 
-// resolvePath 把对象键解析为根目录内的绝对路径，越界时返回 400。
+// SupportsPresign 显式声明本地文件系统驱动不支持预签名。
+func (d *localDisk) SupportsPresign() bool {
+	return false
+}
+
+// resolvePath 把对象键解析为根目录内的绝对路径，越界或含有非法空字符时返回 400。
 func (d *localDisk) resolvePath(key string) (string, error) {
+	if strings.ContainsRune(key, 0) {
+		return "", errs.BadRequest("The requested storage path is not allowed")
+	}
+
 	clean := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(key, "/")))
 	full := filepath.Join(d.rootPath, clean)
 
@@ -89,7 +98,7 @@ func (d *localDisk) Put(ctx context.Context, key string, contents []byte) error 
 	return nil
 }
 
-// PutStream 从流写入对象。
+// PutStream 从流写入对象，使用内存池化的 64KB 缓冲区减少高并发内存分配与 GC 压力。
 func (d *localDisk) PutStream(ctx context.Context, key string, r io.Reader) (err error) {
 	full, err := d.preparePath(ctx, key)
 	if err != nil {
@@ -103,7 +112,7 @@ func (d *localDisk) PutStream(ctx context.Context, key string, r io.Reader) (err
 	if err != nil {
 		return opFailed("write local object", key, err)
 	}
-	// 统一在 defer 中关闭：Close 是延迟写入错误的唯一出口，同时覆盖 io.Copy 提前返回
+	// 统一在 defer 中关闭：Close 是延迟写入错误的唯一出口，同时覆盖 io.CopyBuffer 提前返回
 	// 的路径（不泄漏文件描述符），并避免正常路径上的重复关闭。
 	defer func() {
 		if cerr := f.Close(); cerr != nil && err == nil {
@@ -111,7 +120,10 @@ func (d *localDisk) PutStream(ctx context.Context, key string, r io.Reader) (err
 		}
 	}()
 
-	if _, err := io.Copy(f, r); err != nil {
+	buf := getCopyBuffer()
+	defer putCopyBuffer(buf)
+
+	if _, err := io.CopyBuffer(f, r, *buf); err != nil {
 		return opFailed("write local object", key, err)
 	}
 	return nil

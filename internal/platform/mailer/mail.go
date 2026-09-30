@@ -1,13 +1,14 @@
-// Package mailer 提供统一邮件发送抽象、模板渲染与多驱动支持（仅支持 Mailpit 与 Resend）。
+// Package mailer 提供统一邮件发送抽象、模板渲染与多驱动支持（内置 Mailpit, Resend 与 Memory 驱动）。
 package mailer
 
 import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
-	"github.com/rs/zerolog"
 	"github.com/samber/oops"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/errs"
@@ -27,8 +28,26 @@ type Message struct {
 	Body string
 	// IsHTML 是否以 HTML 格式发送正文
 	IsHTML bool
-	// Attachments 邮件附件本地文件路径列表
+	// Attachments 邮件附件本地文件路径列表（向后兼容）
 	Attachments []string
+	// RawAttachments 结构化附件对象列表（支持内存二进制流与文件路径）
+	RawAttachments []Attachment
+}
+
+// AllAttachments 归一化提取全部附件列表（合并 Attachments 路径与 RawAttachments 对象）。
+func (m Message) AllAttachments() []Attachment {
+	total := len(m.Attachments) + len(m.RawAttachments)
+	if total == 0 {
+		return nil
+	}
+	res := make([]Attachment, 0, total)
+	for _, p := range m.Attachments {
+		if strings.TrimSpace(p) != "" {
+			res = append(res, NewAttachmentFromPath(p))
+		}
+	}
+	res = append(res, m.RawAttachments...)
+	return res
 }
 
 // Mailable 结构化邮件模板契约接口。
@@ -47,18 +66,52 @@ type Mailer interface {
 	Close() error
 }
 
-// New 根据 MailConfig 创建邮件发送器驱动实例。
-func New(cfg config.MailConfig, log zerolog.Logger) (Mailer, error) {
-	driver := strings.ToLower(strings.TrimSpace(cfg.Driver))
-	switch driver {
-	case "mailpit", "":
+// DriverFactory 定义发信器驱动工厂函数。
+type DriverFactory func(cfg config.MailConfig, log *zap.Logger) (Mailer, error)
+
+var (
+	driverMu sync.RWMutex
+	drivers  = make(map[string]DriverFactory)
+)
+
+func init() {
+	RegisterDriver("mailpit", func(cfg config.MailConfig, log *zap.Logger) (Mailer, error) {
 		return newMailpitMailer(cfg, log)
-	case "resend":
+	})
+	RegisterDriver("resend", func(cfg config.MailConfig, log *zap.Logger) (Mailer, error) {
 		return newResendMailer(cfg, log)
-	default:
-		return nil, oops.Code(string(errs.CodeInternal)).
-			Errorf("unsupported mail driver: %s (only 'mailpit' and 'resend' are supported)", cfg.Driver)
+	})
+	RegisterDriver("memory", func(_ config.MailConfig, _ *zap.Logger) (Mailer, error) {
+		return NewMemoryMailer(), nil
+	})
+}
+
+// RegisterDriver 注册邮件发送器驱动工厂（遵循开闭原则 OCP，便于系统扩展新邮件渠道）。
+func RegisterDriver(name string, factory DriverFactory) {
+	driverMu.Lock()
+	defer driverMu.Unlock()
+	drivers[strings.ToLower(strings.TrimSpace(name))] = factory
+}
+
+// New 根据 MailConfig 创建邮件发送器驱动实例。
+func New(cfg config.MailConfig, log *zap.Logger) (Mailer, error) {
+	if log == nil {
+		log = zap.NewNop()
 	}
+	driverName := strings.ToLower(strings.TrimSpace(cfg.Driver))
+	if driverName == "" {
+		driverName = "mailpit"
+	}
+
+	driverMu.RLock()
+	factory, exists := drivers[driverName]
+	driverMu.RUnlock()
+
+	if !exists {
+		return nil, oops.Code(string(errs.CodeInternal)).
+			Errorf("unsupported mail driver: %s", cfg.Driver)
+	}
+	return factory(cfg, log)
 }
 
 // sendMailable 将 Mailable 实体渲染为消息并通过目标驱动发送。

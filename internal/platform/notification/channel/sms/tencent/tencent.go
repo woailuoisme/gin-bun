@@ -46,6 +46,8 @@ type Driver struct {
 	client *resty.Client
 }
 
+var _ sms.Driver = (*Driver)(nil)
+
 // NewDriver 创建腾讯云短信驱动实例。
 func NewDriver(cfg Config) (*Driver, error) {
 	if cfg.SecretID == "" || cfg.SecretKey == "" {
@@ -165,20 +167,17 @@ func (d *Driver) Send(ctx context.Context, msg *sms.Message) error {
 		formattedPhone = "+86" + formattedPhone
 	}
 
-	signName := cmp.Or(msg.SignName, d.cfg.SignName)
+	signName := msg.ResolveSign(d.Name(), d.cfg.SignName)
 	if signName == "" {
 		return oops.Code(errs.CodeBadRequest).Errorf("tencent sms: sign_name is required")
 	}
 
-	templateID := cmp.Or(msg.TemplateCode, d.cfg.TemplateID)
+	templateID := msg.ResolveTemplate(d.Name(), d.cfg.TemplateID)
 	if templateID == "" {
 		return oops.Code(errs.CodeBadRequest).Errorf("tencent sms: template_id is required")
 	}
 
-	var templateParamSet []string
-	if code := cmp.Or(msg.TemplateParam["code"], msg.TemplateParam["otp"]); code != "" {
-		templateParamSet = []string{code}
-	}
+	templateParamSet := msg.ResolveTencentParamSet()
 
 	reqBody := tencentSendSmsRequest{
 		PhoneNumberSet:   []string{formattedPhone},
@@ -221,13 +220,13 @@ func (d *Driver) Send(ctx context.Context, msg *sms.Message) error {
 	}
 
 	if resp.IsError() {
-		return oops.Code("tencent_http_error").
+		return oops.Code(errs.CodeTencentHTTPError).
 			With("status", resp.StatusCode()).
 			Errorf("tencent sms http request failed with status: %d", resp.StatusCode())
 	}
 
 	if wrapper.Response.Error != nil {
-		return oops.Code("tencent_api_error").
+		return oops.Code(errs.CodeTencentAPIError).
 			With("code", wrapper.Response.Error.Code).
 			With("message", wrapper.Response.Error.Message).
 			With("request_id", wrapper.Response.RequestID).
@@ -237,10 +236,10 @@ func (d *Driver) Send(ctx context.Context, msg *sms.Message) error {
 	if len(wrapper.Response.SendStatusSet) > 0 {
 		status := wrapper.Response.SendStatusSet[0]
 		if strings.ToLower(status.Code) != "ok" {
-			return oops.Code("tencent_delivery_failed").
+			// 不把收件手机号写进错误上下文：它会随错误链落入日志。
+			return oops.Code(errs.CodeTencentDeliveryFailed).
 				With("code", status.Code).
 				With("message", status.Message).
-				With("phone", status.PhoneNumber).
 				Errorf("tencent sms delivery failed: %s (code: %s)", status.Message, status.Code)
 		}
 	}

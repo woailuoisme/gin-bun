@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 
+	"go.uber.org/zap"
+
 	"bgin/internal/platform/eventbus"
 	"bgin/internal/platform/logger"
 	"bgin/internal/platform/queue"
@@ -20,10 +22,10 @@ func RegisterListeners(bus eventbus.Subscriber, dispatcher queue.Dispatcher) err
 			return nil
 		}
 
-		logger.FromContext(ctx).Info().
-			Str("user_id", evt.UserID).
-			Str("email", evt.Email).
-			Msg("handling UserRegistered domain event")
+		logger.FromContext(ctx).Info("handling UserRegistered domain event",
+			zap.String("user_id", evt.UserID),
+			zap.String("email", evt.Email),
+		)
 
 		if dispatcher != nil && evt.Email != "" {
 			job := NewWelcomeEmailJob(evt.Email, evt.Name)

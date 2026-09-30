@@ -45,6 +45,34 @@ func (h *Handler) ListUsers(c *gin.Context) {
 	response.Paginated(c, items, meta)
 }
 
+// ExportUsers 处理 GET /v1/admin/users/export。
+//
+// @Summary      导出系统用户
+// @Description  根据关键字、状态与角色条件分块流式导出用户列表为 Excel 文件，免除内存溢出风险。
+// @Tags         用户管理
+// @Accept       json
+// @Produce      application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+// @Security     BearerAuth
+// @Param        query query ListUsersQuery false "筛选与排序条件"
+// @Success      200 {file} binary "用户数据 Excel 文件"
+// @x-order      6
+// @Router       /admin/users/export [get]
+func (h *Handler) ExportUsers(c *gin.Context) {
+	var query ListUsersQuery
+	if err := c.ShouldBindQuery(&query); err != nil {
+		_ = c.Error(err)
+		return
+	}
+
+	c.Header("Content-Disposition", `attachment; filename="users.xlsx"`)
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+	if err := h.service.ExportUsers(c.Request.Context(), query, c.Writer); err != nil {
+		_ = c.Error(err)
+		return
+	}
+}
+
 // GetUser 处理 GET /v1/admin/users/:id。
 //
 // @Summary      获取用户详情
@@ -148,16 +176,10 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 // toManagementPatch 把管理端三态请求投影为可复用的校验结构体。
 func toManagementPatch(req UpdateUserRequest) *managementPatch {
 	return &managementPatch{
-		ProfilePatch: user.ProfilePatch{
-			Name:            req.Name.Value,
-			Image:           req.Image.Value,
-			Username:        req.Username.Value,
-			DisplayUsername: req.DisplayUsername.Value,
-			PhoneNumber:     req.PhoneNumber.Value,
-		},
-		Role:       req.Role.Value,
-		Status:     req.Status.Value,
-		BanReason:  req.BanReason.Value,
-		BanExpires: req.BanExpires.Value,
+		ProfilePatch: req.fieldSet().Patch(),
+		Role:         user.ToPtr(req.Role),
+		Status:       user.ToPtr(req.Status),
+		BanReason:    user.ToPtr(req.BanReason),
+		BanExpires:   user.ToPtr(req.BanExpires),
 	}
 }

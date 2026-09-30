@@ -3,8 +3,8 @@ package adminauth
 import (
 	"github.com/gin-gonic/gin"
 
+	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/errs"
-	"bgin/internal/platform/identity"
 	"bgin/internal/platform/response"
 	"bgin/internal/platform/validator"
 )
@@ -57,7 +57,7 @@ func (h *Handler) SignInEmail(c *gin.Context) {
 // @x-order      2
 // @Router       /admin/auth/get-session [get]
 func (h *Handler) GetSession(c *gin.Context) {
-	id, ok := identity.FromContext(c.Request.Context())
+	id, ok := authentication.FromContext(c.Request.Context())
 	if !ok {
 		_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
 		return
@@ -110,8 +110,7 @@ func (h *Handler) Refresh(c *gin.Context) {
 // @x-order      4
 // @Router       /admin/auth/sign-out [post]
 func (h *Handler) SignOut(c *gin.Context) {
-	id, ok := identity.FromContext(c.Request.Context())
-	if !ok {
+	if !h.service.guard.Check(c.Request.Context()) {
 		_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
 		return
 	}
@@ -122,7 +121,7 @@ func (h *Handler) SignOut(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.SignOut(c.Request.Context(), id, req); err != nil {
+	if err := h.service.SignOut(c.Request.Context(), req); err != nil {
 		_ = c.Error(err)
 		return
 	}
@@ -142,7 +141,7 @@ func (h *Handler) SignOut(c *gin.Context) {
 // @x-order      5
 // @Router       /admin/auth/change-password [post]
 func (h *Handler) ChangePassword(c *gin.Context) {
-	id, ok := identity.FromContext(c.Request.Context())
+	id, ok := authentication.FromContext(c.Request.Context())
 	if !ok {
 		_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
 		return

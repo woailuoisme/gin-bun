@@ -7,35 +7,36 @@ import (
 	"errors"
 	"time"
 
-	"github.com/rs/zerolog"
 	"github.com/uptrace/bun"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/logger"
 )
 
-// ZerologQueryHook 将 Bun 的查询生命周期映射到系统的结构化日志体系。
+// ZapQueryHook 将 Bun 的查询生命周期映射到系统的结构化日志体系。
 // 支持全链路 request_id 透传、慢查询自动捕获告警以及 Debug 级别的 SQL 审计。
-type ZerologQueryHook struct {
+type ZapQueryHook struct {
 	slowThreshold time.Duration
 	debugEnabled  bool
 }
 
-// NewZerologQueryHook 创建一个基于 zerolog 的结构化查询钩子。
-func NewZerologQueryHook(slowThreshold time.Duration, debugEnabled bool) *ZerologQueryHook {
-	return &ZerologQueryHook{
+// NewZapQueryHook 创建一个基于 zap 的结构化查询钩子。
+func NewZapQueryHook(slowThreshold time.Duration, debugEnabled bool) *ZapQueryHook {
+	return &ZapQueryHook{
 		slowThreshold: slowThreshold,
 		debugEnabled:  debugEnabled,
 	}
 }
 
 // BeforeQuery 在 SQL 执行前触发，此处直接透传上下文。
-func (h *ZerologQueryHook) BeforeQuery(ctx context.Context, _ *bun.QueryEvent) context.Context {
+func (h *ZapQueryHook) BeforeQuery(ctx context.Context, _ *bun.QueryEvent) context.Context {
 	return ctx
 }
 
 // AfterQuery 在 SQL 执行完成后触发，负责记录异常报错、慢查询告警与 Debug 审计。
-func (h *ZerologQueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
+func (h *ZapQueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 	dur := time.Since(event.StartTime)
 	log := logger.FromContext(ctx)
 
@@ -43,41 +44,39 @@ func (h *ZerologQueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent
 
 	// 1. 查询执行失败：排除 sql.ErrNoRows 和 sql.ErrTxDone（属于正常领域/事务控制状态）
 	if event.Err != nil && !errors.Is(event.Err, sql.ErrNoRows) && !errors.Is(event.Err, sql.ErrTxDone) {
-		log.Error().
-			Err(event.Err).
-			Str("query", query).
-			Str("duration", dur.String()).
-			Str("operation", event.Operation()).
-			Msg("database query failed")
+		log.Error("database query failed",
+			zap.Error(event.Err),
+			zap.String("query", query),
+			zap.String("duration", dur.String()),
+			zap.String("operation", event.Operation()))
 		return
 	}
 
 	// 2. 慢查询捕获：执行耗时超过阈值记录 Warn 日志
 	if h.slowThreshold > 0 && dur >= h.slowThreshold {
-		log.Warn().
-			Str("query", query).
-			Str("duration", dur.String()).
-			Str("threshold", h.slowThreshold.String()).
-			Str("operation", event.Operation()).
-			Msg("slow database query detected")
+		log.Warn("slow database query detected",
+			zap.String("query", query),
+			zap.String("duration", dur.String()),
+			zap.String("threshold", h.slowThreshold.String()),
+			zap.String("operation", event.Operation()))
 		return
 	}
 
 	// 3. 调试输出：当开启调试且当前日志级别为 Debug 或更低时以 Debug 级别输出
-	if h.debugEnabled && log.GetLevel() <= zerolog.DebugLevel {
-		evt := log.Debug().
-			Str("query", query).
-			Str("duration", dur.String()).
-			Str("operation", event.Operation())
-
-		if event.Err != nil {
-			evt.Err(event.Err)
+	if h.debugEnabled && log.Core().Enabled(zapcore.DebugLevel) {
+		fields := []zap.Field{
+			zap.String("query", query),
+			zap.String("duration", dur.String()),
+			zap.String("operation", event.Operation()),
 		}
-		evt.Msg("database query executed")
+		if event.Err != nil {
+			fields = append(fields, zap.Error(event.Err))
+		}
+		log.Debug("database query executed", fields...)
 	}
 }
 
-// AddQueryHooks 为 bun.DB 挂载基于 zerolog 的统一结构化日志与慢查询监控钩子。
+// AddQueryHooks 为 bun.DB 挂载基于 zap 的统一结构化日志与慢查询监控钩子。
 func AddQueryHooks(db *bun.DB, cfg config.DatabaseConfig) {
-	db.AddQueryHook(NewZerologQueryHook(cfg.SlowThreshold, cfg.Debug))
+	db.AddQueryHook(NewZapQueryHook(cfg.SlowThreshold, cfg.Debug))
 }

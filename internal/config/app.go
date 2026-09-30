@@ -20,34 +20,35 @@ var knownEnvs = []string{"local", "development", "test", "staging", "production"
 
 // AppConfig 描述进程核心运行参数（对齐 Laravel config/app.php）。
 type AppConfig struct {
-	Name       string `env:"APP_NAME" envDefault:"bgin"`
-	Env        string `env:"APP_ENV" envDefault:"local"`
-	Debug      bool   `env:"APP_DEBUG" envDefault:"false"`
-	Port       int    `env:"APP_PORT" envDefault:"3300"`
-	GinMode    string `env:"GIN_MODE"`
-	EnableDocs bool   `env:"ENABLE_DOCS" envDefault:"false"`
-	URL        string `env:"APP_URL" envDefault:"http://localhost:3300"`
-	Timezone   string `env:"APP_TIMEZONE" envDefault:"UTC"`
-	Server     HTTPServerConfig
+	Name       string           `mapstructure:"app_name"`
+	Env        string           `mapstructure:"app_env"`
+	Debug      bool             `mapstructure:"app_debug"`
+	Port       int              `mapstructure:"app_port"`
+	GinMode    string           `mapstructure:"gin_mode"`
+	EnableDocs bool             `mapstructure:"enable_docs"`
+	URL        string           `mapstructure:"app_url"`
+	Timezone   string           `mapstructure:"app_timezone"`
+	Server     HTTPServerConfig `mapstructure:",squash"`
 }
 
 // HTTPServerConfig 描述 HTTP 传输层超时与缓冲区预算。
 type HTTPServerConfig struct {
-	ReadHeaderTimeout time.Duration `env:"HTTP_READ_HEADER_TIMEOUT" envDefault:"10s"`
-	ReadTimeout       time.Duration `env:"HTTP_READ_TIMEOUT" envDefault:"15s"`
-	WriteTimeout      time.Duration `env:"HTTP_WRITE_TIMEOUT" envDefault:"35s"`
-	IdleTimeout       time.Duration `env:"HTTP_IDLE_TIMEOUT" envDefault:"120s"`
-	ShutdownTimeout   time.Duration `env:"HTTP_SHUTDOWN_TIMEOUT" envDefault:"15s"`
-	MaxHeaderBytes    int           `env:"HTTP_MAX_HEADER_BYTES" envDefault:"1048576"`
-	RequestTimeout    time.Duration `env:"HTTP_REQUEST_TIMEOUT" envDefault:"15s"`
+	ReadHeaderTimeout time.Duration `mapstructure:"http_read_header_timeout"`
+	ReadTimeout       time.Duration `mapstructure:"http_read_timeout"`
+	WriteTimeout      time.Duration `mapstructure:"http_write_timeout"`
+	IdleTimeout       time.Duration `mapstructure:"http_idle_timeout"`
+	ShutdownTimeout   time.Duration `mapstructure:"http_shutdown_timeout"`
+	MaxHeaderBytes    int           `mapstructure:"http_max_header_bytes"`
+	RequestTimeout    time.Duration `mapstructure:"http_request_timeout"`
 }
 
 // Location 返回配置的时区 *time.Location，未设置或解析失败时回退至 time.UTC。
 func (a *AppConfig) Location() *time.Location {
-	if a.Timezone != "" {
-		if loc, err := time.LoadLocation(a.Timezone); err == nil {
-			return loc
-		}
+	if a.Timezone == "" {
+		return time.UTC
+	}
+	if loc, err := time.LoadLocation(a.Timezone); err == nil {
+		return loc
 	}
 	return time.UTC
 }

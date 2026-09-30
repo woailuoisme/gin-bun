@@ -2,6 +2,7 @@ package payment_test
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,11 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
+	"bgin/internal/platform/money"
 	"bgin/internal/platform/payment"
 	"bgin/internal/platform/payment/enums"
 )
@@ -26,7 +28,7 @@ func TestPaymentManagerDisabledWhenEmpty(t *testing.T) {
 		},
 	}
 
-	manager, err := payment.NewManager(cfg, zerolog.Nop())
+	manager, err := payment.NewManager(cfg, zap.NewNop())
 	require.NoError(t, err)
 	assert.False(t, manager.Enabled())
 	require.NoError(t, manager.HealthCheck())
@@ -41,7 +43,7 @@ func TestPaymentManagerFakeLifecycle(t *testing.T) {
 		},
 	}
 
-	manager, err := payment.NewManager(cfg, zerolog.Nop())
+	manager, err := payment.NewManager(cfg, zap.NewNop())
 	require.NoError(t, err)
 	assert.True(t, manager.Enabled())
 	require.NoError(t, manager.HealthCheck())
@@ -222,7 +224,118 @@ func TestCertsDirResolution(t *testing.T) {
 
 	// 因 mock 证书内容不是合法 RSA 私钥，NewManager 在解析私钥时会触发底层解析失败，
 	// 但这证实了文件已成功定位并被读取（而非报文件不存在）！
-	_, err := payment.NewManager(cfg, zerolog.Nop())
+	_, err := payment.NewManager(cfg, zap.NewNop())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wechat pay client")
+}
+
+func TestPaymentMoneyVO(t *testing.T) {
+	// 1. CreateRequest 优先使用 Money 值对象
+	m, err := money.NewFromCents(9999, "CNY")
+	require.NoError(t, err)
+	req := payment.CreateRequest{
+		Money:  &m,
+		Amount: 100, // 应当被 Money 覆盖
+	}
+	assert.Equal(t, int64(9999), req.EffectiveAmount())
+	assert.Equal(t, "CNY", req.EffectiveMoney().Currency().Code)
+	assert.Equal(t, int64(9999), req.EffectiveMoney().ToCents())
+
+	// 回退至普通 Amount
+	reqFallback := payment.CreateRequest{
+		Amount: 8888,
+	}
+	assert.Equal(t, int64(8888), reqFallback.EffectiveAmount())
+	assert.Equal(t, int64(8888), reqFallback.EffectiveMoney().ToCents())
+
+	// 2. RefundRequest 金额推导
+	totalM, err := money.NewFromCents(10000, "CNY")
+	require.NoError(t, err)
+	refundM, err := money.NewFromCents(5000, "CNY")
+	require.NoError(t, err)
+	refundReq := payment.RefundRequest{
+		TotalMoney:   &totalM,
+		RefundMoney:  &refundM,
+		TotalAmount:  10,
+		RefundAmount: 5,
+	}
+	assert.Equal(t, int64(10000), refundReq.EffectiveTotalAmount())
+	assert.Equal(t, int64(5000), refundReq.EffectiveRefundAmount())
+
+	// 3. PaymentResult WithMoney
+	res := (&payment.PaymentResult{PaidAmount: 6600}).WithMoney(m)
+	assert.NotNil(t, res.Money)
+	assert.Equal(t, int64(9999), res.Money.ToCents())
+}
+
+type stubPayOnlyProvider struct{}
+
+func (s *stubPayOnlyProvider) Channel() enums.PaymentChannel { return enums.PaymentChannelWechat }
+func (s *stubPayOnlyProvider) Application() string           { return "stub" }
+func (s *stubPayOnlyProvider) Scenes() []enums.PaymentScene {
+	return []enums.PaymentScene{enums.PaymentSceneWechatNative}
+}
+func (s *stubPayOnlyProvider) HealthCheck() error { return nil }
+func (s *stubPayOnlyProvider) Create(ctx context.Context, req payment.CreateRequest) (*payment.Instruction, error) {
+	return &payment.Instruction{Scene: req.Scene}, nil
+}
+func (s *stubPayOnlyProvider) Close(ctx context.Context, req payment.CloseRequest) error { return nil }
+
+func TestPaymentCapabilityISP(t *testing.T) {
+	cfg := &config.Config{
+		App: config.AppConfig{Env: "development"},
+		Payment: config.PaymentConfig{
+			FakeEnabled: false,
+		},
+	}
+	mgr, err := payment.NewManager(cfg, zap.NewNop())
+	require.NoError(t, err)
+
+	// 注册仅实现了 Payable 的提供者
+	require.NoError(t, mgr.Register(&stubPayOnlyProvider{}))
+
+	ctx := t.Context()
+
+	// 1. Payable 能力支持，正常调用
+	inst, err := mgr.Create(ctx, payment.CreateRequest{
+		Scene:      enums.PaymentSceneWechatNative,
+		OutTradeNo: "STUB_001",
+		Amount:     100,
+		Subject:    "Stub Pay",
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, inst)
+
+	// 2. Refundable 能力未实现，调用退款必须返回 ErrCapabilityNotSupported
+	_, err = mgr.Refund(ctx, enums.PaymentChannelWechat, payment.RefundRequest{
+		OutTradeNo:   "STUB_001",
+		OutRefundNo:  "REFUND_001",
+		TotalAmount:  100,
+		RefundAmount: 100,
+	}, "stub")
+	require.ErrorIs(t, err, payment.ErrCapabilityNotSupported)
+
+	// 3. Queryable 能力未实现，调用查询必须返回 ErrCapabilityNotSupported
+	_, err = mgr.Query(ctx, enums.PaymentChannelWechat, payment.QueryRequest{
+		OutTradeNo: "STUB_001",
+	}, "stub")
+	require.ErrorIs(t, err, payment.ErrCapabilityNotSupported)
+}
+
+func TestPaymentDriverRegistry(t *testing.T) {
+	// 验证动态注册驱动工厂 (OCP 原则)
+	called := false
+	payment.RegisterDriver("custom_driver", func(application string, appCfg any, isProd bool, certsDir string, logger *zap.Logger) (payment.Provider, error) {
+		called = true
+		return &stubPayOnlyProvider{}, nil
+	})
+
+	factory, ok := payment.GetDriverFactory("custom_driver")
+	require.True(t, ok)
+	require.NotNil(t, factory)
+
+	p, err := factory("test_app", nil, false, "", zap.NewNop())
+	require.NoError(t, err)
+	assert.True(t, called)
+	assert.Equal(t, "stub", p.Application())
 }

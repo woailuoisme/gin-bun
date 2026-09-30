@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/samber/lo"
+	"go.uber.org/zap"
 
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/logger"
@@ -59,32 +60,34 @@ func (m *Middleware) AccessLog() gin.HandlerFunc {
 		c.Next()
 
 		log := logger.FromContext(c.Request.Context())
-		event := log.Info()
-		switch {
-		case c.Writer.Status() >= 500:
-			event = log.Error()
-		case c.Writer.Status() >= 400:
-			event = log.Warn()
-		case isProbePath(c.FullPath()):
-			event = log.Debug()
-		}
+		status := c.Writer.Status()
 
+		fields := make([]zap.Field, 0, 8)
 		if errMsg := formatErrors(c.Errors); errMsg != "" {
-			event = event.Str("error", errMsg)
+			fields = append(fields, zap.String("error", errMsg))
 		}
-		if code, ok := c.Get("error_code"); ok {
-			if codeStr, ok := code.(string); ok && codeStr != "" {
-				event = event.Str("code", codeStr)
-			}
+		if code := errs.ErrorCodeFromContext(c); code != "" {
+			fields = append(fields, zap.String("code", code))
 		}
 
-		event.
-			Str("method", c.Request.Method).
-			Str("path", c.Request.URL.Path).
-			Int("status", c.Writer.Status()).
-			Str("latency", time.Since(start).String()).
-			Str("ip", c.ClientIP()).
-			Msg("access")
+		fields = append(fields,
+			zap.String("method", c.Request.Method),
+			zap.String("path", c.Request.URL.Path),
+			zap.Int("status", status),
+			zap.String("latency", time.Since(start).String()),
+			zap.String("ip", c.ClientIP()),
+		)
+
+		switch {
+		case status >= 500:
+			log.Error("access", fields...)
+		case status >= 400:
+			log.Warn("access", fields...)
+		case isProbePath(c.FullPath()):
+			log.Debug("access", fields...)
+		default:
+			log.Info("access", fields...)
+		}
 	}
 }
 
@@ -117,10 +120,9 @@ func (m *Middleware) Recovery() gin.HandlerFunc {
 				return
 			}
 
-			logger.FromContext(c.Request.Context()).Error().
-				Any("panic", recovered).
-				Str("stack", string(debug.Stack())).
-				Msg("request panic recovered")
+			logger.FromContext(c.Request.Context()).Error("request panic recovered",
+				zap.Any("panic", recovered),
+				zap.String("stack", string(debug.Stack())))
 
 			if c.Writer.Written() {
 				c.Abort()

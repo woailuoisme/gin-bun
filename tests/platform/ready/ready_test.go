@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -185,4 +186,34 @@ func TestAggregatorDisabledCheck(t *testing.T) {
 	assert.Equal(t, "centrifugo", realtimeCheck.Driver)
 	assert.False(t, realtimeCheck.Critical)
 	assert.Empty(t, realtimeCheck.Latency)
+}
+
+func TestAggregatorCacheDuration(t *testing.T) {
+	var count atomic.Int32
+	agg := ready.New(
+		ready.NewCheck("database", func(ctx context.Context) error {
+			count.Add(1)
+			return nil
+		}, ready.WithCritical(true)),
+	)
+	agg.SetCacheDuration(150 * time.Millisecond)
+
+	// 第一次调用，必定触发真实探测
+	res1, errs1 := agg.Check(context.Background())
+	require.Empty(t, errs1)
+	assert.Equal(t, ready.StatusReady, res1.Status)
+	assert.Equal(t, int32(1), count.Load())
+
+	// 缓存窗口内再次调用，防雪崩缓存生效，不应重复调用 Ping
+	res2, errs2 := agg.Check(context.Background())
+	require.Empty(t, errs2)
+	assert.Equal(t, ready.StatusReady, res2.Status)
+	assert.Equal(t, int32(1), count.Load(), "缓存期内应直接复用结果，不重复探测")
+
+	// 等待缓存过期后再次调用，应触发第二次探测
+	time.Sleep(160 * time.Millisecond)
+	res3, errs3 := agg.Check(context.Background())
+	require.Empty(t, errs3)
+	assert.Equal(t, ready.StatusReady, res3.Status)
+	assert.Equal(t, int32(2), count.Load(), "缓存过期后应重新探测")
 }

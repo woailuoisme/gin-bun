@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 
+	"go.uber.org/zap"
+
 	"bgin/internal/console"
+	"bgin/internal/platform/logger"
 )
 
 // 构建元信息，通过 -ldflags "-X main.version=..." 注入。
@@ -37,9 +40,6 @@ var (
 // @tag.name                   实时通信
 // @tag.description            Centrifugo 实时通信连接凭据与订阅鉴权代理端点
 // @tag.x-order                3
-// @tag.name                   支付中心
-// @tag.description            微信支付与支付宝支付/退款异步通知回调及客户端重定向端点
-// @tag.x-order                4
 // @securityDefinitions.access_token BearerAuth
 // @in                         header
 // @name                       Authorization
@@ -48,7 +48,17 @@ func main() {
 	console.SetVersion(version, commit, date)
 
 	if err := console.Execute(context.Background(), os.Args); err != nil {
-		fmt.Fprintln(os.Stderr, "bgin:", err)
+		log := logger.Default()
+		// 通过结构化日志记录致命退出事件（生产 JSON 模式下供 APM/Loki 搜集）
+		log.Error("process terminated with error", zap.Error(err))
+		_ = log.Sync()
+
+		// 在开发控制台终端下输出高亮错误及 oops 调用堆栈，方便开发者直观排查
+		if log.Core().Enabled(zap.DebugLevel) {
+			_, _ = fmt.Fprintf(os.Stderr, "\n\033[1;31m[FATAL ERROR]\033[0m %+v\n\n", err)
+		} else {
+			_, _ = fmt.Fprintf(os.Stderr, "bgin: %v\n", err)
+		}
 		os.Exit(1)
 	}
 }

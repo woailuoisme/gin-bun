@@ -7,6 +7,7 @@ package user
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -14,10 +15,17 @@ import (
 	"github.com/samber/lo"
 	"github.com/uptrace/bun"
 
+	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/errs"
+	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
 	"bgin/internal/shared/models"
+)
+
+var (
+	_ authentication.UserProvider[*models.User] = (*Repository)(nil)
+	_ authentication.LoginRecorder              = (*Repository)(nil)
 )
 
 func init() {
@@ -65,32 +73,45 @@ func ValidateSort(field govalidator.FieldLevel) bool {
 // defaultSort 保证分页遍历的确定性顺序，对应 api.md 6.2。
 const defaultSort = "-createdAt"
 
-// updatableColumns 是允许经 UpdateFields 写入的列白名单。
+// writableColumns 是允许经 UpdateFields 写入的列白名单，value 表示该列是否允许客户端自助修改。
 //
 // 列名会被拼进 SQL（值仍走占位符），因此这道检查必须落在函数内部，
 // 而不是靠"调用方只传本包构造的字面量"这条纪律：一旦有人把请求体里的键透传进来，
 // 没有白名单就是注入面。新增可写列时同时改这里与调用点。
-var updatableColumns = map[string]struct{}{
-	"name":             {},
-	"image":            {},
-	"username":         {},
-	"display_username": {},
-	"phone_number":     {},
-	"role":             {},
-	"status":           {},
-	"banned":           {},
-	"ban_reason":       {},
-	"ban_expires":      {},
-	"email_verified":   {},
+//
+// "客户端可写"与"可写"共用这一张表，避免服务层再维护一份"客户端禁写列"清单——
+// 两份清单必然漂移，而漂移的方向是越权写受控列。
+var writableColumns = map[string]bool{
+	"name":             true,
+	"image":            true,
+	"username":         true,
+	"display_username": true,
+	"phone_number":     true,
+	// 以下受控列仅管理端可写。
+	"role":           false,
+	"status":         false,
+	"banned":         false,
+	"ban_reason":     false,
+	"ban_expires":    false,
+	"email_verified": false,
 }
 
 // Repository 是 user 表的数据访问入口。
 type Repository struct {
-	db *bun.DB
+	db     *bun.DB
+	hasher *hasher.Hasher
 }
 
-// NewRepository 构造 Repository。
-func NewRepository(db *bun.DB) *Repository { return &Repository{db: db} }
+// NewRepository 构造 Repository。h 允许为 nil，表示暂不注入口令哈希器。
+func NewRepository(db *bun.DB, h *hasher.Hasher) *Repository {
+	return &Repository{db: db, hasher: h}
+}
+
+// WithHasher 链式注入或覆盖 Hasher。
+func (r *Repository) WithHasher(h *hasher.Hasher) *Repository {
+	r.hasher = h
+	return r
+}
 
 // activeUsers 返回已排除软删除记录的查询，所有业务查询都必须经过它。
 func (r *Repository) activeUsers() *bun.SelectQuery {
@@ -182,6 +203,49 @@ func (r *Repository) FindCredentialAccount(ctx context.Context, userID string) (
 	return account, nil
 }
 
+// FindCredentialPassword 获取指定用户的本地哈希密码指针。
+func (r *Repository) FindCredentialPassword(ctx context.Context, userID string) (*string, error) {
+	account, err := r.FindCredentialAccount(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return account.Password, nil
+}
+
+// FindByCredentials 根据凭证中的账号标识（邮箱或用户名）检索用户。
+func (r *Repository) FindByCredentials(ctx context.Context, creds authentication.Credentials) (*models.User, error) {
+	account := strings.TrimSpace(creds.Account)
+	if strings.Contains(account, "@") {
+		return r.FindByEmail(ctx, account)
+	}
+	user, err := r.FindByUsername(ctx, account)
+	if err == nil {
+		return user, nil
+	}
+	return r.FindByEmail(ctx, account)
+}
+
+// ValidateCredentials 校验指定主体是否与凭证匹配（比对密码哈希）。
+func (r *Repository) ValidateCredentials(ctx context.Context, u *models.User, creds authentication.Credentials) (bool, error) {
+	if u == nil || strings.TrimSpace(creds.Password) == "" {
+		return false, nil
+	}
+	pwdHash, err := r.FindCredentialPassword(ctx, u.ID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if pwdHash == nil || *pwdHash == "" {
+		return false, nil
+	}
+	if r.hasher == nil {
+		return false, errors.New("user: repository hasher is not configured")
+	}
+	return r.hasher.Check(*pwdHash, creds.Password)
+}
+
 // UpdatePassword 改写本地密码凭据的哈希；凭据不存在时返回 sql.ErrNoRows。
 func (r *Repository) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
 	result, err := r.db.NewUpdate().
@@ -216,7 +280,7 @@ func (r *Repository) RecordLogin(ctx context.Context, userID, method string) err
 	return err
 }
 
-// UpdateFields 按列名更新用户。列名必须落在 updatableColumns 白名单内，否则直接报错。
+// UpdateFields 按列名更新用户。列名必须落在 writableColumns 白名单内，否则直接报错。
 func (r *Repository) UpdateFields(ctx context.Context, id string, fields map[string]any) error {
 	if len(fields) == 0 {
 		return nil
@@ -227,7 +291,7 @@ func (r *Repository) UpdateFields(ctx context.Context, id string, fields map[str
 		Where("id = ?", id).
 		Where("deleted_at IS NULL")
 	for column, value := range fields {
-		if _, ok := updatableColumns[column]; !ok {
+		if _, ok := writableColumns[column]; !ok {
 			return errs.BadRequest("Disallowed user column for update: " + column)
 		}
 		query = query.Set(column+" = ?", value)

@@ -25,11 +25,11 @@ type Notification interface {
 
 // Channel 实时广播通知渠道。
 type Channel struct {
-	rt realtime.Manager
+	rt realtime.Publisher
 }
 
 // NewChannel 创建实时广播通知渠道实例。
-func NewChannel(rt realtime.Manager) *Channel {
+func NewChannel(rt realtime.Publisher) *Channel {
 	return &Channel{rt: rt}
 }
 
@@ -55,7 +55,7 @@ func (c *Channel) Format(n contract.Notification, notifiable any) (any, error) {
 		}
 	}
 
-	return nil, oops.Code("notification_unsupported_realtime").
+	return nil, oops.Code(errs.CodeNotificationUnsupportedRT).
 		With("notification", n).
 		Errorf("notification does not implement realtime.Notification or ChannelFormatter")
 }

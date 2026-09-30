@@ -9,14 +9,15 @@ import (
 
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/components/cqrs"
-	"github.com/rs/zerolog"
+	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/eventbus"
-	"bgin/internal/platform/realtime"
 )
 
 type userRegisteredEvent struct {
@@ -34,7 +35,7 @@ type plainEvent struct {
 
 // TestEventBus_NewAndRegister 验证事件总线的构造、配置默认值与非法驱动校验。
 func TestEventBus_NewAndRegister(t *testing.T) {
-	log := zerolog.Nop()
+	log := zap.NewNop()
 
 	// 1. 默认注册
 	mgr, err := eventbus.RegisterEventBus(nil, log)
@@ -53,6 +54,7 @@ func TestEventBus_NewAndRegister(t *testing.T) {
 			Driver:      eventbus.DriverGoChannel,
 			TopicPrefix: "app_test",
 			LogLevel:    "debug",
+			BufferSize:  512,
 		},
 	}
 	mgr2, err := eventbus.RegisterEventBus(cfg, log)
@@ -94,7 +96,7 @@ func TestEventBus_PublishAndListen(t *testing.T) {
 	var plainMu sync.Mutex
 	plainDone := make(chan struct{})
 
-	// 2. 通过通用 Handler 注册没有实现 Event 契约的普通结构体
+	// 2. 通过通用 Handler 注册没有显式实现 Event 契约的普通结构体
 	plainHandler := cqrs.NewEventHandler("handle_plain_event", func(ctx context.Context, ev *plainEvent) error {
 		plainMu.Lock()
 		defer plainMu.Unlock()
@@ -153,119 +155,13 @@ func TestEventBus_PublishAndListen(t *testing.T) {
 	}
 }
 
-// TestEventBus_PublishAfterCommit 验证事务提交后发布机制与上下文钩子。
-func TestEventBus_PublishAfterCommit(t *testing.T) {
-	var publishedEvents []string
-	var mu sync.Mutex
-
-	mockAfterCommit := func(ctx context.Context, fn func()) {
-		// 模拟由事务提交后调度器触发
-		fn()
-	}
-
-	mgr := eventbus.NewTestManager(eventbus.WithAfterCommitHandler(mockAfterCommit))
-	defer func() {
-		_ = mgr.Close()
-	}()
-
-	err := eventbus.Listen(mgr, "track_after_commit", func(ctx context.Context, ev *plainEvent) error {
-		mu.Lock()
-		defer mu.Unlock()
-		publishedEvents = append(publishedEvents, ev.Message)
-		return nil
-	})
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-
-	go func() {
-		_ = mgr.Run(ctx)
-	}()
-
-	<-mgr.Running()
-
-	// 触发 PublishAfterCommit
-	err = mgr.PublishAfterCommit(ctx, plainEvent{Message: "committed_data"})
-	require.NoError(t, err)
-
-	assert.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(publishedEvents) == 1 && publishedEvents[0] == "committed_data"
-	}, 2*time.Second, 50*time.Millisecond)
-}
-
-// TestEventBus_RealtimeWithAfterCommit 验证与 realtime.WithAfterCommit 真实事务上下文的集成。
-func TestEventBus_RealtimeWithAfterCommit(t *testing.T) {
-	mgr := eventbus.NewTestManager()
-	defer func() {
-		_ = mgr.Close()
-	}()
-
-	var received bool
-	var mu sync.Mutex
-	done := make(chan struct{})
-
-	err := eventbus.Listen(mgr, "realtime_tx_test", func(ctx context.Context, ev *plainEvent) error {
-		mu.Lock()
-		defer mu.Unlock()
-		received = true
-		close(done)
-		return nil
-	})
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-
-	go func() {
-		_ = mgr.Run(ctx)
-	}()
-
-	<-mgr.Running()
-
-	// 使用上下文事务收集器
-	txCtx, commit := realtime.WithAfterCommit(ctx)
-
-	err = mgr.PublishAfterCommit(txCtx, plainEvent{Message: "delayed_by_tx"})
-	require.NoError(t, err)
-
-	// commit 之前不应收到事件
-	time.Sleep(100 * time.Millisecond)
-	mu.Lock()
-	assert.False(t, received)
-	mu.Unlock()
-
-	// 执行提交
-	commit()
-
-	select {
-	case <-done:
-		mu.Lock()
-		assert.True(t, received)
-		mu.Unlock()
-	case <-time.After(3 * time.Second):
-		t.Fatal("event not received after commit")
-	}
-}
-
-// TestEventBus_MetadataInjection 验证 OpenTelemetry TraceID 与 Watermill CorrelationID 的注入。
+// TestEventBus_MetadataInjection 验证 OpenTelemetry TraceID 与 CorrelationID 的双向透传与上下文还原。
 func TestEventBus_MetadataInjection(t *testing.T) {
 	mgr := eventbus.NewTestManager()
 	defer func() {
 		_ = mgr.Close()
 	}()
 
-	// 用原始订阅者直接观察消息元数据，而不是监听处理器上下文：
-	// 内存 GoChannel 投递前会 Copy 消息，而 Copy 不携带消息上下文，
-	// 因此消费端 ctx 天然拿不到发布方 Span；元数据才是本项目承诺交付的载体。
-	messages, err := mgr.Subscriber().Subscribe(t.Context(), "test.user.registered")
-	require.NoError(t, err)
-
-	// 手工注入有效 SpanContext：本仓库未引入 OTel SDK（无 TracerProvider），
-	// otel.Tracer 返回空实现，其 SpanContext 恒为全零且 IsValid() 为 false，
-	// 拿它做期望值会得到永真的断言。
 	traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
 	require.NoError(t, err)
 	spanID, err := trace.SpanIDFromHex("00f067aa0ba902b7")
@@ -278,13 +174,49 @@ func TestEventBus_MetadataInjection(t *testing.T) {
 	})
 
 	publishCtx := trace.ContextWithSpanContext(t.Context(), spanCtx)
+	publishCtx = eventbus.ContextWithRequestID(publishCtx, "req-12345")
+
+	var consumerTraceID string
+	var consumerReqID string
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	// 注册监听器并在消费端检验 Context 自动还原的 TraceID 与 RequestID
+	err = eventbus.Listen(mgr, "verify_metadata_propagation", func(ctx context.Context, ev *userRegisteredEvent) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
+			consumerTraceID = sc.TraceID().String()
+		}
+		if reqID := eventbus.RequestIDFromContext(ctx); reqID != "" {
+			consumerReqID = reqID
+		}
+		close(done)
+		return nil
+	})
+	require.NoError(t, err)
+
+	// 启动路由器
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		_ = mgr.Run(ctx)
+	}()
+
+	select {
+	case <-mgr.Running():
+	case <-time.After(3 * time.Second):
+		t.Fatal("router failed to start in time")
+	}
+
 	require.NoError(t, mgr.Publish(publishCtx, userRegisteredEvent{UserID: "u-meta", Email: "meta@example.com"}))
 
 	select {
-	case msg := <-messages:
-		assert.Equal(t, spanCtx.TraceID().String(), msg.Metadata.Get("trace_id"))
-		assert.NotEmpty(t, msg.Metadata, "元数据应同时承载 CorrelationID 等链路信息")
-		msg.Ack()
+	case <-done:
+		mu.Lock()
+		assert.Equal(t, spanCtx.TraceID().String(), consumerTraceID, "消费端 Context 应完整还原 TraceID")
+		assert.Equal(t, "req-12345", consumerReqID, "消费端 Context 应完整还原 RequestID")
+		mu.Unlock()
 	case <-time.After(3 * time.Second):
 		t.Fatal("event was not delivered in time")
 	}
@@ -294,13 +226,11 @@ func TestEventBus_MetadataInjection(t *testing.T) {
 func TestEventBus_LifecycleAndErrors(t *testing.T) {
 	mgr := eventbus.NewTestManager()
 
-	// 1. 非法处理器注册
-	err := mgr.RegisterHandler(12345)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported handler type")
+	// 1. 批量/空处理器注册
+	err := mgr.RegisterHandler()
+	require.NoError(t, err)
 
-	// 批量处理器注册
-	err = mgr.RegisterHandler([]cqrs.EventHandler{})
+	err = mgr.RegisterHandler(nil)
 	require.NoError(t, err)
 
 	// 2. 正常运行与重复运行检测
@@ -330,9 +260,75 @@ func TestEventBus_LifecycleAndErrors(t *testing.T) {
 	<-nilMgr.Running()
 }
 
-// TestZerologLoggerAdapter 验证 Zerolog 适配器的日志记录与字段拷贝能力。
-func TestZerologLoggerAdapter(t *testing.T) {
-	adapter := eventbus.NewZerologLoggerAdapter(zerolog.Nop())
+// TestEventBus_DriverRegistry 验证传输后端驱动工厂注册机制 (OCP)。
+func TestEventBus_DriverRegistry(t *testing.T) {
+	customDriverCalled := false
+	eventbus.RegisterDriver("custom_mock", func(cfg config.EventBusConfig, logger watermill.LoggerAdapter) (eventbus.PubSubDriver, error) {
+		customDriverCalled = true
+		return gochannel.NewGoChannel(gochannel.Config{}, logger), nil
+	})
+
+	cfg := config.EventBusConfig{
+		Driver:      "custom_mock",
+		TopicPrefix: "custom",
+	}
+
+	mgr, err := eventbus.NewManager(cfg, zap.NewNop())
+	require.NoError(t, err)
+	require.NotNil(t, mgr)
+	assert.True(t, customDriverCalled)
+	_ = mgr.Close()
+}
+
+// TestEventBus_FunctionalOptions 验证函数式配置选项。
+func TestEventBus_FunctionalOptions(t *testing.T) {
+	middlewareCalled := false
+	customMW := func(h message.HandlerFunc) message.HandlerFunc {
+		return func(msg *message.Message) ([]*message.Message, error) {
+			middlewareCalled = true
+			return h(msg)
+		}
+	}
+
+	mgr := eventbus.NewTestManager(
+		eventbus.WithCloseTimeout(2*time.Second),
+		eventbus.WithRetry(2, 50*time.Millisecond, 200*time.Millisecond),
+		eventbus.WithHandlerTimeout(5*time.Second),
+		eventbus.WithChannelBuffer(512),
+		eventbus.WithMiddleware(customMW),
+	)
+	defer func() {
+		_ = mgr.Close()
+	}()
+
+	done := make(chan struct{})
+	err := eventbus.Listen(mgr, "option_test_handler", func(ctx context.Context, ev *plainEvent) error {
+		close(done)
+		return nil
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		_ = mgr.Run(ctx)
+	}()
+
+	<-mgr.Running()
+
+	require.NoError(t, mgr.Publish(ctx, plainEvent{Message: "test options"}))
+
+	select {
+	case <-done:
+		assert.True(t, middlewareCalled, "自定义中间件应被执行")
+	case <-time.After(3 * time.Second):
+		t.Fatal("event not handled")
+	}
+}
+
+// TestZapLoggerAdapter 验证 Zap 适配器的日志记录与字段拷贝能力。
+func TestZapLoggerAdapter(t *testing.T) {
+	adapter := eventbus.NewZapLoggerAdapter(zap.NewNop())
 
 	adapter.Info("test info", watermill.LogFields{"key": "val"})
 	adapter.Debug("test debug", nil)

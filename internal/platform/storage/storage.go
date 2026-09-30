@@ -27,20 +27,32 @@ var (
 	ErrPresignUnsupported = errors.New("storage: driver does not support presigned URLs")
 )
 
-// Disk 定义对象存储通用操作契约。
-type Disk interface {
+// Reader 定义读取对象的角色契约。
+type Reader interface {
+	// Get 读出对象的全部字节。
+	Get(ctx context.Context, path string) ([]byte, error)
+	// GetStream 返回对象的只读流，由调用方负责关闭。
+	GetStream(ctx context.Context, path string) (io.ReadCloser, error)
+}
+
+// Writer 定义写入对象的角色契约。
+type Writer interface {
 	// Put 覆盖写入整个对象。
 	Put(ctx context.Context, path string, contents []byte) error
 	// PutStream 从流写入对象；读取长度未知时由驱动自行决定分片策略。
 	PutStream(ctx context.Context, path string, r io.Reader) error
 	// PutMultipart 从 HTTP multipart 表单头写入对象，自动管理流生命周期与资源释放。
 	PutMultipart(ctx context.Context, path string, file *multipart.FileHeader) error
-	// Get 读出对象的全部字节。
-	Get(ctx context.Context, path string) ([]byte, error)
-	// GetStream 返回对象的只读流，由调用方负责关闭。
-	GetStream(ctx context.Context, path string) (io.ReadCloser, error)
+}
+
+// Deleter 定义删除对象的角色契约。
+type Deleter interface {
 	// Delete 删除对象；对象本就不存在时视为成功。
 	Delete(ctx context.Context, path string) error
+}
+
+// Inspector 定义查询对象属性与存在性的元数据角色契约。
+type Inspector interface {
 	// Exists 报告对象是否存在。
 	Exists(ctx context.Context, path string) (bool, error)
 	// Size 返回对象的字节数。
@@ -49,36 +61,72 @@ type Disk interface {
 	LastModified(ctx context.Context, path string) (time.Time, error)
 	// MimeType 返回对象的内容类型，先按扩展名推断，再回退到内容嗅探。
 	MimeType(ctx context.Context, path string) (string, error)
+}
+
+// PublicURLer 定义提供永久公开可访问地址的角色契约。
+type PublicURLer interface {
 	// URL 返回对象的公开访问地址；未配置公开地址时返回 ErrNoPublicURL。
 	URL(path string) (string, error)
+}
+
+// Presigner 定义提供带签名与时效的时效性地址的角色契约。
+type Presigner interface {
 	// TemporaryURL 返回带签名与时效的下载地址；驱动不支持时返回 ErrPresignUnsupported。
 	TemporaryURL(ctx context.Context, path string, ttl time.Duration) (string, error)
 	// PresignPut 返回带签名与时效的上传地址；驱动不支持时返回 ErrPresignUnsupported。
 	PresignPut(ctx context.Context, path string, ttl time.Duration) (string, error)
+}
+
+// Pinger 定义存储服务可用性与健康检测的角色契约。
+type Pinger interface {
 	// HealthCheck 探测存储是否可用，供启动期与就绪探针使用。
 	HealthCheck(ctx context.Context) error
 	// Ping 探测存储可用性（满足 ready.Pinger 契约）。
 	Ping(ctx context.Context) error
+}
+
+// Disk 聚合存储读写、属性探查、公开链接、预签名与健康探测，是对象存储基础设施的完整契约。
+type Disk interface {
+	Reader
+	Writer
+	Deleter
+	Inspector
+	PublicURLer
+	Presigner
+	Pinger
 	// Driver 返回当前存储驱动名称（如 local、s3、garage）。
 	Driver() string
 }
 
+// PresignChecker 是能够显式报告是否支持预签名的驱动扩展契约。
+type PresignChecker interface {
+	SupportsPresign() bool
+}
+
+// SupportsPresign 探查目标 Disk 实例是否具备预签名能力。
+func SupportsPresign(d Disk) bool {
+	if d == nil {
+		return false
+	}
+	if c, ok := d.(PresignChecker); ok {
+		return c.SupportsPresign()
+	}
+	// 默认 S3 驱动支持预签名，本地文件驱动不支持
+	return d.Driver() != config.StorageDriverLocal
+}
+
+// AsPresigner 尝试将 Disk 转换为具备预签名能力的 Presigner 角色接口。
+func AsPresigner(d Disk) (Presigner, bool) {
+	if !SupportsPresign(d) {
+		return nil, false
+	}
+	p, ok := d.(Presigner)
+	return p, ok
+}
+
 // Open 根据配置构造存储驱动并执行可用性健康探测。
 func Open(ctx context.Context, cfg config.StorageConfig) (Disk, error) {
-	var (
-		disk Disk
-		err  error
-	)
-
-	switch cfg.Driver {
-	case config.StorageDriverLocal:
-		disk, err = NewLocalDisk(cfg.Local.Root, cfg.Local.URL)
-	case config.StorageDriverS3:
-		disk, err = NewS3Disk(cfg.S3)
-	default:
-		return nil, fmt.Errorf("unknown storage driver %q, options: %s / %s",
-			cfg.Driver, config.StorageDriverLocal, config.StorageDriverS3)
-	}
+	disk, err := createDriver(cfg)
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -12,15 +13,24 @@ import (
 	"bgin/internal/platform/errs"
 )
 
+var (
+	_ Client        = (*meilisearchClient)(nil)
+	_ Index         = (*meilisearchIndex)(nil)
+	_ TypedSearcher = (*meilisearchIndex)(nil)
+)
+
+var meiliHTTPTransport = &http.Transport{
+	MaxIdleConns:        100,
+	MaxIdleConnsPerHost: 50,
+	IdleConnTimeout:     90 * time.Second,
+}
+
 type meilisearchClient struct {
 	manager meilisearch.ServiceManager
 	prefix  string
 }
 
-var (
-	_ Client = (*meilisearchClient)(nil)
-	_ Index  = (*meilisearchIndex)(nil)
-)
+var _ Client = (*meilisearchClient)(nil)
 
 // NewMeilisearchClient 从已有的 Meilisearch ServiceManager 创建客户端门面。
 func NewMeilisearchClient(manager meilisearch.ServiceManager, prefix ...string) Client {
@@ -46,7 +56,8 @@ func NewClientFromConfig(cfg Config) (Client, error) {
 		host,
 		meilisearch.WithAPIKey(apiKey),
 		meilisearch.WithCustomClient(&http.Client{
-			Timeout: 5 * time.Second,
+			Timeout:   5 * time.Second,
+			Transport: meiliHTTPTransport,
 		}),
 	)
 
@@ -67,7 +78,7 @@ func (c *meilisearchClient) Enabled() bool {
 }
 
 func (c *meilisearchClient) Driver() string {
-	return "meilisearch"
+	return DriverMeilisearch
 }
 
 func (c *meilisearchClient) Ping(ctx context.Context) error {
@@ -100,52 +111,78 @@ type meilisearchIndex struct {
 	manager      meilisearch.IndexManager
 }
 
-func (idx *meilisearchIndex) Name() string {
-	return idx.name
+func (i *meilisearchIndex) Name() string {
+	return i.name
 }
 
-func (idx *meilisearchIndex) PrefixedName() string {
-	return idx.prefixedName
+func (i *meilisearchIndex) PrefixedName() string {
+	return i.prefixedName
 }
 
-func (idx *meilisearchIndex) Raw() any {
-	return idx.manager
+func (i *meilisearchIndex) Raw() any {
+	return i.manager
 }
 
-func (idx *meilisearchIndex) AddDocuments(ctx context.Context, documents any, primaryKey ...string) error {
+func (i *meilisearchIndex) wrapError(op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if meiliErr, ok := errors.AsType[*meilisearch.Error](err); ok {
+		if meiliErr.MeilisearchApiError.Code == "index_not_found" || meiliErr.StatusCode == http.StatusNotFound {
+			return oops.Code(string(errs.CodeNotFound)).In("search.Meilisearch." + op).Wrap(err)
+		}
+	}
+	return oops.Code(string(errs.CodeInternal)).In("search.Meilisearch." + op).Wrap(err)
+}
+
+func (i *meilisearchIndex) AddDocuments(ctx context.Context, documents any, primaryKey ...string) error {
 	var opts *meilisearch.DocumentOptions
 	if len(primaryKey) > 0 && primaryKey[0] != "" {
 		pk := primaryKey[0]
 		opts = &meilisearch.DocumentOptions{PrimaryKey: &pk}
 	}
 
-	_, err := idx.manager.AddDocumentsWithContext(ctx, documents, opts)
+	_, err := i.manager.AddDocumentsWithContext(ctx, documents, opts)
 	if err != nil {
-		return oops.Code(string(errs.CodeInternal)).In("search.Meilisearch.AddDocuments").Wrap(err)
+		return i.wrapError("AddDocuments", err)
 	}
 	return nil
 }
 
-func (idx *meilisearchIndex) DeleteDocuments(ctx context.Context, ids []string) error {
+func (i *meilisearchIndex) DeleteDocuments(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	_, err := idx.manager.DeleteDocumentsWithContext(ctx, ids, nil)
+	_, err := i.manager.DeleteDocumentsWithContext(ctx, ids, nil)
 	if err != nil {
-		return oops.Code(string(errs.CodeInternal)).In("search.Meilisearch.DeleteDocuments").Wrap(err)
+		return i.wrapError("DeleteDocuments", err)
 	}
 	return nil
 }
 
-func (idx *meilisearchIndex) DeleteAllDocuments(ctx context.Context) error {
-	_, err := idx.manager.DeleteAllDocumentsWithContext(ctx, nil)
+func (i *meilisearchIndex) DeleteAllDocuments(ctx context.Context) error {
+	_, err := i.manager.DeleteAllDocumentsWithContext(ctx, nil)
 	if err != nil {
-		return oops.Code(string(errs.CodeInternal)).In("search.Meilisearch.DeleteAllDocuments").Wrap(err)
+		return i.wrapError("DeleteAllDocuments", err)
 	}
 	return nil
 }
 
-func (idx *meilisearchIndex) Search(ctx context.Context, query string, opts ...SearchOption) (*SearchResult, error) {
+func (i *meilisearchIndex) Search(ctx context.Context, query string, opts ...SearchOption) (*SearchResult, error) {
+	var hits []map[string]any
+	baseRes, err := i.SearchDirect(ctx, query, &hits, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if hits == nil {
+		hits = make([]map[string]any, 0)
+	}
+	baseRes.Hits = hits
+	return baseRes, nil
+}
+
+// SearchDirect 直接向目标指针对象解码检索结果，实现零中间 map 分配。
+func (i *meilisearchIndex) SearchDirect(ctx context.Context, query string, target any, opts ...SearchOption) (*SearchResult, error) {
 	req := &SearchRequest{}
 	for _, opt := range opts {
 		opt(req)
@@ -158,15 +195,15 @@ func (idx *meilisearchIndex) Search(ctx context.Context, query string, opts ...S
 		Sort:   req.Sort,
 	}
 
-	resp, err := idx.manager.SearchWithContext(ctx, query, meiliReq)
+	resp, err := i.manager.SearchWithContext(ctx, query, meiliReq)
 	if err != nil {
-		return nil, oops.Code(string(errs.CodeInternal)).In("search.Meilisearch.Search").Wrap(err)
+		return nil, i.wrapError("Search", err)
 	}
 
-	var hits []map[string]any
-	if err := resp.Hits.DecodeInto(&hits); err != nil {
-		// 解码失败必须上抛：静默降级为空结果会让调用方无法区分"没有命中"与"数据损坏"。
-		return nil, oops.Code(string(errs.CodeInternal)).In("search.Meilisearch.Search.DecodeHits").Wrap(err)
+	if target != nil {
+		if err := resp.Hits.DecodeInto(target); err != nil {
+			return nil, oops.Code(string(errs.CodeInternal)).In("search.Meilisearch.Search.DecodeHits").Wrap(err)
+		}
 	}
 
 	total := resp.EstimatedTotalHits
@@ -175,7 +212,6 @@ func (idx *meilisearchIndex) Search(ctx context.Context, query string, opts ...S
 	}
 
 	return &SearchResult{
-		Hits:               hits,
 		EstimatedTotalHits: total,
 		Limit:              resp.Limit,
 		Offset:             resp.Offset,

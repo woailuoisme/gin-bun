@@ -24,7 +24,7 @@ func RegisterRoutes(router *gin.RouterGroup, handler *Handler, mw *middleware.Mi
 	sensitive.POST("/reset-password", handler.ResetPassword)
 
 	// 需鉴权端点：通过语义化子路由统一级联已认证配额与身份校验中间件。
-	protected := group.Group("", mw.RequireAuth(), mw.RateLimit(middleware.TierAuthenticated))
+	protected := group.Group("", mw.RequireAuth("client"), mw.RateLimit(middleware.TierAuthenticated))
 	protected.GET("/get-session", handler.GetSession)
 	protected.POST("/sign-out", handler.SignOut)
 	protected.POST("/change-password", handler.ChangePassword)

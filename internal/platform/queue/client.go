@@ -3,19 +3,18 @@ package queue
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
-	"github.com/rs/zerolog"
 	"github.com/samber/lo"
 	"github.com/samber/oops"
+	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/errs"
@@ -30,11 +29,10 @@ type Client struct {
 	redisOpt        asynq.RedisConnOpt
 	concurrency     int
 	shutdownTimeout time.Duration
-	logger          *zerolog.Logger
+	logger          atomic.Pointer[zap.Logger]
+	middlewares     []Middleware
 
-	// mu 保护运行期可变字段：server 与 scheduler 由业务 goroutine 写入、停机钩子读取；
-	// logger 由装配期注入、运行期被各任务 goroutine 读取。
-	// 读写锁分离是必要的：log() 会出现在任务处理的热路径上，不能与停机钩子互斥。
+	// mu 保护运行期可变字段：server 与 scheduler 由业务 goroutine 写入、停机钩子读取
 	mu        sync.RWMutex
 	server    *asynq.Server
 	scheduler *asynq.Scheduler
@@ -68,10 +66,7 @@ func NewClient(cfg config.QueueConfig, lockers ...Locker) (*Client, func(), erro
 	}
 
 	concurrency := cmp.Or(cfg.Concurrency, 10)
-	shutdownTimeout := cfg.ShutdownTimeout
-	if shutdownTimeout <= 0 {
-		shutdownTimeout = 10 * time.Second
-	}
+	shutdownTimeout := cmp.Or(cfg.ShutdownTimeout, 10*time.Second)
 
 	c := &Client{
 		client:          client,
@@ -119,41 +114,48 @@ func (c *Client) SetShutdownTimeout(d time.Duration) {
 func (c *Client) ShutdownTimeout() time.Duration {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if c.shutdownTimeout <= 0 {
-		return 10 * time.Second
+	return cmp.Or(c.shutdownTimeout, 10*time.Second)
+}
+
+// SetLogger 设置自定义日志记录器，无锁并发安全。
+func (c *Client) SetLogger(l *zap.Logger) {
+	c.logger.Store(l)
+}
+
+// fallbackLogger 是队列包内部告警（调度注册失败、锁续期失败等）的兜底输出。
+// 默认静默：进程启动期应调用 SetFallbackLogger 注入真实日志器，否则这些告警无人可见。
+var fallbackLogger atomic.Pointer[zap.Logger]
+
+// SetFallbackLogger 注入队列包内部告警的兜底日志器（进程启动期调用一次）。
+// 传 nil 复位为静默，便于测试隔离。
+func SetFallbackLogger(l *zap.Logger) {
+	fallbackLogger.Store(l)
+}
+
+// fallbackLog 返回生效的兜底日志器，未注入时为静默 Nop（永不为 nil）。
+func fallbackLog() *zap.Logger {
+	if l := fallbackLogger.Load(); l != nil {
+		return l
 	}
-	return c.shutdownTimeout
+	return zap.NewNop()
 }
 
-// SetLogger 设置自定义日志记录器。
-//
-// 可在运行期调用：读取侧（log）走读锁，与写入互不阻塞。
-func (c *Client) SetLogger(l *zerolog.Logger) {
-	c.mu.Lock()
-	c.logger = l
-	c.mu.Unlock()
-}
-
-// fallbackLogger 是队列包在未注入日志器时的兜底输出。
-// 复用包级实例而非每次调用新建，且不使用 zerolog 全局单例，避免绕过应用配置的日志通道。
-//
-// 注意：兜底实例只写 stderr 且不遵循 LOG_CHANNEL/LOG_LEVEL，也不携带 request_id，
-// 因此仅用于「装配尚未注入日志器」的极早期事件。
-var fallbackLogger = zerolog.New(os.Stderr).With().Timestamp().Logger()
-
-// log 返回生效的日志器；未注入时退回包级兜底实例（永不为 nil）。
-func (c *Client) log() *zerolog.Logger {
+// log 返回生效的日志器；未注入时退回包级兜底实例（永不为 nil，零锁竞争）。
+func (c *Client) log() *zap.Logger {
 	if c == nil {
-		return &fallbackLogger
+		return fallbackLog()
 	}
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if c.logger != nil {
-		return c.logger
+	if l := c.logger.Load(); l != nil {
+		return l
 	}
-	return &fallbackLogger
+	return fallbackLog()
+}
+
+// Use 注册全局工作协程任务执行中间件 (OCP)。
+func (c *Client) Use(middlewares ...Middleware) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.middlewares = append(c.middlewares, middlewares...)
 }
 
 // Close 释放队列客户端、运维探针与底层 Redis 资源。
@@ -187,11 +189,8 @@ func (c *Client) HealthCheck() error {
 	return err
 }
 
-// Dispatch 将任务投递到队列，自动序列化载荷并应用 Job 自声明的执行约束。
-//
-// 选项顺序即优先级：Job 自声明的队列、重试预算、超时与保留先入列，调用方 opts 随后追加，
-// 因此调用方可以按本次派发的需要覆盖 Job 的默认约束（Asynq 选项后写入者生效）。
-func (c *Client) Dispatch(ctx context.Context, job Job, opts ...asynq.Option) error {
+// Dispatch 将任务投递到队列，自动序列化载荷并应用 Job 自声明的执行约束与元数据信封。
+func (c *Client) Dispatch(ctx context.Context, job Job, opts ...DispatchOption) error {
 	if c == nil || c.client == nil {
 		return errs.Internal(errors.New("queue: client is nil"))
 	}
@@ -199,40 +198,46 @@ func (c *Client) Dispatch(ctx context.Context, job Job, opts ...asynq.Option) er
 		return errs.Internal(errors.New("queue: job is nil"))
 	}
 
-	payload, err := json.Marshal(job)
+	cfg := &DispatchConfig{
+		QueueName:  ResolveQueueName(job),
+		MaxRetries: DefaultMaxRetries,
+	}
+	if rp, ok := job.(MaxRetriesProvider); ok && rp.MaxRetries() > 0 {
+		cfg.MaxRetries = rp.MaxRetries()
+	}
+	if tp, ok := job.(TimeoutProvider); ok && tp.Timeout() > 0 {
+		cfg.Timeout = tp.Timeout()
+	}
+	if retp, ok := job.(RetentionProvider); ok && retp.Retention() > 0 {
+		cfg.Retention = retp.Retention()
+	}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(cfg)
+		}
+	}
+
+	payload, err := wrapEnvelope(ctx, job, cfg.Headers)
 	if err != nil {
-		return errs.Internal(fmt.Errorf("queue: failed to serialize job payload: %w", err))
+		return errs.Internal(err)
+	}
+
+	if len(payload) > MaxPayloadWarnBytes {
+		c.log().Warn("task payload size exceeds 512KB recommendation",
+			zap.String("task", job.TaskName()),
+			zap.Int("size_bytes", len(payload)),
+		)
 	}
 
 	task := asynq.NewTask(job.TaskName(), payload)
-	allOpts := append(resolveJobOptions(job), opts...)
+	asynqOpts := cfg.compileAsynqOptions()
 
-	if _, err := c.client.EnqueueContext(ctx, task, allOpts...); err != nil {
+	if _, err := c.client.EnqueueContext(ctx, task, asynqOpts...); err != nil {
 		return errs.Internal(fmt.Errorf("queue: failed to enqueue task: %w", err))
 	}
 
 	return nil
-}
-
-// resolveJobOptions 解析任务自声明的执行选项（队列、重试、超时、保留）。
-func resolveJobOptions(job Job) []asynq.Option {
-	maxRetries := DefaultMaxRetries
-	if rp, ok := job.(MaxRetriesProvider); ok && rp.MaxRetries() > 0 {
-		maxRetries = rp.MaxRetries()
-	}
-
-	opts := []asynq.Option{
-		asynq.Queue(ResolveQueueName(job)),
-		asynq.MaxRetry(maxRetries),
-	}
-	if tp, ok := job.(TimeoutProvider); ok && tp.Timeout() > 0 {
-		opts = append(opts, asynq.Timeout(tp.Timeout()))
-	}
-	if retp, ok := job.(RetentionProvider); ok && retp.Retention() > 0 {
-		opts = append(opts, asynq.Retention(retp.Retention()))
-	}
-
-	return opts
 }
 
 // Queues 检查并返回当前所有队列的运行时健康状态与统计信息。
@@ -251,7 +256,7 @@ func (c *Client) Queues() ([]QueueStatus, error) {
 		info, err := c.inspector.GetQueueInfo(q)
 		if err != nil {
 			// 单个队列统计失败不阻断整体巡检，但必须留痕，否则运维只会看到"数据缺失"。
-			c.log().Warn().Err(err).Str("queue", q).Msg("failed to inspect queue info, skipped")
+			c.log().Warn("failed to inspect queue info, skipped", zap.Error(err), zap.String("queue", q))
 			continue
 		}
 		results = append(results, QueueStatus{
@@ -306,13 +311,7 @@ func (c *Client) ListFailedAll(page, pageSize int) ([]*asynq.TaskInfo, error) {
 	}
 
 	slices.SortFunc(allTasks, func(a, b *asynq.TaskInfo) int {
-		if a.LastFailedAt.After(b.LastFailedAt) {
-			return -1
-		}
-		if a.LastFailedAt.Before(b.LastFailedAt) {
-			return 1
-		}
-		return 0
+		return b.LastFailedAt.Compare(a.LastFailedAt)
 	})
 
 	start := (page - 1) * pageSize
@@ -336,7 +335,7 @@ func (c *Client) listAllArchivedTasks() ([]*asynq.TaskInfo, error) {
 		tasks, err := c.inspector.ListArchivedTasks(q, asynq.Page(1), asynq.PageSize(1000))
 		if err != nil {
 			if !errors.Is(err, asynq.ErrQueueNotFound) {
-				c.log().Warn().Err(err).Str("queue", q).Msg("failed to list archived tasks, skipped")
+				c.log().Warn("failed to list archived tasks, skipped", zap.Error(err), zap.String("queue", q))
 			}
 			continue
 		}

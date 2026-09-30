@@ -5,10 +5,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
+	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/errs"
-	"bgin/internal/platform/identity"
 	"bgin/internal/platform/logger"
 )
 
@@ -47,7 +48,7 @@ func (m *Middleware) RateLimit(tier Tier) gin.HandlerFunc {
 		count, err := m.cache.Increment(c.Request.Context(), key, 2*rateLimitWindow)
 		if err != nil {
 			// 计数器故障时降级放行并记录错误。
-			logger.FromContext(c.Request.Context()).Error().Err(err).Msg("rate limit counter failed, request allowed")
+			logger.FromContext(c.Request.Context()).Error("rate limit counter failed, request allowed", zap.Error(err))
 			c.Next()
 			return
 		}
@@ -81,7 +82,7 @@ func (m *Middleware) limitFor(tier Tier) int {
 // scopeKey 确定限流维度：认证用户按 UserID，其余按客户端 IP。
 func (m *Middleware) scopeKey(tier Tier, c *gin.Context) string {
 	if tier == TierAuthenticated {
-		if id, ok := identity.FromContext(c.Request.Context()); ok {
+		if id, ok := authentication.FromContext(c.Request.Context()); ok {
 			return "user:" + id.UserID
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
+	"go.uber.org/zap"
 
 	"bgin/internal/platform/logger"
 )
@@ -96,7 +97,8 @@ func (r *Runner) Call(ctx context.Context, seeders ...Seeder) error {
 		r.mu.Lock()
 		if r.called[name] {
 			r.mu.Unlock()
-			logger.FromContext(ctx).Debug().Str("seeder", name).Msg("seeder already executed, skipping duplicate seeding")
+			logger.FromContext(ctx).Debug("seeder already executed, skipping duplicate seeding",
+				zap.String("seeder", name))
 			continue
 		}
 		// 标记当前 seeder 已在执行中，防止循环或重入
@@ -108,7 +110,8 @@ func (r *Runner) Call(ctx context.Context, seeders ...Seeder) error {
 		}
 
 		start := time.Now()
-		logger.FromContext(ctx).Info().Str("seeder", name).Msg("executing database seeder...")
+		logger.FromContext(ctx).Info("executing database seeder...",
+			zap.String("seeder", name))
 		if err := s.Seed(ctx, r.db); err != nil {
 			r.mu.Lock()
 			delete(r.called, name)
@@ -117,7 +120,9 @@ func (r *Runner) Call(ctx context.Context, seeders ...Seeder) error {
 		}
 		duration := time.Since(start)
 
-		logger.FromContext(ctx).Info().Str("seeder", name).Dur("duration", duration).Msg("database seeder completed")
+		logger.FromContext(ctx).Info("database seeder completed",
+			zap.String("seeder", name),
+			zap.Duration("duration", duration))
 
 		if hook != nil {
 			hook(name, i+1, total, duration, true)

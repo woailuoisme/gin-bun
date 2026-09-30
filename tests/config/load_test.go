@@ -69,6 +69,10 @@ func TestLoadAcceptsKnownAppEnvs(t *testing.T) {
 				// 生产环境禁止通配来源，本地 .env 里的 * 会在此被拦下，
 				// 因此该用例必须显式给出真实来源（见 TestLoadRejectsWildcardCORSInProduction）。
 				t.Setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
+				// 生产环境同样不接受日志/假短信驱动（会把验证码写进日志），必须指向真实服务商。
+				t.Setenv("NOTIFICATION_SMS_DRIVER", "aliyun")
+				t.Setenv("NOTIFICATION_SMS_ALIYUN_ACCESS_KEY_ID", "test-ak")
+				t.Setenv("NOTIFICATION_SMS_ALIYUN_ACCESS_KEY_SECRET", "test-sk")
 			}
 
 			cfg, err := config.Load()
@@ -76,6 +80,37 @@ func TestLoadAcceptsKnownAppEnvs(t *testing.T) {
 			assert.Equal(t, env, cfg.App.Env)
 		})
 	}
+}
+
+// TestLoadRejectsDebugSMSDriverInProduction 锁定生产环境不得使用日志/内存假短信驱动。
+//
+// 这两类驱动在开发期很方便，但在生产会把手机号与验证码明文写进日志（log），
+// 或让验证码根本不发出去却回执成功（mock）——两者都必须当场拦下。
+func TestLoadRejectsDebugSMSDriverInProduction(t *testing.T) {
+	for _, driver := range []string{"log", "mock", "LOG"} {
+		t.Run(driver, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("APP_ENV", "production")
+			t.Setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
+			t.Setenv("NOTIFICATION_SMS_DRIVER", driver)
+
+			_, err := config.Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "notification_sms_driver")
+		})
+	}
+
+	// 留空时归一为 none：不注册任何驱动，既不泄漏也不阻塞启动。
+	t.Run("留空时归一为 none", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("APP_ENV", "production")
+		t.Setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
+		t.Setenv("NOTIFICATION_SMS_DRIVER", "")
+
+		cfg, err := config.Load()
+		require.NoError(t, err)
+		assert.Equal(t, "none", cfg.Notification.SMS.Driver)
+	})
 }
 
 // TestLoadRejectsWildcardCORSInProduction 锁定生产环境禁止通配跨域来源。

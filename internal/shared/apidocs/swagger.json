@@ -422,75 +422,6 @@
                 "x-order": 8
             }
         },
-        "/payments/notify/{channel}": {
-            "post": {
-                "description": "接收微信或支付宝服务端的支付与退款异步通知，由网关执行公钥/证书验签、幂等防重检查与业务状态机推进，返回渠道约定的确认应答。",
-                "consumes": [
-                    "application/json",
-                    "application/x-www-form-urlencoded"
-                ],
-                "produces": [
-                    "application/json",
-                    "text/plain"
-                ],
-                "tags": [
-                    "支付中心"
-                ],
-                "summary": "支付与退款异步通知回调",
-                "parameters": [
-                    {
-                        "enum": [
-                            "wechat",
-                            "alipay"
-                        ],
-                        "type": "string",
-                        "description": "支付渠道 (wechat, alipay)",
-                        "name": "channel",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "应用标识 (可选，缺省时使用渠道默认应用)",
-                        "name": "app",
-                        "in": "path"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "回调验签与业务消费成功",
-                        "schema": {
-                            "$ref": "#/definitions/payment.CallbackAckResponse"
-                        }
-                    }
-                },
-                "x-order": 1
-            }
-        },
-        "/payments/return/alipay": {
-            "get": {
-                "description": "用户在支付宝完成付款后由浏览器重定向跳回，经公钥验签通过后 302 跳转至前端订单结果展示页。仅作展示导流，实际支付状态严格以异步通知为准。",
-                "consumes": [
-                    "text/html"
-                ],
-                "produces": [
-                    "text/html"
-                ],
-                "tags": [
-                    "支付中心"
-                ],
-                "summary": "支付宝客户端同步重定向跳转",
-                "responses": {
-                    "302": {
-                        "description": "重定向至前端订单展示页",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                },
-                "x-order": 2
-            }
-        },
         "/realtime/proxy/subscribe": {
             "post": {
                 "description": "接收 Centrifugo 反向代理发起的频道订阅鉴权请求，校验 HMAC-SHA256 签名并调度频道权限策略。",
@@ -614,6 +545,44 @@
                     }
                 },
                 "x-order": 2
+            }
+        },
+        "/users/me/avatar": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "上传并更新当前登录用户的个人头像。仅允许上传不超过 2MB 的 JPEG、PNG 或 WebP 格式图片，自动按魔数头校验真实图像并清除历史旧头像。",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "个人资料"
+                ],
+                "summary": "上传本人头像",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "头像图片文件 (最大 2MB，支持 JPEG/PNG/WebP)",
+                        "name": "avatar",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "更新头像后的本人档案",
+                        "schema": {
+                            "$ref": "#/definitions/profile.Profile"
+                        }
+                    }
+                },
+                "x-order": 3
             }
         }
     },
@@ -1024,21 +993,6 @@
                 "StatusBanned"
             ]
         },
-        "payment.CallbackAckResponse": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "description": "应答说明",
-                    "type": "string",
-                    "example": "OK"
-                },
-                "status": {
-                    "description": "应答状态码或纯文本",
-                    "type": "string",
-                    "example": "success"
-                }
-            }
-        },
         "profile.Profile": {
             "type": "object",
             "properties": {
@@ -1203,11 +1157,6 @@
             "description": "Centrifugo 实时通信连接凭据与订阅鉴权代理端点",
             "name": "实时通信",
             "x-order": "3"
-        },
-        {
-            "description": "微信支付与支付宝支付/退款异步通知回调及客户端重定向端点",
-            "name": "支付中心",
-            "x-order": "4"
         }
     ]
 }

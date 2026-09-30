@@ -2,6 +2,8 @@ package pdf
 
 import (
 	"cmp"
+	"context"
+	"path/filepath"
 
 	"github.com/johnfercher/maroto/v2/pkg/components/code"
 	"github.com/johnfercher/maroto/v2/pkg/components/col"
@@ -41,6 +43,14 @@ func (b *Builder) Raw() core.Maroto {
 // FontFamily 返回当前配置的默认字体族名。
 func (b *Builder) FontFamily() string {
 	return b.fontFamily
+}
+
+// AddComponent 编排渲染可复用的业务视觉组件。
+func (b *Builder) AddComponent(ctx context.Context, comp Component) error {
+	if comp == nil {
+		return nil
+	}
+	return comp.Render(ctx, b)
 }
 
 // AddSpace 添加指定高度的空白留白行。
@@ -273,10 +283,11 @@ func (b *Builder) AddBarcode(content string, size int, height float64) *Builder 
 	return b
 }
 
-// AddImageFromFile 从本地文件加载并添加图片。
+// AddImageFromFile 从本地文件加载并添加图片（自动净化文件路径）。
 func (b *Builder) AddImageFromFile(filePath string, size int, height float64) *Builder {
+	cleanPath := filepath.Clean(filePath)
 	b.m.AddRow(resolveRowHeight(height, 20.0),
-		image.NewFromFileCol(resolveColSize(size, 4), filePath, props.Rect{
+		image.NewFromFileCol(resolveColSize(size, 4), cleanPath, props.Rect{
 			Center:  true,
 			Percent: 95,
 		}),

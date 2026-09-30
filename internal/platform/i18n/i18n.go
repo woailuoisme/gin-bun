@@ -26,12 +26,9 @@ const (
 	sectionInvoice    = "invoice"
 )
 
-// bundle 是一门语言的文案集合。
+// bundle 是一门语言的文案集合，动态管理任意分节命名空间，遵循开闭原则。
 type bundle struct {
-	validation map[string]string
-	fields     map[string]string
-	mail       map[string]string
-	invoice    map[string]string
+	sections map[string]map[string]string
 }
 
 // Translator 按请求语言渲染文案；缺失的键一律回退到默认语言。
@@ -40,9 +37,9 @@ type Translator struct {
 	bundles  map[string]*bundle
 }
 
-// New 装载内嵌的全部语言包。资源已编译进二进制，装载失败属于打包错误。
-func New(cfg *config.Config) (*Translator, error) {
-	entries, err := fs.ReadDir(lang.FS, ".")
+// NewWithFS 遵循依赖倒置原则，从指定的文件系统装载全部语言包。
+func NewWithFS(defaultLanguage string, fsys fs.FS) (*Translator, error) {
+	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
 		return nil, fmt.Errorf("i18n: read language directory failed: %w", err)
 	}
@@ -52,7 +49,7 @@ func New(cfg *config.Config) (*Translator, error) {
 		if !entry.IsDir() {
 			continue
 		}
-		loaded, err := loadBundle(entry.Name())
+		loaded, err := loadBundle(fsys, entry.Name())
 		if err != nil {
 			return nil, err
 		}
@@ -62,11 +59,15 @@ func New(cfg *config.Config) (*Translator, error) {
 		return nil, errors.New("i18n: no language bundle found")
 	}
 
-	fallback := cfg.I18n.DefaultLanguage
-	if _, ok := bundles[fallback]; !ok {
-		return nil, fmt.Errorf("i18n: default language %q bundle not found", fallback)
+	if _, ok := bundles[defaultLanguage]; !ok {
+		return nil, fmt.Errorf("i18n: default language %q bundle not found", defaultLanguage)
 	}
-	return &Translator{fallback: fallback, bundles: bundles}, nil
+	return &Translator{fallback: defaultLanguage, bundles: bundles}, nil
+}
+
+// New 装载内嵌的全部语言包，保持现有配置签名兼容。
+func New(cfg *config.Config) (*Translator, error) {
+	return NewWithFS(cfg.I18n.DefaultLanguage, lang.FS)
 }
 
 var (
@@ -88,25 +89,28 @@ func Default() *Translator {
 	return defaultTranslator
 }
 
-// loadBundle 读取单门语言的全部文案文件。
-func loadBundle(name string) (*bundle, error) {
-	loaded := &bundle{
-		validation: make(map[string]string),
-		fields:     make(map[string]string),
-		mail:       make(map[string]string),
-		invoice:    make(map[string]string),
+// loadBundle 动态遍历并读取单门语言目录下的全部 TOML 文案文件。
+func loadBundle(fsys fs.FS, langDir string) (*bundle, error) {
+	entries, err := fs.ReadDir(fsys, langDir)
+	if err != nil {
+		return nil, fmt.Errorf("i18n: read language directory %s failed: %w", langDir, err)
 	}
 
-	sections := map[string]map[string]string{
-		sectionValidation: loaded.validation,
-		sectionFields:     loaded.fields,
-		sectionMail:       loaded.mail,
-		sectionInvoice:    loaded.invoice,
+	loaded := &bundle{
+		sections: make(map[string]map[string]string, len(entries)),
 	}
-	for section, target := range sections {
-		if err := decode(lang.FS, name+"/"+section+".toml", &target); err != nil {
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".toml") {
+			continue
+		}
+		section := strings.TrimSuffix(entry.Name(), ".toml")
+		target := make(map[string]string)
+		filePath := langDir + "/" + entry.Name()
+		if err := decode(fsys, filePath, &target); err != nil {
 			return nil, err
 		}
+		loaded.sections[section] = target
 	}
 	return loaded, nil
 }
@@ -190,45 +194,63 @@ func (t *Translator) Invoice(language, key string, vars map[string]string) strin
 	return render(t.template(language, sectionInvoice, key), vars)
 }
 
-// FieldLabel 返回字段路径对应的可读标签，缺键时返回空串交由调用方兜底。
-func (t *Translator) FieldLabel(language, field string) string {
-	if b, ok := t.bundles[language]; ok {
-		if label, ok := b.fields[field]; ok {
-			return label
-		}
+// T 统一通用翻译契约：支持 "section.key" 路径语法（例如 "auth.login_failed" 或 "validation.required"）。
+// 支持传入可选变量映射 vars 进行 {{.Key}} 占位符动态替换；缺键时返回 key 自身。
+func (t *Translator) T(language, key string, vars ...map[string]string) string {
+	section, subKey, found := strings.Cut(key, ".")
+	if !found {
+		section, subKey = "", key
 	}
-	if b, ok := t.bundles[t.fallback]; ok {
-		return b.fields[field]
+
+	tpl := ""
+	if section != "" {
+		tpl = t.template(language, section, subKey)
+	} else {
+		tpl = t.findAnySection(language, subKey)
+	}
+
+	if tpl == "" {
+		return ""
+	}
+
+	if len(vars) > 0 && vars[0] != nil {
+		return render(tpl, vars[0])
+	}
+	return tpl
+}
+
+func (t *Translator) findAnySection(language, key string) string {
+	for _, lang := range []string{language, t.fallback} {
+		if b, ok := t.bundles[lang]; ok {
+			for _, sec := range b.sections {
+				if val, exists := sec[key]; exists {
+					return val
+				}
+			}
+		}
 	}
 	return ""
 }
 
+// FieldLabel 返回字段路径对应的可读标签，缺键时返回空串交由调用方兜底。
+func (t *Translator) FieldLabel(language, field string) string {
+	return t.template(language, sectionFields, field)
+}
+
 // template 按语言与分节取模板，缺键时用默认语言兜底。
 func (t *Translator) template(language, section, key string) string {
-	if tpl := lookup(t.bundles[language], section, key); tpl != "" {
-		return tpl
-	}
-	return lookup(t.bundles[t.fallback], section, key)
+	return cmp.Or(lookup(t.bundles[language], section, key), lookup(t.bundles[t.fallback], section, key))
 }
 
 // lookup 从语言包中取出指定分节的模板。
 func lookup(b *bundle, section, key string) string {
-	if b == nil {
+	if b == nil || b.sections == nil {
 		return ""
 	}
-
-	switch section {
-	case sectionValidation:
-		return b.validation[key]
-	case sectionFields:
-		return b.fields[key]
-	case sectionMail:
-		return b.mail[key]
-	case sectionInvoice:
-		return b.invoice[key]
-	default:
-		return ""
+	if sec, ok := b.sections[section]; ok {
+		return sec[key]
 	}
+	return ""
 }
 
 // render 替换模板中的 {{.Key}} 占位符。
