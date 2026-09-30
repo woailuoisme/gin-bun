@@ -26,28 +26,9 @@ main:
   # 网页手动触发：构建并推送 Alpine (仅 linux/amd64) 镜像
   web_trigger_amd64: *docker_amd64
 
-  # 网页手动触发：构建并推送 Alpine 多架构镜像 (amd64, arm64)
-  web_trigger:
-    - services:
-        - docker
-      stages:
-        - name: Docker build and push (Alpine)
-          script: |
-            set -euo pipefail
-            REGISTRY="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}"
-            docker buildx build \
-              --tag "${REGISTRY}:latest" \
-              --tag "${REGISTRY}:alpine" \
-              --platform linux/amd64,linux/arm64 \
-              --file ./Dockerfile \
-              --cache-from type=registry,ref=${REGISTRY}:alpine-multi-cache \
-              --cache-to type=registry,ref=${REGISTRY}:alpine-multi-cache,mode=max,image-manifest=true,oci-mediatypes=true \
-              --push \
-              .
-
 # ── 版本发布：仅在推送 v* 标签时执行 ──────────────────────────────────
 $:
-  # 推送 v* 标签：构建并推送版本化 Alpine 镜像
+  # 推送 v* 标签：构建并推送版本化 Alpine (linux/amd64) 镜像
   tag_push:
     - services:
         - docker
@@ -62,7 +43,7 @@ $:
               --tag "${REGISTRY}:${VERSION}-alpine" \
               --tag "${REGISTRY}:latest" \
               --tag "${REGISTRY}:alpine" \
-              --platform linux/amd64,linux/arm64 \
+              --platform linux/amd64 \
               --file ./Dockerfile \
               --cache-from type=registry,ref=${REGISTRY}:alpine-release-cache \
               --cache-to type=registry,ref=${REGISTRY}:alpine-release-cache,mode=max,image-manifest=true,oci-mediatypes=true \
