@@ -2,8 +2,31 @@
 # 项目: bgin (Go Gin RESTful Web API)
 # Go 版本: 1.27.1 | 入口: ./cmd/api | 二进制: bgin
 # Dockerfile 位于仓库根，基于 Alpine 极简镜像构建与运行
-$:
-  # 手动触发：构建并推送 Alpine 多架构镜像 (amd64, arm64)
+# ── main 分支：代码推送与手动触发 ────────────────────────────────────
+main:
+  # 推送 main 自动触发：构建并推送 Alpine (仅 linux/amd64) 镜像
+  push: &docker_amd64
+    - services:
+        - docker
+      stages:
+        - name: Docker build and push (Alpine amd64)
+          script: |
+            set -euo pipefail
+            REGISTRY="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}"
+            docker buildx build \
+              --tag "${REGISTRY}:latest-amd64" \
+              --tag "${REGISTRY}:alpine-amd64" \
+              --platform linux/amd64 \
+              --file ./Dockerfile \
+              --cache-from type=registry,ref=${REGISTRY}:alpine-amd64-cache \
+              --cache-to type=registry,ref=${REGISTRY}:alpine-amd64-cache,mode=max,image-manifest=true,oci-mediatypes=true \
+              --push \
+              .
+
+  # 网页手动触发：构建并推送 Alpine (仅 linux/amd64) 镜像
+  web_trigger_amd64: *docker_amd64
+
+  # 网页手动触发：构建并推送 Alpine 多架构镜像 (amd64, arm64)
   web_trigger:
     - services:
         - docker
@@ -22,25 +45,8 @@ $:
               --push \
               .
 
-  # 手动触发：构建并推送 Alpine (仅 linux/amd64) 镜像
-  web_trigger_amd64:
-    - services:
-        - docker
-      stages:
-        - name: Docker build and push (Alpine amd64)
-          script: |
-            set -euo pipefail
-            REGISTRY="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}"
-            docker buildx build \
-              --tag "${REGISTRY}:latest-amd64" \
-              --tag "${REGISTRY}:alpine-amd64" \
-              --platform linux/amd64 \
-              --file ./Dockerfile \
-              --cache-from type=registry,ref=${REGISTRY}:alpine-amd64-cache \
-              --cache-to type=registry,ref=${REGISTRY}:alpine-amd64-cache,mode=max,image-manifest=true,oci-mediatypes=true \
-              --push \
-              .
-
+# ── 版本发布：仅在推送 v* 标签时执行 ──────────────────────────────────
+$:
   # 推送 v* 标签：构建并推送版本化 Alpine 镜像
   tag_push:
     - services:
