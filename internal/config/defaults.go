@@ -25,7 +25,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("http_read_timeout", 15*time.Second)
 	v.SetDefault("http_write_timeout", 35*time.Second)
 	v.SetDefault("http_idle_timeout", 120*time.Second)
-	v.SetDefault("http_shutdown_timeout", 15*time.Second)
+	v.SetDefault("http_shutdown_timeout", 3*time.Second)
 	v.SetDefault("http_max_header_bytes", 1048576)
 	v.SetDefault("http_request_timeout", 15*time.Second)
 
@@ -114,7 +114,7 @@ func setDefaults(v *viper.Viper) {
 
 	// 队列
 	v.SetDefault("queue_concurrency", 10)
-	v.SetDefault("queue_shutdown_timeout", 10*time.Second)
+	v.SetDefault("queue_shutdown_timeout", 3*time.Second)
 
 	// 搜索
 	v.SetDefault("scout_driver", "noop")

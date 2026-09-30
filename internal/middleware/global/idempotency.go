@@ -1,4 +1,4 @@
-package middleware
+package global
 
 import (
 	"bytes"
@@ -144,7 +144,7 @@ type IdempotencyStore interface {
 	Delete(ctx context.Context, keys ...string) (int64, error)
 }
 
-// Idempotency 基于 Middleware 依赖构造符合 IETF / Stripe 行业规范的 Gin 请求幂等中间件。
+// Idempotency 【全局中间件】基于 Middleware 依赖构造符合 IETF / Stripe 行业规范的 Gin 请求幂等中间件。
 func (m *Middleware) Idempotency(opts ...IdempotencyOption) gin.HandlerFunc {
 	return NewIdempotency(m.cache, opts...)
 }

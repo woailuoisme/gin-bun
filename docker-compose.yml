@@ -1,10 +1,10 @@
 x-app: &app
   build: .
   image: bgin:local
+  pull_policy: build
   restart: unless-stopped
   env_file:
-    - path: .env
-      required: false
+    - path: .env.production
   volumes:
     - ./storage:/app/storage
 

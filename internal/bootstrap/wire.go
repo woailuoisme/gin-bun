@@ -18,6 +18,7 @@ import (
 	realtimeFeature "bgin/internal/features/realtime"
 	"bgin/internal/features/system"
 	"bgin/internal/middleware"
+	"bgin/internal/middleware/global"
 	platformauth "bgin/internal/platform/authentication"
 	"bgin/internal/platform/authorization"
 	"bgin/internal/platform/cache"
@@ -115,13 +116,9 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		Register("admin", adminGuard).
 		SetDefault("client")
 
-	mw := middleware.New(middleware.Deps{
-		Tokens:         tokens,
-		AuthManager:    authManager,
+	globalMW := global.New(global.Deps{
 		Cache:          cacheClient,
-		Authz:          enforcer,
 		Logger:         log,
-		Limiter:        cfg.Limiter,
 		CORS:           cfg.CORS,
 		Production:     cfg.IsProduction(),
 		Translator:     translator,
@@ -129,6 +126,16 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		// multipart 上传按媒体单文件配额放行；批量上传（UploadMultiple）受此单请求上限约束，
 		// ponytail: 单请求上限 == 单文件配额，需要一次传多个大文件时再加 MaxFiles 配置。
 		UploadMaxBody: cfg.Media.MaxFileSize,
+	})
+
+	routeMW := middleware.New(middleware.Deps{
+		Tokens:      tokens,
+		AuthManager: authManager,
+		Cache:       cacheClient,
+		Authz:       enforcer,
+		Logger:      log,
+		Limiter:     cfg.Limiter,
+		SigningKey:  cfg.JWT.Secret,
 	})
 
 	authService := auth.NewService(auth.Deps{
@@ -207,7 +214,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	td.add(notifier.Close)
 
 	engine, err := buildEngine(
-		cfg, mw, systemHandler,
+		cfg, globalMW, routeMW, systemHandler,
 		auth.NewHandler(authService),
 		profile.NewHandler(userService, mediaManager),
 		admin.NewHandler(adminService),

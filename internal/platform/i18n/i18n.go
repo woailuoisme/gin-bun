@@ -266,7 +266,7 @@ func render(tpl string, vars map[string]string) string {
 	return strings.NewReplacer(pairs...).Replace(tpl)
 }
 
-// humanize 把字段路径的最后一段（camelCase）转成空格分隔的小写短语。
+// humanize 把字段路径的最后一段（camelCase 或 snake_case）转成空格分隔的小写短语。
 func humanize(field string) string {
 	_, segment, found := strings.CutLast(field, ".")
 	if !found {
@@ -279,6 +279,10 @@ func humanize(field string) string {
 	var b strings.Builder
 	b.Grow(len(segment) + 4)
 	for i, r := range segment {
+		if r == '_' {
+			b.WriteByte(' ')
+			continue
+		}
 		if i > 0 && unicode.IsUpper(r) {
 			b.WriteByte(' ')
 		}

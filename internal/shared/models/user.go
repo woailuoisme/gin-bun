@@ -114,3 +114,21 @@ func (u *User) GetAuthRole() string {
 	}
 	return u.Role
 }
+
+// HasVerifiedEmail 判断用户邮箱是否已通过验证。
+func (u *User) HasVerifiedEmail() bool {
+	if u == nil {
+		return false
+	}
+	return u.EmailVerified
+}
+
+// GetJWTCustomClaims 返回需要嵌入 JWT 载荷的自定义声明字典。
+func (u *User) GetJWTCustomClaims() map[string]any {
+	if u == nil {
+		return nil
+	}
+	return map[string]any{
+		"email_verified": u.EmailVerified,
+	}
+}

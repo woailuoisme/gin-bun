@@ -1,4 +1,4 @@
-package middleware
+package global
 
 import (
 	"errors"
@@ -11,7 +11,7 @@ import (
 	"bgin/internal/platform/validator"
 )
 
-// ErrorHandler 拦截请求链路中的全部错误，集中解析业务码、执行多语言翻译并写回统一 JSON 响应。
+// ErrorHandler 【全局中间件】拦截请求链路中的全部错误，集中解析业务码、执行多语言翻译并写回统一 JSON 响应。
 func (m *Middleware) ErrorHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()

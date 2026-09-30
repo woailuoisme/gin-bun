@@ -16,6 +16,7 @@ import (
 	realtimeFeature "bgin/internal/features/realtime"
 	"bgin/internal/features/system"
 	"bgin/internal/middleware"
+	"bgin/internal/middleware/global"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/validator"
 )
@@ -23,7 +24,8 @@ import (
 // buildEngine 组装 gin 引擎与全部路由。
 func buildEngine(
 	cfg *config.Config,
-	mw *middleware.Middleware,
+	globalMW *global.Middleware,
+	routeMW *middleware.Middleware,
 	systemHandler *system.Handler,
 	authHandler *auth.Handler,
 	profileHandler *profile.Handler,
@@ -51,16 +53,16 @@ func buildEngine(
 
 	// 全局中间件链：链路追踪、访问日志、错误处理、恐慌恢复、超时控制、安全头、请求体缓存、幂等与跨域
 	engine.Use(
-		mw.RequestID(),
-		mw.AccessLog(),
-		mw.ErrorHandler(),
-		mw.Recovery(),
-		mw.Timeout(),
-		mw.SecurityHeaders(),
-		mw.BodyLimit(),
-		mw.CacheBody(),
-		mw.Idempotency(),
-		mw.CORS(),
+		globalMW.RequestID(),
+		globalMW.AccessLog(),
+		globalMW.ErrorHandler(),
+		globalMW.Recovery(),
+		globalMW.Timeout(),
+		globalMW.SecurityHeaders(),
+		globalMW.BodyLimit(),
+		globalMW.CacheBody(),
+		globalMW.Idempotency(),
+		globalMW.CORS(),
 	)
 
 	// 统一 404 与 405 错误响应，交由统一错误处理中间件渲染
@@ -82,12 +84,12 @@ func buildEngine(
 	}
 
 	v1 := engine.Group("/v1")
-	auth.RegisterRoutes(v1, authHandler, mw)
-	profile.RegisterRoutes(v1, profileHandler, mw)
-	adminauth.RegisterAdminAuthRoutes(v1, adminAuthHandler, mw)
-	admin.RegisterAdminRoutes(v1, adminHandler, mw)
-	realtimeFeature.RegisterRoutes(v1, realtimeHandler, mw)
-	paymentFeature.RegisterRoutes(v1, paymentHandler, mw)
+	auth.RegisterRoutes(v1, authHandler, routeMW)
+	profile.RegisterRoutes(v1, profileHandler, routeMW)
+	adminauth.RegisterAdminAuthRoutes(v1, adminAuthHandler, routeMW)
+	admin.RegisterAdminRoutes(v1, adminHandler, routeMW)
+	realtimeFeature.RegisterRoutes(v1, realtimeHandler, routeMW)
+	paymentFeature.RegisterRoutes(v1, paymentHandler, routeMW)
 
 	return engine, nil
 }
@@ -98,16 +100,20 @@ func InspectEngine(cfg *config.Config) (*gin.Engine, error) {
 		return nil, errors.New("bootstrap: inspect engine requires a non-nil config")
 	}
 
-	mw := middleware.New(middleware.Deps{
-		Limiter:        cfg.Limiter,
+	globalMW := global.New(global.Deps{
 		CORS:           cfg.CORS,
 		Production:     cfg.IsProduction(),
 		RequestTimeout: cfg.App.Server.RequestTimeout,
 	})
 
+	routeMW := middleware.New(middleware.Deps{
+		Limiter: cfg.Limiter,
+	})
+
 	return buildEngine(
 		cfg,
-		mw,
+		globalMW,
+		routeMW,
 		&system.Handler{},
 		&auth.Handler{},
 		&profile.Handler{},

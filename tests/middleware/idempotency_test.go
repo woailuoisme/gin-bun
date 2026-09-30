@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"bgin/internal/middleware"
+	"bgin/internal/middleware/global"
 	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/errs"
@@ -71,12 +71,12 @@ func (s *memStore) Delete(_ context.Context, keys ...string) (int64, error) {
 	return count, nil
 }
 
-func setupTestRouter(store middleware.IdempotencyStore, opts ...middleware.IdempotencyOption) *gin.Engine {
+func setupTestRouter(store global.IdempotencyStore, opts ...global.IdempotencyOption) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	m := middleware.New(middleware.Deps{})
+	m := global.New(global.Deps{})
 	r.Use(m.ErrorHandler())
-	r.Use(middleware.NewIdempotency(store, opts...))
+	r.Use(global.NewIdempotency(store, opts...))
 	return r
 }
 
@@ -101,7 +101,7 @@ func TestIdempotency_PermissiveNoHeader(t *testing.T) {
 // TestIdempotency_EnforcedNoHeader 严格模式下，未携带标头应被拦截并返回 400。
 func TestIdempotency_EnforcedNoHeader(t *testing.T) {
 	store := newMemStore()
-	r := setupTestRouter(store, middleware.WithIdempotencyEnforced(true))
+	r := setupTestRouter(store, global.WithIdempotencyEnforced(true))
 
 	r.POST("/orders", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "created"})
@@ -177,14 +177,14 @@ func TestIdempotency_ScopeFollowsTokenSubject(t *testing.T) {
 	// 令牌已轮换（签名与签发时间不同），但 sub 未变：必须回放而不是重复执行。
 	rotated := postIdempotent(t, r, "/subscriptions", body, key, testJWT(t, "user-1"))
 	require.Equal(t, http.StatusCreated, rotated.Code)
-	assert.Equal(t, "true", rotated.Header().Get(middleware.HeaderIdempotentReplayed),
+	assert.Equal(t, "true", rotated.Header().Get(global.HeaderIdempotentReplayed),
 		"凭据轮换后同一用户的重试必须命中缓存")
 	assert.Equal(t, 1, callCount)
 
 	// 另一用户使用相同幂等键与请求体：作用域不同，必须真实执行。
 	other := postIdempotent(t, r, "/subscriptions", body, key, testJWT(t, "user-2"))
 	require.Equal(t, http.StatusCreated, other.Code)
-	assert.Empty(t, other.Header().Get(middleware.HeaderIdempotentReplayed),
+	assert.Empty(t, other.Header().Get(global.HeaderIdempotentReplayed),
 		"不同用户不得共享幂等命名空间")
 	assert.Equal(t, 2, callCount)
 }
@@ -343,7 +343,7 @@ func TestIdempotency_UserScopeIsolation(t *testing.T) {
 	store := newMemStore()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	m := middleware.New(middleware.Deps{})
+	m := global.New(global.Deps{})
 	r.Use(m.ErrorHandler())
 
 	// 模拟认证中间件：从 Header 取 X-Test-User-ID 注入 Identity 上下文
@@ -353,7 +353,7 @@ func TestIdempotency_UserScopeIsolation(t *testing.T) {
 		}
 		c.Next()
 	})
-	r.Use(middleware.NewIdempotency(store))
+	r.Use(global.NewIdempotency(store))
 
 	r.POST("/user-actions", func(c *gin.Context) {
 		id, _ := authentication.FromContext(c.Request.Context())
@@ -386,7 +386,7 @@ func TestIdempotency_UserScopeIsolation(t *testing.T) {
 // TestIdempotency_IgnoreSafeMethods 验证 GET/HEAD 请求不受幂等中间件影响。
 func TestIdempotency_IgnoreSafeMethods(t *testing.T) {
 	store := newMemStore()
-	r := setupTestRouter(store, middleware.WithIdempotencyEnforced(true))
+	r := setupTestRouter(store, global.WithIdempotencyEnforced(true))
 
 	r.GET("/status", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"alive": true})

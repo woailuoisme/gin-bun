@@ -371,6 +371,17 @@ func TestClientConcurrencyAndShutdownTimeout(t *testing.T) {
 	assert.Equal(t, 30*time.Second, c.ShutdownTimeout())
 }
 
+func TestClientConcurrencyAndShutdownTimeout_Default(t *testing.T) {
+	c, cleanup, err := queue.NewClient(config.QueueConfig{
+		RedisURL: "redis://127.0.0.1:6379",
+	})
+	require.NoError(t, err)
+	defer cleanup()
+
+	assert.Equal(t, 10, c.Concurrency())
+	assert.Equal(t, 3*time.Second, c.ShutdownTimeout())
+}
+
 func TestAdaptLocker(t *testing.T) {
 	ctx := t.Context()
 

@@ -21,7 +21,7 @@ func (c *Config) validateQueue() error {
 		c.Queue.Concurrency = 10
 	}
 	if c.Queue.ShutdownTimeout <= 0 {
-		c.Queue.ShutdownTimeout = 10 * time.Second
+		c.Queue.ShutdownTimeout = 3 * time.Second
 	}
 	return nil
 }

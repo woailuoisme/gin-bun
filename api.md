@@ -49,9 +49,8 @@ curl https://api.example.com/v1/users/me \
 ### 2.1 命名约定 (Naming)
 
 - **资源路径**：复数名词、全小写短横线，不使用动词（如 `/{version}/{resources}`）。
-- **Query 参数与 JSON 键名**：小驼峰（`camelCase`），例如 `createdAt`、`sortBy`。
-- **布尔字段**：统一使用 `is` / `has` / `can` 前缀，例如 `isActive`、`hasAttachments`。
-- **大小写例外**：`/v1/realtime/token` 的响应沿用既有的 `snake_case` 字段名（`expires_at`、`ws_url`），改名会破坏已联调的客户端；新增端点一律使用小驼峰。
+- **Query 参数与 JSON 键名**：下划线（`snake_case`），例如 `created_at`、`sort_by`、`page_size`。
+- **布尔字段**：统一使用 `is_` / `has_` / `can_` 前缀或清晰布尔语义，例如 `is_active`、`has_attachments`、`banned`、`email_verified`。
 - **枚举值**：全小写，多词用下划线分隔，例如 `"user"`、`"admin"`、`"active"`、`"in_progress"`（与 AGENTS.md §5.3 的示范一致）。
 
 ### 2.2 时间与数值精度 (Timestamp & Precision)
@@ -91,7 +90,7 @@ Authorization: Bearer <your_access_token>
 
 **安全提示**：请仅在请求头中传递令牌，不要将令牌拼接到 URL、写入日志或落盘到客户端明文存储。
 
-**令牌载荷说明**：访问令牌除标准声明外还携带 `role`（系统角色）与 `tokenType`（令牌类型，取值 `access` / `refresh`）两项声明，授权判定直接依据 `role`。**角色变更不会作用于已签发的访问令牌**：旧令牌会继续携带旧角色直到过期；续签（`POST /v1/auth/token/refresh`）时角色取数据库中的最新值，因此改角色会在下一次续签后生效。如需让某枚令牌立即失效，请使用登出/撤销接口将其写入黑名单。`role` 属于服务端内部声明，客户端不得据此做任何权限判断，一切以接口返回的 `403 Forbidden` 为准。
+**令牌载荷说明**：访问令牌除标准声明外还携带 `role`（系统角色）与 `token_type`（令牌类型，取值 `access` / `refresh`）两项声明，授权判定直接依据 `role`。**角色变更不会作用于已签发的访问令牌**：旧令牌会继续携带旧角色直到过期；续签（`POST /v1/auth/token/refresh`）时角色取数据库中的最新值，因此改角色会在下一次续签后生效。如需让某枚令牌立即失效，请使用登出/撤销接口将其写入黑名单。`role` 属于服务端内部声明，客户端不得据此做任何权限判断，一切以接口返回的 `403 Forbidden` 为准。
 
 **多实例部署说明**：令牌撤销与限流配额由服务端共享存储承载，任一副本上的登出/撤销对所有副本立即生效，无需会话粘性。
 
@@ -136,7 +135,7 @@ Authorization: Bearer <your_access_token>
 > 本版本**不提供** `If-Match` / `412 Precondition Failed` 的条件更新能力。并发写同一资源时为
 > **后写覆盖（last-write-wins）**，服务端不会返回冲突信号。
 >
-> 调用方如需避免并发覆盖，需在应用层自行处理：读取时记录 `updatedAt`，提交前比对服务端最新值，
+> 调用方如需避免并发覆盖，需在应用层自行处理：读取时记录 `updated_at`，提交前比对服务端最新值，
 > 不一致时由业务侧决定合并或提示用户。请勿依赖 `If-Match` —— 该请求头当前被忽略。
 
 ---
@@ -198,9 +197,9 @@ Authorization: Bearer <your_access_token>
   ],
   "meta": {
     "page": 1,
-    "pageSize": 20,
+    "page_size": 20,
     "total": 100,
-    "totalPages": 5
+    "total_pages": 5
   }
 }
 ```
@@ -212,9 +211,9 @@ Authorization: Bearer <your_access_token>
   "items": [],
   "meta": {
     "page": 1,
-    "pageSize": 20,
+    "page_size": 20,
     "total": 0,
-    "totalPages": 0
+    "total_pages": 0
   }
 }
 ```
@@ -243,7 +242,7 @@ Location: /{version}/tasks/<task_id>
 
 ```json
 {
-  "taskId": "<task_id>",
+  "task_id": "<task_id>",
   "status": "PENDING"
 }
 ```
@@ -379,11 +378,11 @@ Location: /{version}/tasks/<task_id>
 
 ## 6. 分页、过滤与排序 (Pagination, Filtering & Sorting)
 
-分页列表统一采用 **Offset 偏移分页**：通过 `page` 与 `pageSize` 指定位置与页大小，响应中的 `meta.total` 与 `meta.totalPages` 可用于渲染分页器。
+分页列表统一采用 **Offset 偏移分页**：通过 `page` 与 `page_size` 指定位置与页大小，响应中的 `meta.total` 与 `meta.total_pages` 可用于渲染分页器。
 
 ### 6.1 请求与响应
 
-- **请求参数**：`page`（默认 `1`）、`pageSize`（默认 `20`，最大 `100`）。
+- **请求参数**：`page`（默认 `1`）、`page_size`（默认 `20`，最大 `100`）。
 - **响应结构**：
 
 ```json
@@ -393,9 +392,9 @@ Location: /{version}/tasks/<task_id>
   ],
   "meta": {
     "page": 1,
-    "pageSize": 20,
+    "page_size": 20,
     "total": 100,
-    "totalPages": 5
+    "total_pages": 5
   }
 }
 ```
@@ -405,7 +404,7 @@ Location: /{version}/tasks/<task_id>
 - **字段过滤**：
   - 精确匹配：`?filter[<field>]=<value>`
   - 多值匹配（IN 查询）：`?filter[<field>]=<val1>,<val2>`
-  - 区间过滤：`?filter[<field>After]=<date>` 或 `?filter[<field>Min]=<num>`
+  - 区间过滤：`?filter[<field>_after]=<date>` 或 `?filter[<field>_min]=<num>`
 - **链式排序**：
   - 升序：`?sort=<field>`；降序：`?sort=-<field>`；复合排序：`?sort=-<field1>,<field2>`
   - 服务端始终提供确定性的默认排序（如按创建时间倒序），分页遍历不会出现数据漂移。
@@ -416,7 +415,7 @@ Location: /{version}/tasks/<task_id>
 - **综合请求示例**：
 
 ```http
-GET /{version}/{resources}?page=1&pageSize=20&search=<keyword>&filter[<field>]=<value>&sort=-<field>&include=<relation>
+GET /{version}/{resources}?page=1&page_size=20&search=<keyword>&filter[<field>]=<value>&sort=-<field>&include=<relation>
 ```
 
 ---

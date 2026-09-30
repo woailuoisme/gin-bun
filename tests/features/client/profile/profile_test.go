@@ -26,8 +26,8 @@ func TestUpdateProfileRequestShape(t *testing.T) {
 		"name":"Alice",
 		"image":null,
 		"username":"alice_01",
-		"displayUsername":"Alice",
-		"phoneNumber":"+8613800138000",
+		"display_username":"Alice",
+		"phone_number":"+8613800138000",
 		"email":"should-be-ignored@bgin.local",
 		"role":"admin"
 	}`), &request))

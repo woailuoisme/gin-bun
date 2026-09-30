@@ -18,13 +18,18 @@ const (
 	CheckDisabled    = ready.CheckDisabled
 )
 
-// HealthResponse 是 GET /livez 与 GET / 的响应体。
-type HealthResponse struct {
+// HealthResource 是 GET /livez 与 GET / 的响应资源。
+type HealthResource struct {
 	Status string `json:"status"`
 }
 
-// ReadinessResponse 是 GET /readyz 的响应体，完全兼容 ready.Result。
-type ReadinessResponse = ready.Result
+// ReadinessResource 是 GET /readyz 的响应资源，完全兼容 ready.Result。
+type ReadinessResource = ready.Result
 
 // ComponentCheck 是单个依赖的探测状态元信息，完全兼容 ready.ComponentStatus。
 type ComponentCheck = ready.ComponentStatus
+
+type (
+	HealthResponse    = HealthResource
+	ReadinessResponse = ReadinessResource
+)

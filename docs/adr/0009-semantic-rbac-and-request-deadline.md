@@ -5,7 +5,7 @@
 针对 Gin 社区常见切面中间件（`gin-contrib/authz`、`gin-contrib/timeout`、`gin-contrib/secure` 与 `gin-contrib/graceful`），依据代码库设计原则（模块深度 Depth、架构接缝 Seam、局部性 Locality 与删除测试），明确以下 4 项核心架构契约：
 
 1. **语义化权限接缝拒绝 URL 路径耦合 (Semantic RBAC Seam over URL Coupling)**：
-   明确拒绝引入 `gin-contrib/authz`。该中间件将 Casbin 策略硬编码耦合到 HTTP 路径与动词（`e.Enforce(sub, path, method)`），不仅引发脆弱的正则匹配且破坏统一错误信封。`bgin` 坚守 `middleware.RequirePermission(resource, action)` 语义化接缝，由内嵌编译的 Casbin v3 引擎判定权限，并通过 `_ = c.Error(errs.Forbidden(...))` 由后置 `ErrorHandler` 统一渲染规范的 `api.md` 5.2 JSON 错误响应。
+   明确拒绝引入 `gin-contrib/authz`。该中间件将 Casbin 策略硬编码耦合到 HTTP 路径与动词（`e.Enforce(sub, path, method)`），不仅引发脆弱的正则匹配且破坏统一错误信封。`bgin` 坚守 `middleware.Can(resource, action)` 语义化接缝，由内嵌编译的 Casbin v3 引擎判定权限，并通过 `_ = c.Error(errs.Forbidden(...))` 由后置 `ErrorHandler` 统一渲染规范的 `api.md` 5.2 JSON 错误响应。
 2. **Context 驱动请求截止期接缝 (Context-Driven Request Deadline Seam)**：
    明确拒绝引入 `gin-contrib/timeout`。该库在子协程中运行 Handler 并用计时器竞争，导致下游 Goroutine 在超时后依然并发写入非线程安全的 `gin.Context`，存在严重的数据竞态缺陷。`bgin` 在引擎接缝中引入纯 Context 驱动的 `mw.Timeout()` 中间件，直接向 `c.Request.Context()` 注入 `context.WithTimeout`（默认 15s）。下游 Bun/pgx 与 Valkey 的 I/O 在超时时主动取消退出，由后置 `ErrorHandler` 统一将 `context.DeadlineExceeded` 转化为 RFC 9110 标准的 `504 GATEWAY_TIMEOUT` 响应。
 3. **保持零依赖极简安全响应头局部性 (Lean Security Headers with High Locality)**：

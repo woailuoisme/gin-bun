@@ -13,6 +13,17 @@ import (
 	"github.com/failsafe-go/failsafe-go/timeout"
 )
 
+var (
+	// ErrCircuitBreakerOpen 断路器处于开启状态（已熔断）。
+	ErrCircuitBreakerOpen = circuitbreaker.ErrOpen
+	// ErrTimeoutExceeded 操作执行已超时。
+	ErrTimeoutExceeded = timeout.ErrExceeded
+	// ErrBulkheadFull 隔离舱并发与等待队列已满。
+	ErrBulkheadFull = bulkhead.ErrFull
+	// ErrRetriesExceeded 重试策略已耗尽全部尝试次数。
+	ErrRetriesExceeded = retrypolicy.ErrExceeded
+)
+
 // RetryPolicyConfig 重试策略配置项。
 type RetryPolicyConfig struct {
 	MaxAttempts int
@@ -83,7 +94,11 @@ func NewCircuitBreaker[R any](cfg CircuitBreakerConfig) circuitbreaker.CircuitBr
 
 // NewBulkhead 构建并发隔离舱，限制对下游的最大并发请求数并提供排队等待缓冲。
 func NewBulkhead[R any](cfg BulkheadConfig) bulkhead.Bulkhead[R] {
-	builder := bulkhead.NewBuilder[R](cfg.MaxConcurrency)
+	concurrency := cfg.MaxConcurrency
+	if concurrency == 0 {
+		concurrency = 10
+	}
+	builder := bulkhead.NewBuilder[R](concurrency)
 	if cfg.MaxWaitTime > 0 {
 		builder = builder.WithMaxWaitTime(cfg.MaxWaitTime)
 	}
@@ -96,6 +111,10 @@ func NewTimeout[R any](dur time.Duration) timeout.Timeout[R] {
 }
 
 // NewExecutor 根据给定的弹性策略列表构建执行器。
+//
+// 策略组合顺序遵循由外向内（从左到右，Outer-to-Inner）。
+// 例如 NewExecutor(overallTimeout, retryPolicy, attemptTimeout) 中：
+// overallTimeout 覆盖全局总耗时，retryPolicy 管理重试，attemptTimeout 仅约束单次重试尝试。
 func NewExecutor[R any](policies ...failsafe.Policy[R]) failsafe.Executor[R] {
 	return failsafe.With(policies...)
 }
@@ -111,7 +130,10 @@ func NewNetworkExecutor(maxAttempts int, initialDelay, maxDelay time.Duration) f
 }
 
 // Run 遵循上下文并在执行器保护下运行无返回值的任务。
-func Run(ctx context.Context, executor failsafe.Executor[any], fn func() error) error {
+func Run[R any](ctx context.Context, executor failsafe.Executor[R], fn func() error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if executor == nil {
 		return fn()
 	}
@@ -120,17 +142,23 @@ func Run(ctx context.Context, executor failsafe.Executor[any], fn func() error) 
 
 // RunWithContext 遵循上下文并在执行器保护下运行接收 context 的任务。
 // 闭包所接收的 Context 自动集成执行器层级的超时或对冲派生控制。
-func RunWithContext(ctx context.Context, executor failsafe.Executor[any], fn func(context.Context) error) error {
+func RunWithContext[R any](ctx context.Context, executor failsafe.Executor[R], fn func(context.Context) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if executor == nil {
 		return fn(ctx)
 	}
-	return executor.WithContext(ctx).RunWithExecution(func(exec failsafe.Execution[any]) error {
+	return executor.WithContext(ctx).RunWithExecution(func(exec failsafe.Execution[R]) error {
 		return fn(exec.Context())
 	})
 }
 
 // Get 遵循上下文并在执行器保护下运行有返回值的任务。
 func Get[T any](ctx context.Context, executor failsafe.Executor[T], fn func() (T, error)) (T, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if executor == nil {
 		return fn()
 	}
@@ -140,6 +168,9 @@ func Get[T any](ctx context.Context, executor failsafe.Executor[T], fn func() (T
 // GetWithContext 遵循上下文并在执行器保护下运行接收 context 的任务并返回值。
 // 闭包所接收的 Context 自动集成执行器层级的超时或对冲派生控制。
 func GetWithContext[T any](ctx context.Context, executor failsafe.Executor[T], fn func(context.Context) (T, error)) (T, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if executor == nil {
 		return fn(ctx)
 	}

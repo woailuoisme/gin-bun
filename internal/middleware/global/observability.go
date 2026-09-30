@@ -1,4 +1,4 @@
-package middleware
+package global
 
 import (
 	"encoding/hex"
@@ -27,7 +27,7 @@ var probePaths = map[string]struct{}{
 	"/readyz": {},
 }
 
-// RequestID 生成或透传全链路追踪请求标识。
+// RequestID 【全局中间件】生成或透传全链路追踪请求标识。
 func (m *Middleware) RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := strings.TrimSpace(c.GetHeader(headerRequestID))
@@ -53,7 +53,7 @@ func newRequestID() string {
 	return string(hex.AppendEncode(buf, id[:]))
 }
 
-// AccessLog 记录每个请求的方法、路径、状态码与耗时。
+// AccessLog 【全局中间件】记录每个请求的方法、路径、状态码与耗时。
 func (m *Middleware) AccessLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -111,7 +111,7 @@ func isProbePath(fullPath string) bool {
 	return ok
 }
 
-// Recovery 捕获 panic 转为统一 500 响应，堆栈仅进入日志。
+// Recovery 【全局中间件】捕获 panic 转为统一 500 响应，堆栈仅进入日志。
 func (m *Middleware) Recovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {

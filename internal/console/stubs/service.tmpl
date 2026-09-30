@@ -12,10 +12,10 @@ import (
 
 // Service 定义 {{ .ChineseName }} 业务用例契约。
 type Service interface {
-	List(ctx context.Context, query List{{ .PascalName }}Query) ([]{{ .PascalName }}Response, response.Meta, error)
-	GetByID(ctx context.Context, id string) (*{{ .PascalName }}Response, error)
-	Create(ctx context.Context, req Create{{ .PascalName }}Request) (*{{ .PascalName }}Response, error)
-	Update(ctx context.Context, id string, req Update{{ .PascalName }}Request) (*{{ .PascalName }}Response, error)
+	List(ctx context.Context, query List{{ .PascalName }}QueryParams) ([]{{ .PascalName }}Resource, response.Meta, error)
+	GetByID(ctx context.Context, id string) (*{{ .PascalName }}Resource, error)
+	Create(ctx context.Context, req Create{{ .PascalName }}Body) (*{{ .PascalName }}Resource, error)
+	Update(ctx context.Context, id string, req Update{{ .PascalName }}Body) (*{{ .PascalName }}Resource, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -28,7 +28,7 @@ func NewService(repo Repository) Service {
 	return &service{repo: repo}
 }
 
-func (s *service) List(ctx context.Context, query List{{ .PascalName }}Query) ([]{{ .PascalName }}Response, response.Meta, error) {
+func (s *service) List(ctx context.Context, query List{{ .PascalName }}QueryParams) ([]{{ .PascalName }}Resource, response.Meta, error) {
 	total, err := s.repo.Count(ctx, query)
 	if err != nil {
 		return nil, response.Meta{}, errs.Internal(err)
@@ -40,15 +40,15 @@ func (s *service) List(ctx context.Context, query List{{ .PascalName }}Query) ([
 		return nil, response.Meta{}, errs.Internal(err)
 	}
 
-	items := lo.Map(entities, func(item models.{{ .PascalName }}, _ int) {{ .PascalName }}Response {
-		return To{{ .PascalName }}Response(&item)
+	items := lo.Map(entities, func(item models.{{ .PascalName }}, _ int) {{ .PascalName }}Resource {
+		return To{{ .PascalName }}Resource(&item)
 	})
 
 	meta := response.NewMeta(query.Page, query.PageSize, total)
 	return items, meta, nil
 }
 
-func (s *service) GetByID(ctx context.Context, id string) (*{{ .PascalName }}Response, error) {
+func (s *service) GetByID(ctx context.Context, id string) (*{{ .PascalName }}Resource, error) {
 	entity, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, errs.Internal(err)
@@ -57,11 +57,11 @@ func (s *service) GetByID(ctx context.Context, id string) (*{{ .PascalName }}Res
 		return nil, errs.NotFound("{{ .ChineseName }}不存在")
 	}
 
-	res := To{{ .PascalName }}Response(entity)
+	res := To{{ .PascalName }}Resource(entity)
 	return &res, nil
 }
 
-func (s *service) Create(ctx context.Context, req Create{{ .PascalName }}Request) (*{{ .PascalName }}Response, error) {
+func (s *service) Create(ctx context.Context, req Create{{ .PascalName }}Body) (*{{ .PascalName }}Resource, error) {
 	entity := &models.{{ .PascalName }}{
 		Name:        req.Name,
 		Description: &req.Description,
@@ -72,11 +72,11 @@ func (s *service) Create(ctx context.Context, req Create{{ .PascalName }}Request
 		return nil, errs.Internal(err)
 	}
 
-	res := To{{ .PascalName }}Response(entity)
+	res := To{{ .PascalName }}Resource(entity)
 	return &res, nil
 }
 
-func (s *service) Update(ctx context.Context, id string, req Update{{ .PascalName }}Request) (*{{ .PascalName }}Response, error) {
+func (s *service) Update(ctx context.Context, id string, req Update{{ .PascalName }}Body) (*{{ .PascalName }}Resource, error) {
 	entity, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, errs.Internal(err)
@@ -105,7 +105,7 @@ func (s *service) Update(ctx context.Context, id string, req Update{{ .PascalNam
 		}
 	}
 
-	res := To{{ .PascalName }}Response(entity)
+	res := To{{ .PascalName }}Resource(entity)
 	return &res, nil
 }
 

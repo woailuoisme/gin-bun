@@ -41,7 +41,7 @@ func NewHandler(userService *user.Service, mediaManager *media.Manager) *Handler
 // @Tags         个人资料
 // @Produce      json
 // @Security     BearerAuth
-// @Success      200 {object} Profile "本人档案"
+// @Success      200 {object} ProfileResource "本人档案"
 // @x-order      1
 // @Router       /users/me [get]
 func (h *Handler) GetProfile(c *gin.Context) {
@@ -67,8 +67,8 @@ func (h *Handler) GetProfile(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
-// @Param        payload body UpdateProfileRequest true "待更新字段，可只提交其中一部分"
-// @Success      200 {object} Profile "更新后的档案"
+// @Param        payload body UpdateProfileBody true "待更新字段，可只提交其中一部分"
+// @Success      200 {object} ProfileResource "更新后的档案"
 // @x-order      2
 // @Router       /users/me [patch]
 func (h *Handler) UpdateProfile(c *gin.Context) {
@@ -78,17 +78,17 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	var req UpdateProfileRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var body UpdateProfileBody
+	if err := c.ShouldBindJSON(&body); err != nil {
 		_ = c.Error(err)
 		return
 	}
-	if err := binding.Validator.ValidateStruct(toSelfPatch(req)); err != nil {
+	if err := binding.Validator.ValidateStruct(toSelfPatch(body)); err != nil {
 		_ = c.Error(err)
 		return
 	}
 
-	profile, err := h.userService.UpdateProfile(c.Request.Context(), id.UserID, req.fieldSet(), user.ScopeClient)
+	profile, err := h.userService.UpdateProfile(c.Request.Context(), id.UserID, body.fieldSet(), user.ScopeClient)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -97,8 +97,8 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 }
 
 // toSelfPatch 把三态请求投影为可复用的校验结构体。
-func toSelfPatch(req UpdateProfileRequest) *selfPatch {
-	patch := req.fieldSet().Patch()
+func toSelfPatch(body UpdateProfileBody) *selfPatch {
+	patch := body.fieldSet().Patch()
 	return &patch
 }
 
@@ -111,7 +111,7 @@ func toSelfPatch(req UpdateProfileRequest) *selfPatch {
 // @Produce      json
 // @Security     BearerAuth
 // @Param        avatar formData file true "头像图片文件 (最大 2MB，支持 JPEG/PNG/WebP)"
-// @Success      200 {object} Profile "更新头像后的本人档案"
+// @Success      200 {object} ProfileResource "更新头像后的本人档案"
 // @x-order      3
 // @Router       /users/me/avatar [post]
 func (h *Handler) UploadAvatar(c *gin.Context) {

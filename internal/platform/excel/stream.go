@@ -81,11 +81,12 @@ func ExportIterator[T any](
 
 // ExportBuilder 提供基于泛型的流式导出链式建造者。
 type ExportBuilder[T any] struct {
-	items    []T
-	seq      func(yield func(T) bool)
-	headings []string
-	mapper   func(item T) []any
-	opts     []ExportOption
+	items     []T
+	seq       func(yield func(T) bool)
+	generator func(yield func(item T) bool) error
+	headings  []string
+	mapper    func(item T) []any
+	opts      []ExportOption
 }
 
 // NewExportBuilder 创建针对类型 T 的流式导出建造者。
@@ -102,6 +103,12 @@ func (b *ExportBuilder[T]) FromSlice(items []T) *ExportBuilder[T] {
 // FromSeq 设置导出数据源为流式生成器/迭代序列。
 func (b *ExportBuilder[T]) FromSeq(seq func(yield func(T) bool)) *ExportBuilder[T] {
 	b.seq = seq
+	return b
+}
+
+// FromGenerator 设置导出数据源为流式生成器函数。
+func (b *ExportBuilder[T]) FromGenerator(gen func(yield func(item T) bool) error) *ExportBuilder[T] {
+	b.generator = gen
 	return b
 }
 
@@ -125,6 +132,9 @@ func (b *ExportBuilder[T]) WithOptions(opts ...ExportOption) *ExportBuilder[T] {
 
 // Write 执行 Excel 流式导出并写入目标输出端。
 func (b *ExportBuilder[T]) Write(ctx context.Context, w io.Writer) error {
+	if b.generator != nil {
+		return StreamExport(ctx, w, b.headings, b.generator, b.mapper, b.opts...)
+	}
 	if b.seq != nil {
 		return ExportIterator(ctx, w, b.seq, b.headings, b.mapper, b.opts...)
 	}
@@ -133,6 +143,9 @@ func (b *ExportBuilder[T]) Write(ctx context.Context, w io.Writer) error {
 
 // WriteCSV 执行 CSV 流式导出并写入目标输出端。
 func (b *ExportBuilder[T]) WriteCSV(ctx context.Context, w io.Writer) error {
+	if b.generator != nil {
+		return StreamExportCSV(ctx, w, b.headings, b.generator, b.mapper)
+	}
 	if b.seq != nil {
 		return StreamExportCSV(ctx, w, b.headings, func(yield func(item T) bool) error {
 			b.seq(yield)

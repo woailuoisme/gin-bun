@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"bgin/internal/middleware"
+	"bgin/internal/middleware/global"
 	"bgin/internal/platform/errs"
 )
 
@@ -23,7 +23,7 @@ import (
 // 与具体绑定实现无关。
 func TestBodyLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	mw := middleware.New(middleware.Deps{})
+	mw := global.New(global.Deps{})
 
 	newEngine := func() *gin.Engine {
 		engine := gin.New()

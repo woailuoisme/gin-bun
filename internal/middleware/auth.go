@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -10,9 +11,11 @@ import (
 	"bgin/internal/platform/errs"
 )
 
-// RequireAuth 校验 Bearer 访问令牌、黑名单与指定守卫策略，并将认证身份载荷注入请求上下文。
-// 可选指定 guardName 参数（例如 "admin"、"client"）；未指定时自动回退至默认守卫。
-func (m *Middleware) RequireAuth(guardName ...string) gin.HandlerFunc {
+// Auth 【路由/路由组中间件】仿照 Laravel auth 中间件设计，校验 Bearer 访问令牌并注入认证身份载荷。
+// 支持未指定（使用默认守卫）、单个守卫（如 "client"、"admin"）以及多守卫顺序回退（如 mw.Auth("admin", "client") 或 mw.Auth("admin,client")）。
+func (m *Middleware) Auth(guardNames ...string) gin.HandlerFunc {
+	guards := parseGuards(guardNames)
+
 	return func(c *gin.Context) {
 		raw, err := bearerToken(c)
 		if err != nil {
@@ -20,54 +23,75 @@ func (m *Middleware) RequireAuth(guardName ...string) gin.HandlerFunc {
 			return
 		}
 
+		var reqCtx context.Context
 		if m.authManager != nil {
-			guard, err := m.authManager.Resolve(guardName...)
-			if err != nil {
-				abortWithError(c, errs.Internal(err))
-				return
-			}
-
-			ctx, _, err := guard.AuthenticateToken(c.Request.Context(), raw)
-			if err != nil {
-				abortWithError(c, err)
-				return
-			}
-
-			if m.authz != nil {
-				ctx = authentication.WithGate(ctx, m.authz)
-			}
-			c.Request = c.Request.WithContext(ctx)
-			c.Next()
-			return
+			reqCtx, err = m.authenticateWithManager(c.Request.Context(), raw, guards)
+		} else {
+			reqCtx, err = m.authenticateFallback(c.Request.Context(), raw, guards)
 		}
 
-		if len(guardName) > 0 {
-			abortWithError(c, errs.Internal(errors.New("middleware: auth manager required for named guard")))
-			return
-		}
-
-		if m.tokens == nil {
-			abortWithError(c, errs.Internal(errors.New("middleware: token issuer not configured")))
-			return
-		}
-
-		// 兜底降级：若未注入 AuthManager，则仅允许回退至默认基础令牌校验
-		ctx, _, err := m.tokens.AuthenticateToken(c.Request.Context(), raw)
 		if err != nil {
 			abortWithError(c, err)
 			return
 		}
 
 		if m.authz != nil {
-			ctx = authentication.WithGate(ctx, m.authz)
+			reqCtx = authentication.WithGate(reqCtx, m.authz)
 		}
-		c.Request = c.Request.WithContext(ctx)
+		c.Request = c.Request.WithContext(reqCtx)
 		c.Next()
 	}
 }
 
-// RequirePermission 基于令牌角色执行 Casbin RBAC 权限校验。
-func (m *Middleware) RequirePermission(resource, action string) gin.HandlerFunc {
+// authenticateWithManager 基于注入的 AuthManager 解析守卫并验证令牌，支持多守卫顺序降级匹配。
+func (m *Middleware) authenticateWithManager(ctx context.Context, raw string, guards []string) (context.Context, error) {
+	if len(guards) == 0 {
+		guard, err := m.authManager.Resolve()
+		if err != nil {
+			return nil, errs.Internal(err)
+		}
+		newCtx, _, authErr := guard.AuthenticateToken(ctx, raw)
+		if authErr != nil {
+			return nil, authErr
+		}
+		return newCtx, nil
+	}
+
+	var lastErr error
+	for _, gName := range guards {
+		guard, err := m.authManager.Resolve(gName)
+		if err != nil {
+			lastErr = errs.Internal(err)
+			continue
+		}
+
+		newCtx, _, authErr := guard.AuthenticateToken(ctx, raw)
+		if authErr == nil {
+			return newCtx, nil
+		}
+		lastErr = authErr
+	}
+
+	if lastErr == nil {
+		lastErr = errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required")
+	}
+	return nil, lastErr
+}
+
+// authenticateFallback 当未注入 AuthManager 时提供向下兼容的基础令牌校验。
+func (m *Middleware) authenticateFallback(ctx context.Context, raw string, guards []string) (context.Context, error) {
+	if len(guards) > 0 {
+		return nil, errs.Internal(errors.New("middleware: auth manager required for named guard"))
+	}
+	if m.tokens == nil {
+		return nil, errs.Internal(errors.New("middleware: token issuer not configured"))
+	}
+	newCtx, _, err := m.tokens.AuthenticateToken(ctx, raw)
+	return newCtx, err
+}
+
+// Can 【路由级中间件】仿照 Laravel can 中间件设计，基于令牌角色执行 Casbin RBAC 细粒度权限校验。
+func (m *Middleware) Can(resource, action string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if _, ok := authentication.FromContext(c.Request.Context()); !ok {
 			abortWithError(c, errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
@@ -87,6 +111,20 @@ func (m *Middleware) RequirePermission(resource, action string) gin.HandlerFunc 
 	}
 }
 
+// parseGuards 解析可能存在的逗号分隔或变长守卫名称。
+func parseGuards(guardNames []string) []string {
+	var guards []string
+	for _, gn := range guardNames {
+		for part := range strings.SplitSeq(gn, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				guards = append(guards, part)
+			}
+		}
+	}
+	return guards
+}
+
 // bearerToken 从 Authorization 头提取 Bearer 令牌。
 func bearerToken(c *gin.Context) (string, error) {
 	header := strings.TrimSpace(c.GetHeader("Authorization"))
@@ -94,13 +132,12 @@ func bearerToken(c *gin.Context) (string, error) {
 		return "", errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required")
 	}
 
-	scheme, raw, found := strings.Cut(header, " ")
-	raw = strings.TrimSpace(raw)
-	if !found || !strings.EqualFold(scheme, "Bearer") || raw == "" {
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		return "", errs.Unauthorized(
 			errs.CodeAuthTokenInvalid,
 			"Authorization header must use the Bearer scheme",
 		)
 	}
-	return raw, nil
+	return parts[1], nil
 }

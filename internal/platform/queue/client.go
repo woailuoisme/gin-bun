@@ -66,7 +66,7 @@ func NewClient(cfg config.QueueConfig, lockers ...Locker) (*Client, func(), erro
 	}
 
 	concurrency := cmp.Or(cfg.Concurrency, 10)
-	shutdownTimeout := cmp.Or(cfg.ShutdownTimeout, 10*time.Second)
+	shutdownTimeout := cmp.Or(cfg.ShutdownTimeout, 3*time.Second)
 
 	c := &Client{
 		client:          client,

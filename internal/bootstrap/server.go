@@ -58,7 +58,7 @@ func (a *Application) Serve(ctx context.Context) error {
 
 	shutdownTimeout := srvCfg.ShutdownTimeout
 	if shutdownTimeout <= 0 {
-		shutdownTimeout = 15 * time.Second
+		shutdownTimeout = 3 * time.Second
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()

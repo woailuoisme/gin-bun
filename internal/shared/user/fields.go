@@ -38,8 +38,8 @@ type ProfilePatch struct {
 	Name            *string `json:"name" validate:"omitempty,min=1,max=120"`
 	Image           *string `json:"image" validate:"omitempty,max=2048"`
 	Username        *string `json:"username" validate:"omitempty,min=3,max=30,usernameslug,notreserved"`
-	DisplayUsername *string `json:"displayUsername" validate:"omitempty,min=1,max=120"`
-	PhoneNumber     *string `json:"phoneNumber" validate:"omitempty,e164"`
+	DisplayUsername *string `json:"display_username" validate:"omitempty,min=1,max=120"`
+	PhoneNumber     *string `json:"phone_number" validate:"omitempty,e164"`
 }
 
 // FieldSet 是客户端与后台管理共用的可更新档案字段集合。

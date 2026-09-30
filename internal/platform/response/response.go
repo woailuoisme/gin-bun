@@ -18,9 +18,9 @@ import (
 // Meta 是传统偏移分页列表响应的元信息。
 type Meta struct {
 	Page       int `json:"page"`
-	PageSize   int `json:"pageSize"`
+	PageSize   int `json:"page_size"`
 	Total      int `json:"total"`
-	TotalPages int `json:"totalPages"`
+	TotalPages int `json:"total_pages"`
 }
 
 // Page 是传统偏移分页列表的响应信封；Items 恒为数组，不会序列化成 null。

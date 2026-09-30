@@ -13,7 +13,6 @@ import (
 )
 
 // Handler 承接支付渠道的 Webhook 异步通知与客户端同步跳转。
-// Handler 承接支付渠道的 Webhook 异步通知与客户端同步跳转。
 type Handler struct {
 	service *Service
 	gateway platformPayment.Gateway
@@ -37,20 +36,22 @@ func NewHandler(service *Service) *Handler {
 // @Produce      json,plain
 // @Param        channel path string true "支付渠道 (wechat, alipay)" enums(wechat, alipay)
 // @Param        app     path string false "应用标识 (可选，缺省时使用渠道默认应用)"
-// @Success      200 {object} CallbackAckResponse "回调验签与业务消费成功"
+// @Success      200 {object} CallbackAckResource "回调验签与业务消费成功"
 // @x-order      1
 // @Router       /payments/notify/{channel} [post]
 func (h *Handler) HandleNotification(c *gin.Context) {
-	channelStr := c.Param("channel")
-	appKey := c.Param("app")
+	var pathParams PaymentNotifyPathParams
+	if err := c.ShouldBindUri(&pathParams); err != nil {
+		_ = c.Error(err)
+		return
+	}
 
-	channel := enums.PaymentChannel(channelStr)
+	channel := enums.PaymentChannel(pathParams.Channel)
 	if !channel.IsValid() {
 		// 报文里不拼接调用方原始输入，渠道值只进结构化日志。
-		logger.FromContext(c.Request.Context()).Warn("unsupported payment channel callback received", zap.String("channel", channelStr))
+		logger.FromContext(c.Request.Context()).Warn("unsupported payment channel callback received", zap.String("channel", pathParams.Channel))
 		err := errs.BadRequest(errUnsupportedChannel)
 		_ = c.Error(err)
-		errs.Render(c, err)
 		return
 	}
 
@@ -61,12 +62,12 @@ func (h *Handler) HandleNotification(c *gin.Context) {
 	}
 
 	// 1. 严格验签并解析 HTTP 报文 (微信商户证书/微信平台证书/支付宝公钥证书)
-	notification, err := h.gateway.ParseNotification(c.Request.Context(), channel, appKey, c.Request)
+	notification, err := h.gateway.ParseNotification(c.Request.Context(), channel, pathParams.App, c.Request)
 	if err != nil {
 		logger.FromContext(c.Request.Context()).Warn("payment callback verification or parsing failed",
 			zap.Error(err),
 			zap.String("channel", channel.String()),
-			zap.String("app_key", appKey),
+			zap.String("app_key", pathParams.App),
 		)
 
 		ack := platformPayment.FailureAck(channel)
@@ -112,12 +113,15 @@ func (h *Handler) HandleAlipayReturn(c *gin.Context) {
 		return
 	}
 
+	var queryParams AlipayReturnQueryParams
+	_ = c.ShouldBindQuery(&queryParams)
+
 	outTradeNo := ""
 	if notification != nil && notification.Payment != nil {
 		outTradeNo = notification.Payment.OutTradeNo
 	}
 	if outTradeNo == "" {
-		outTradeNo = c.Query("out_trade_no")
+		outTradeNo = queryParams.OutTradeNo
 	}
 
 	redirectURL := h.service.BuildAlipayReturnURL(outTradeNo)

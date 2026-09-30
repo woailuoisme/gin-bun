@@ -30,7 +30,7 @@ func NewHandler(service *Service) *Handler {
 // @Tags         实时通信
 // @Produce      json
 // @Security     BearerAuth
-// @Success      200 {object} TokenResponse "实时通信连接凭据"
+// @Success      200 {object} TokenResource "实时通信连接凭据"
 // @x-order      1
 // @Router       /realtime/token [get]
 func (h *Handler) GetToken(c *gin.Context) {
@@ -55,8 +55,8 @@ func (h *Handler) GetToken(c *gin.Context) {
 // @Tags         实时通信
 // @Accept       json
 // @Produce      json
-// @Param        payload body SubscribeRequest true "Centrifugo 订阅代理请求"
-// @Success      200 {object} SubscribeResponse "Centrifugo 订阅代理响应"
+// @Param        payload body SubscribeBody true "Centrifugo 订阅代理请求"
+// @Success      200 {object} SubscribeResource "Centrifugo 订阅代理响应"
 // @x-order      2
 // @Router       /realtime/proxy/subscribe [post]
 func (h *Handler) ProxySubscribe(c *gin.Context) {

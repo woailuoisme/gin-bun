@@ -126,7 +126,7 @@ func TestResilience_RunWithContext(t *testing.T) {
 	t.Run("nil executor falls back to direct invocation", func(t *testing.T) {
 		t.Parallel()
 		var invoked bool
-		err := resilience.RunWithContext(context.Background(), nil, func(ctx context.Context) error {
+		err := resilience.RunWithContext[any](context.Background(), nil, func(ctx context.Context) error {
 			assert.NotNil(t, ctx)
 			invoked = true
 			return nil
@@ -189,4 +189,77 @@ func TestResilience_GetWithContext(t *testing.T) {
 		assert.Empty(t, res)
 		assert.True(t, innerCanceled, "inner context should receive cancellation signal")
 	})
+}
+
+func TestResilience_TypedExecutorWithRun(t *testing.T) {
+	t.Parallel()
+
+	// 验证类型化执行器（非 Executor[any]）也可直接传给 Run 与 RunWithContext
+	policy := resilience.NewRetryPolicy[string](resilience.RetryPolicyConfig{
+		MaxAttempts: 2,
+		Delay:       5 * time.Millisecond,
+	})
+	typedExecutor := failsafe.With(policy)
+
+	var runInvoked bool
+	err := resilience.Run(context.Background(), typedExecutor, func() error {
+		runInvoked = true
+		return nil
+	})
+	require.NoError(t, err)
+	assert.True(t, runInvoked)
+
+	var runWithCtxInvoked bool
+	err = resilience.RunWithContext(context.Background(), typedExecutor, func(ctx context.Context) error {
+		assert.NotNil(t, ctx)
+		runWithCtxInvoked = true
+		return nil
+	})
+	require.NoError(t, err)
+	assert.True(t, runWithCtxInvoked)
+}
+
+func TestResilience_NilContextSafety(t *testing.T) {
+	t.Parallel()
+
+	// nil context 必须被防御式兜底为 context.Background()，不触发 panic
+	executor := resilience.NewNetworkExecutor(1, 0, 0)
+	var nilCtx context.Context
+
+	assert.NotPanics(t, func() {
+		_ = resilience.Run(nilCtx, executor, func() error { return nil })
+	})
+
+	assert.NotPanics(t, func() {
+		_ = resilience.RunWithContext(nilCtx, executor, func(ctx context.Context) error {
+			assert.NotNil(t, ctx)
+			return nil
+		})
+	})
+
+	assert.NotPanics(t, func() {
+		_, _ = resilience.Get(nilCtx, executor, func() (any, error) { return "ok", nil })
+	})
+
+	assert.NotPanics(t, func() {
+		_, _ = resilience.GetWithContext(nilCtx, executor, func(ctx context.Context) (any, error) {
+			assert.NotNil(t, ctx)
+			return "ok", nil
+		})
+	})
+}
+
+func TestResilience_BulkheadZeroDefault(t *testing.T) {
+	t.Parallel()
+
+	bh := resilience.NewBulkhead[any](resilience.BulkheadConfig{
+		MaxConcurrency: 0, // 零值应自动兜底为默认并发度 10
+	})
+	require.NotNil(t, bh)
+}
+
+func TestResilience_SentinelErrors(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, circuitbreaker.ErrOpen, resilience.ErrCircuitBreakerOpen)
 }

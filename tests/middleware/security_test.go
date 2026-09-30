@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"bgin/internal/middleware"
+	"bgin/internal/middleware/global"
 )
 
 type testPayload struct {
@@ -21,7 +21,7 @@ type testPayload struct {
 // TestCacheBodyMultiPassBinding 验证 CacheBody 中间件与 ShouldBindBodyWith 对多道绑定的支持。
 func TestCacheBodyMultiPassBinding(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	m := middleware.New(middleware.Deps{})
+	m := global.New(global.Deps{})
 
 	router := gin.New()
 	router.Use(m.CacheBody())

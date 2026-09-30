@@ -1,4 +1,4 @@
-package middleware
+package global
 
 import (
 	"net/http"
@@ -15,7 +15,7 @@ const (
 	exposedResponseHeaders = "x-request-id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After"
 )
 
-// CORS 处理跨域预检与响应头配置。
+// CORS 【全局中间件】处理跨域预检与响应头配置。
 func (m *Middleware) CORS() gin.HandlerFunc {
 	allowAll := slices.Contains(m.cors.AllowedOrigins, "*")
 	allowed := make(map[string]struct{}, len(m.cors.AllowedOrigins))

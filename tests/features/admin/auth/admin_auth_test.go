@@ -420,7 +420,7 @@ func TestAdminAuthDTOSerialization(t *testing.T) {
 	assert.Equal(t, "admin@bgin.local", req.Email)
 	assert.Equal(t, "secret", req.Password)
 
-	signOutRaw := []byte(`{"refreshToken":"rt_test123"}`)
+	signOutRaw := []byte(`{"refresh_token":"rt_test123"}`)
 	var signOutReq adminauth.SignOutRequest
 	require.NoError(t, json.Unmarshal(signOutRaw, &signOutReq))
 	require.NotNil(t, signOutReq.RefreshToken)

@@ -16,6 +16,7 @@ import (
 
 	"bgin/internal/config"
 	"bgin/internal/middleware"
+	"bgin/internal/middleware/global"
 	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/authorization"
 	"bgin/internal/platform/cache"
@@ -126,13 +127,13 @@ func setupAuthEnv() (
 	return m, tokens, clientGuard, adminGuard, repo
 }
 
-// TestRequireAuth_MissingOrMalformedHeader 验证缺失或畸形 Authorization 报头时的 401 拦截。
-func TestRequireAuth_MissingOrMalformedHeader(t *testing.T) {
+// TestAuth_MissingOrMalformedHeader 验证缺失或畸形 Authorization 报头时的 401 拦截。
+func TestAuth_MissingOrMalformedHeader(t *testing.T) {
 	m, _, _, _, _ := setupAuthEnv()
 
 	router := gin.New()
-	router.Use(m.ErrorHandler())
-	router.GET("/protected", m.RequireAuth(), func(c *gin.Context) {
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	router.GET("/protected", m.Auth(), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
@@ -159,10 +160,24 @@ func TestRequireAuth_MissingOrMalformedHeader(t *testing.T) {
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
+
+	// 4. 仅 Bearer 无后续参数
+	req = httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+
+	// 5. 多段超额参数
+	req = httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer token1 token2")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
-// TestRequireAuth_DefaultGuardSuccess 验证默认守卫 (client) 成功解析令牌并将身份写入上下文。
-func TestRequireAuth_DefaultGuardSuccess(t *testing.T) {
+// TestAuth_DefaultGuardSuccess 验证默认守卫 (client) 成功解析令牌并将身份写入上下文，同时支持多空格或制表符容错。
+func TestAuth_DefaultGuardSuccess(t *testing.T) {
 	m, _, clientGuard, _, repo := setupAuthEnv()
 
 	repo.users["usr_client_1"] = &models.User{
@@ -176,10 +191,10 @@ func TestRequireAuth_DefaultGuardSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	router := gin.New()
-	router.Use(m.ErrorHandler())
+	router.Use(global.New(global.Deps{}).ErrorHandler())
 
 	var capturedID authentication.Identity
-	router.GET("/client/me", m.RequireAuth(), func(c *gin.Context) {
+	router.GET("/client/me", m.Auth(), func(c *gin.Context) {
 		id, ok := authentication.FromContext(c.Request.Context())
 		if ok {
 			capturedID = id
@@ -187,18 +202,28 @@ func TestRequireAuth_DefaultGuardSuccess(t *testing.T) {
 		c.Status(http.StatusOK)
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/client/me", nil)
-	req.Header.Set("Authorization", "Bearer "+sess.Token)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	// 验证标准单空格、连续多空格及制表符均可正确提取
+	headers := []string{
+		"Bearer " + sess.Token,
+		"Bearer   " + sess.Token,
+		"Bearer\t" + sess.Token,
+	}
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "usr_client_1", capturedID.UserID)
-	assert.Equal(t, models.RoleUser, capturedID.Role)
+	for _, h := range headers {
+		capturedID = authentication.Identity{}
+		req := httptest.NewRequest(http.MethodGet, "/client/me", nil)
+		req.Header.Set("Authorization", h)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "usr_client_1", capturedID.UserID)
+		assert.Equal(t, models.RoleUser, capturedID.Role)
+	}
 }
 
-// TestRequireAuth_NamedAdminGuard 验证指定 admin 守卫时的权限拦截与放行。
-func TestRequireAuth_NamedAdminGuard(t *testing.T) {
+// TestAuth_NamedAdminGuard 验证指定 admin 守卫时的权限拦截与放行。
+func TestAuth_NamedAdminGuard(t *testing.T) {
 	m, _, clientGuard, adminGuard, repo := setupAuthEnv()
 
 	repo.users["usr_normal"] = &models.User{
@@ -219,8 +244,8 @@ func TestRequireAuth_NamedAdminGuard(t *testing.T) {
 	require.NoError(t, err)
 
 	router := gin.New()
-	router.Use(m.ErrorHandler())
-	router.GET("/admin/dashboard", m.RequireAuth("admin"), func(c *gin.Context) {
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	router.GET("/admin/dashboard", m.Auth("admin"), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
@@ -244,8 +269,8 @@ func TestRequireAuth_NamedAdminGuard(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-// TestRequireAuth_RevocationEpoch 验证用户级注销纪元触发后，HTTP 网关即时拒绝已注销令牌。
-func TestRequireAuth_RevocationEpoch(t *testing.T) {
+// TestAuth_RevocationEpoch 验证用户级注销纪元触发后，HTTP 网关即时拒绝已注销令牌。
+func TestAuth_RevocationEpoch(t *testing.T) {
 	m, _, clientGuard, _, repo := setupAuthEnv()
 
 	repo.users["usr_revoked"] = &models.User{
@@ -258,8 +283,8 @@ func TestRequireAuth_RevocationEpoch(t *testing.T) {
 	require.NoError(t, err)
 
 	router := gin.New()
-	router.Use(m.ErrorHandler())
-	router.GET("/client/profile", m.RequireAuth("client"), func(c *gin.Context) {
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	router.GET("/client/profile", m.Auth("client"), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
@@ -286,8 +311,8 @@ func TestRequireAuth_RevocationEpoch(t *testing.T) {
 	assert.Equal(t, string(errs.CodeAuthTokenRevoked), errResp.Code)
 }
 
-// TestRequireAuth_FallbackWithoutAuthManager 验证未注入 AuthManager 时的向下兼容降级行为。
-func TestRequireAuth_FallbackWithoutAuthManager(t *testing.T) {
+// TestAuth_FallbackWithoutAuthManager 验证未注入 AuthManager 时的向下兼容降级行为。
+func TestAuth_FallbackWithoutAuthManager(t *testing.T) {
 	tokens := authentication.NewTokenIssuer(config.JWTConfig{
 		Secret:     "0123456789abcdef0123456789abcdef",
 		Issuer:     "bgin-test",
@@ -304,8 +329,8 @@ func TestRequireAuth_FallbackWithoutAuthManager(t *testing.T) {
 	require.NoError(t, err)
 
 	router := gin.New()
-	router.Use(m.ErrorHandler())
-	router.GET("/fallback", m.RequireAuth(), func(c *gin.Context) {
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	router.GET("/fallback", m.Auth(), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
@@ -317,8 +342,8 @@ func TestRequireAuth_FallbackWithoutAuthManager(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-// TestRequireAuth_NamedGuardWithoutAuthManager 验证未注入 AuthManager 时使用指定守卫触发 fail-closed 错误。
-func TestRequireAuth_NamedGuardWithoutAuthManager(t *testing.T) {
+// TestAuth_NamedGuardWithoutAuthManager 验证未注入 AuthManager 时使用指定守卫触发 fail-closed 错误。
+func TestAuth_NamedGuardWithoutAuthManager(t *testing.T) {
 	tokens := authentication.NewTokenIssuer(config.JWTConfig{
 		Secret:     "0123456789abcdef0123456789abcdef",
 		Issuer:     "bgin-test",
@@ -335,8 +360,8 @@ func TestRequireAuth_NamedGuardWithoutAuthManager(t *testing.T) {
 	require.NoError(t, err)
 
 	router := gin.New()
-	router.Use(m.ErrorHandler())
-	router.GET("/admin/protected", m.RequireAuth("admin"), func(c *gin.Context) {
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	router.GET("/admin/protected", m.Auth("admin"), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
@@ -348,16 +373,16 @@ func TestRequireAuth_NamedGuardWithoutAuthManager(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
-// TestRequireAuth_NoTokensWithoutAuthManager 验证未注入 AuthManager 且未配置 Tokens 时触发 500 内部错误。
-func TestRequireAuth_NoTokensWithoutAuthManager(t *testing.T) {
+// TestAuth_NoTokensWithoutAuthManager 验证未注入 AuthManager 且未配置 Tokens 时触发 500 内部错误。
+func TestAuth_NoTokensWithoutAuthManager(t *testing.T) {
 	m := middleware.New(middleware.Deps{
 		Tokens:      nil,
 		AuthManager: nil,
 	})
 
 	router := gin.New()
-	router.Use(m.ErrorHandler())
-	router.GET("/protected", m.RequireAuth(), func(c *gin.Context) {
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	router.GET("/protected", m.Auth(), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
@@ -369,13 +394,13 @@ func TestRequireAuth_NoTokensWithoutAuthManager(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
-// TestRequirePermission_Unauthenticated 验证无认证身份访问受保护资源时返回 401。
-func TestRequirePermission_Unauthenticated(t *testing.T) {
+// TestCan_Unauthenticated 验证无认证身份访问受保护资源时返回 401。
+func TestCan_Unauthenticated(t *testing.T) {
 	m, _, _, _, _ := setupAuthEnv()
 
 	router := gin.New()
-	router.Use(m.ErrorHandler())
-	router.GET("/users", m.RequirePermission("users", "read"), func(c *gin.Context) {
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	router.GET("/users", m.Can("users", "read"), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
@@ -389,14 +414,14 @@ func TestRequirePermission_Unauthenticated(t *testing.T) {
 	assert.Equal(t, string(errs.CodeAuthTokenInvalid), errResp.Code)
 }
 
-// TestRequirePermission_EnforcerNotConfigured 验证未配置 Authz Enforcer 时触发 500 内部错误。
-func TestRequirePermission_EnforcerNotConfigured(t *testing.T) {
+// TestCan_EnforcerNotConfigured 验证未配置 Authz Enforcer 时触发 500 内部错误。
+func TestCan_EnforcerNotConfigured(t *testing.T) {
 	m := middleware.New(middleware.Deps{
 		Authz: nil,
 	})
 
 	router := gin.New()
-	router.Use(m.ErrorHandler())
+	router.Use(global.New(global.Deps{}).ErrorHandler())
 	router.GET("/users", func(c *gin.Context) {
 		ctx := authentication.With(c.Request.Context(), authentication.Identity{
 			UserID: "usr_admin_1",
@@ -404,7 +429,7 @@ func TestRequirePermission_EnforcerNotConfigured(t *testing.T) {
 		})
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
-	}, m.RequirePermission("users", "read"), func(c *gin.Context) {
+	}, m.Can("users", "read"), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
@@ -415,13 +440,13 @@ func TestRequirePermission_EnforcerNotConfigured(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
-// TestRequirePermission_RoleBasedAccess 验证基于 Casbin 角色策略的放行与拒绝。
-func TestRequirePermission_RoleBasedAccess(t *testing.T) {
+// TestCan_RoleBasedAccess 验证基于 Casbin 角色策略的放行与拒绝。
+func TestCan_RoleBasedAccess(t *testing.T) {
 	m, _, _, _, _ := setupAuthEnv()
 
 	router := gin.New()
-	router.Use(m.ErrorHandler())
-	router.GET("/users", m.RequirePermission("users", "read"), func(c *gin.Context) {
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	router.GET("/users", m.Can("users", "read"), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
 
@@ -448,6 +473,66 @@ func TestRequirePermission_RoleBasedAccess(t *testing.T) {
 	})
 	req = req.WithContext(ctx)
 	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// TestAuth_MultiGuardFallback 验证 Laravel 风格多守卫回退匹配机制。
+func TestAuth_MultiGuardFallback(t *testing.T) {
+	m, _, clientGuard, _, repo := setupAuthEnv()
+
+	// 注册普通用户
+	repo.users["usr_user_1"] = &models.User{
+		ID:     "usr_user_1",
+		Status: models.StatusActive,
+		Role:   models.RoleUser,
+	}
+
+	clientSess, err := clientGuard.Login(context.Background(), repo.users["usr_user_1"])
+	require.NoError(t, err)
+
+	router := gin.New()
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	// 声明优先匹配 admin 守卫，回退至 client 守卫
+	router.GET("/hybrid", m.Auth("admin", "client"), func(c *gin.Context) {
+		id, ok := authentication.FromContext(c.Request.Context())
+		if !ok {
+			c.Status(http.StatusUnauthorized)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"user_id": id.UserID})
+	})
+
+	// 携带 client 令牌请求，admin 守卫校验失败后自动回退至 client 守卫成功认证
+	req := httptest.NewRequest(http.MethodGet, "/hybrid", nil)
+	req.Header.Set("Authorization", "Bearer "+clientSess.Token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "usr_user_1", resp["user_id"])
+}
+
+// TestCan_Permission 验证 Laravel 风格 m.Can 简写细粒度权限校验。
+func TestCan_Permission(t *testing.T) {
+	m, _, _, _, _ := setupAuthEnv()
+
+	router := gin.New()
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	router.GET("/users", m.Can("users", "read"), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/users", nil)
+	ctx := authentication.With(req.Context(), authentication.Identity{
+		UserID: "usr_admin_1",
+		Role:   models.RoleAdmin,
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)

@@ -26,12 +26,12 @@ func NewHandler(service *Service) *Handler {
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
-// @Param        query query ListUsersQuery false "查询与分页参数"
-// @Success      200 {object} UserPage "用户分页列表"
+// @Param        query query ListUsersQueryParams false "查询与分页参数"
+// @Success      200 {object} UserPageResource "用户分页列表"
 // @x-order      1
 // @Router       /admin/users [get]
 func (h *Handler) ListUsers(c *gin.Context) {
-	var query ListUsersQuery
+	var query ListUsersQueryParams
 	if err := c.ShouldBindQuery(&query); err != nil {
 		_ = c.Error(err)
 		return
@@ -53,12 +53,12 @@ func (h *Handler) ListUsers(c *gin.Context) {
 // @Accept       json
 // @Produce      application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
 // @Security     BearerAuth
-// @Param        query query ListUsersQuery false "筛选与排序条件"
+// @Param        query query ListUsersQueryParams false "筛选与排序条件"
 // @Success      200 {file} binary "用户数据 Excel 文件"
 // @x-order      6
 // @Router       /admin/users/export [get]
 func (h *Handler) ExportUsers(c *gin.Context) {
-	var query ListUsersQuery
+	var query ListUsersQueryParams
 	if err := c.ShouldBindQuery(&query); err != nil {
 		_ = c.Error(err)
 		return
@@ -82,11 +82,17 @@ func (h *Handler) ExportUsers(c *gin.Context) {
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id path string true "用户唯一标识" example("usr_01J9X4N8Y0ABCD")
-// @Success      200 {object} User "用户完整档案"
+// @Success      200 {object} UserResource "用户完整档案"
 // @x-order      2
 // @Router       /admin/users/{id} [get]
 func (h *Handler) GetUser(c *gin.Context) {
-	entity, err := h.service.GetUser(c.Request.Context(), c.Param("id"))
+	var params GetUserPathParams
+	if err := c.ShouldBindUri(&params); err != nil {
+		_ = c.Error(err)
+		return
+	}
+
+	entity, err := h.service.GetUser(c.Request.Context(), params.ID)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -102,18 +108,18 @@ func (h *Handler) GetUser(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
-// @Param        payload body CreateUserRequest true "创建用户载荷"
-// @Success      201 {object} User "新建成功的用户对象"
+// @Param        payload body CreateUserBody true "创建用户载荷"
+// @Success      201 {object} UserResource "新建成功的用户对象"
 // @x-order      3
 // @Router       /admin/users [post]
 func (h *Handler) CreateUser(c *gin.Context) {
-	var req CreateUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var body CreateUserBody
+	if err := c.ShouldBindJSON(&body); err != nil {
 		_ = c.Error(err)
 		return
 	}
 
-	created, err := h.service.CreateUser(c.Request.Context(), req)
+	created, err := h.service.CreateUser(c.Request.Context(), body)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -130,22 +136,28 @@ func (h *Handler) CreateUser(c *gin.Context) {
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id path string true "用户唯一标识" example("usr_01J9X4N8Y0ABCD")
-// @Param        payload body UpdateUserRequest true "局部更新载荷"
-// @Success      200 {object} User "更新后的用户对象"
+// @Param        payload body UpdateUserBody true "局部更新载荷"
+// @Success      200 {object} UserResource "更新后的用户对象"
 // @x-order      4
 // @Router       /admin/users/{id} [patch]
 func (h *Handler) UpdateUser(c *gin.Context) {
-	var req UpdateUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		_ = c.Error(err)
-		return
-	}
-	if err := binding.Validator.ValidateStruct(toManagementPatch(req)); err != nil {
+	var params UpdateUserPathParams
+	if err := c.ShouldBindUri(&params); err != nil {
 		_ = c.Error(err)
 		return
 	}
 
-	updated, err := h.service.UpdateUser(c.Request.Context(), c.Param("id"), req)
+	var body UpdateUserBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		_ = c.Error(err)
+		return
+	}
+	if err := binding.Validator.ValidateStruct(toManagementPatch(body)); err != nil {
+		_ = c.Error(err)
+		return
+	}
+
+	updated, err := h.service.UpdateUser(c.Request.Context(), params.ID, body)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -166,7 +178,13 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 // @x-order      5
 // @Router       /admin/users/{id} [delete]
 func (h *Handler) DeleteUser(c *gin.Context) {
-	if err := h.service.DeleteUser(c.Request.Context(), c.Param("id")); err != nil {
+	var params DeleteUserPathParams
+	if err := c.ShouldBindUri(&params); err != nil {
+		_ = c.Error(err)
+		return
+	}
+
+	if err := h.service.DeleteUser(c.Request.Context(), params.ID); err != nil {
 		_ = c.Error(err)
 		return
 	}
@@ -174,12 +192,12 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 }
 
 // toManagementPatch 把管理端三态请求投影为可复用的校验结构体。
-func toManagementPatch(req UpdateUserRequest) *managementPatch {
+func toManagementPatch(body UpdateUserBody) *managementPatch {
 	return &managementPatch{
-		ProfilePatch: req.fieldSet().Patch(),
-		Role:         user.ToPtr(req.Role),
-		Status:       user.ToPtr(req.Status),
-		BanReason:    user.ToPtr(req.BanReason),
-		BanExpires:   user.ToPtr(req.BanExpires),
+		ProfilePatch: body.fieldSet().Patch(),
+		Role:         user.ToPtr(body.Role),
+		Status:       user.ToPtr(body.Status),
+		BanReason:    user.ToPtr(body.BanReason),
+		BanExpires:   user.ToPtr(body.BanExpires),
 	}
 }

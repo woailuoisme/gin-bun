@@ -187,7 +187,7 @@ func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (Session
 
 // ChangePassword 校验当前口令后写入新口令。
 func (s *Service) ChangePassword(ctx context.Context, userID string, req ChangePasswordRequest) error {
-	if err := validator.PasswordStrength("newPassword", req.NewPassword); err != nil {
+	if err := validator.PasswordStrength("new_password", req.NewPassword); err != nil {
 		return err
 	}
 
@@ -234,7 +234,7 @@ func (s *Service) RequestPasswordReset(ctx context.Context, language string, req
 
 // ResetPassword 处理链接令牌与验证码两条互斥的重置路径。
 func (s *Service) ResetPassword(ctx context.Context, req ResetPasswordRequest) (StatusResponse, error) {
-	if err := validator.PasswordStrength("newPassword", req.NewPassword); err != nil {
+	if err := validator.PasswordStrength("new_password", req.NewPassword); err != nil {
 		return StatusResponse{}, err
 	}
 

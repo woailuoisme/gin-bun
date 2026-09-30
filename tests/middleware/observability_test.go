@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"bgin/internal/middleware"
+	"bgin/internal/middleware/global"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/logger"
 )
@@ -30,7 +30,7 @@ func TestAccessLog404SingleWarn(t *testing.T) {
 		logger.WithWriter(&buf),
 	)
 
-	mw := middleware.New(middleware.Deps{Logger: testLogger})
+	mw := global.New(global.Deps{Logger: testLogger})
 	engine := gin.New()
 	engine.Use(
 		mw.RequestID(),
@@ -88,7 +88,7 @@ func TestAccessLog500ErrorWithStack(t *testing.T) {
 		logger.WithWriter(&buf),
 	)
 
-	mw := middleware.New(middleware.Deps{Logger: testLogger})
+	mw := global.New(global.Deps{Logger: testLogger})
 	engine := gin.New()
 	engine.Use(
 		mw.RequestID(),

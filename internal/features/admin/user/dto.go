@@ -5,7 +5,9 @@ import (
 
 	"github.com/aarondl/opt/omitnull"
 
+	"bgin/internal/platform/response"
 	"bgin/internal/shared/enums"
+	"bgin/internal/shared/models"
 	"bgin/internal/shared/user"
 )
 
@@ -24,8 +26,30 @@ type Role = enums.Role
 // Status 是账号状态枚举的本地类型别名，规避 swag 跨包解析缺陷。
 type Status = enums.Status
 
-// CreateUserRequest 是 POST /v1/admin/users 的请求体。
-type CreateUserRequest struct {
+// Profile 是共享内核档案视图的类型别名，供本模块的响应体与 Swagger 注解引用。
+type Profile = user.Profile
+
+// --- 路径参数 PathParams ---
+
+// UserPathParams 是用户唯一标识的路径参数。
+type UserPathParams struct {
+	// 用户唯一标识
+	ID string `uri:"id" example:"usr_01J9X4N8Y0ABCD" validate:"required"`
+}
+
+// GetUserPathParams 是 GET /v1/admin/users/:id 的路径参数。
+type GetUserPathParams = UserPathParams
+
+// UpdateUserPathParams 是 PATCH /v1/admin/users/:id 的路径参数。
+type UpdateUserPathParams = UserPathParams
+
+// DeleteUserPathParams 是 DELETE /v1/admin/users/:id 的路径参数。
+type DeleteUserPathParams = UserPathParams
+
+// --- 请求体 Body ---
+
+// CreateUserBody 是 POST /v1/admin/users 的请求体。
+type CreateUserBody struct {
 	// 用户电子邮箱
 	Email string `json:"email" example:"alex@example.com" validate:"required,email,max=254"`
 	// 登录口令 (8-128位)
@@ -39,11 +63,11 @@ type CreateUserRequest struct {
 	// 用户权限角色 (user: 普通用户, admin: 系统管理员)
 	Role Role `json:"role" example:"user" enums:"user,admin" validate:"required,oneof=user admin"`
 	// 邮箱是否已完成验证
-	EmailVerified bool `json:"emailVerified" example:"true"`
+	EmailVerified bool `json:"email_verified" example:"true"`
 }
 
-// UpdateUserRequest 是 PATCH /v1/admin/users/:id 的请求体。
-type UpdateUserRequest struct {
+// UpdateUserBody 是 PATCH /v1/admin/users/:id 的请求体。
+type UpdateUserBody struct {
 	// 用户展示昵称
 	Name omitnull.Val[string] `json:"name" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
 	// 用户头像 URL
@@ -51,11 +75,11 @@ type UpdateUserRequest struct {
 	// 唯一登录用户名 (3-30位)
 	Username omitnull.Val[string] `json:"username" swaggertype:"string" extensions:"x-nullable" example:"alexmercer"`
 	// 用户显示名称
-	DisplayUsername omitnull.Val[string] `json:"displayUsername" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
+	DisplayUsername omitnull.Val[string] `json:"display_username" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
 	// E.164 格式手机号
-	PhoneNumber omitnull.Val[string] `json:"phoneNumber" swaggertype:"string" extensions:"x-nullable" example:"+8613800138000"`
+	PhoneNumber omitnull.Val[string] `json:"phone_number" swaggertype:"string" extensions:"x-nullable" example:"+8613800138000"`
 	// 邮箱是否已验证
-	EmailVerified omitnull.Val[bool] `json:"emailVerified" swaggertype:"boolean" extensions:"x-nullable" example:"true"`
+	EmailVerified omitnull.Val[bool] `json:"email_verified" swaggertype:"boolean" extensions:"x-nullable" example:"true"`
 	// 用户权限角色 (user: 普通用户, admin: 系统管理员)
 	Role omitnull.Val[Role] `json:"role" swaggertype:"string" extensions:"x-nullable" example:"admin" enums:"user,admin"`
 	// 账号状态 (active: 正常活跃, inactive: 未激活, banned: 已封禁)
@@ -63,13 +87,13 @@ type UpdateUserRequest struct {
 	// 是否封禁
 	Banned omitnull.Val[bool] `json:"banned" swaggertype:"boolean" extensions:"x-nullable" example:"false"`
 	// 封禁原因
-	BanReason omitnull.Val[string] `json:"banReason" swaggertype:"string" extensions:"x-nullable" example:"违规发布广告"`
+	BanReason omitnull.Val[string] `json:"ban_reason" swaggertype:"string" extensions:"x-nullable" example:"违规发布广告"`
 	// 封禁到期时间 (ISO 8601 UTC)
-	BanExpires omitnull.Val[time.Time] `json:"banExpires" swaggertype:"string" extensions:"x-nullable" example:"2026-10-01T00:00:00Z"`
+	BanExpires omitnull.Val[time.Time] `json:"ban_expires" swaggertype:"string" extensions:"x-nullable" example:"2026-10-01T00:00:00Z"`
 }
 
 // fieldSet 将请求中的档案字段投影为共享内核字段集。
-func (r UpdateUserRequest) fieldSet() user.FieldSet {
+func (r UpdateUserBody) fieldSet() user.FieldSet {
 	return user.FieldSet{
 		Name:            r.Name,
 		Image:           r.Image,
@@ -84,18 +108,20 @@ type managementPatch struct {
 	user.ProfilePatch
 	Role       *Role      `json:"role" validate:"omitempty,oneof=user admin"`
 	Status     *Status    `json:"status" validate:"omitempty,oneof=active inactive banned"`
-	BanReason  *string    `json:"banReason" validate:"omitempty,max=500"`
-	BanExpires *time.Time `json:"banExpires"`
+	BanReason  *string    `json:"ban_reason" validate:"omitempty,max=500"`
+	BanExpires *time.Time `json:"ban_expires"`
 }
 
-// ListUsersQuery 是 GET /v1/admin/users 的查询参数。
-type ListUsersQuery struct {
+// --- 查询参数 QueryParams ---
+
+// ListUsersQueryParams 是 GET /v1/admin/users 的查询参数。
+type ListUsersQueryParams struct {
 	// 当前页码 (从 1 开始，默认 1，上限 1000000，与 maxPage 常量保持一致)
 	Page int `form:"page" json:"page" example:"1" validate:"omitempty,min=1,max=1000000"`
 	// 每页条数 (1-100，默认 20)
-	PageSize int `form:"pageSize" json:"pageSize" example:"20" validate:"omitempty,min=1,max=100"`
-	// 排序字段 (字段名前加 - 表示倒序，如 -createdAt)
-	Sort string `form:"sort" json:"sort" example:"-createdAt" validate:"omitempty,usersort,max=120"`
+	PageSize int `form:"page_size" json:"page_size" example:"20" validate:"omitempty,min=1,max=100"`
+	// 排序字段 (字段名前加 - 表示倒序，如 -created_at)
+	Sort string `form:"sort" json:"sort" example:"-created_at" validate:"omitempty,usersort,max=120"`
 	// 关键字搜索 (按邮箱、昵称、用户名模糊检索)
 	Search string `form:"search" json:"search" example:"alex" validate:"omitempty,max=120"`
 	// 按账号状态过滤 (active: 正常活跃, inactive: 未激活, banned: 已封禁)
@@ -103,3 +129,49 @@ type ListUsersQuery struct {
 	// 按权限角色过滤 (user: 普通用户, admin: 系统管理员)
 	Role Role `form:"role" json:"role" example:"user" enums:"user,admin" validate:"omitempty,oneof=user admin"`
 }
+
+// --- 响应资源 Resource ---
+
+// UserResource 是管理端视角的系统用户视图模型。
+type UserResource struct {
+	Profile
+
+	// 账号是否已被封禁
+	Banned bool `json:"banned" example:"false"`
+	// 封禁原因说明
+	BanReason *string `json:"ban_reason" example:"违规发布广告"`
+	// 封禁到期时间 (ISO 8601 UTC)
+	BanExpires *time.Time `json:"ban_expires" example:"2026-10-01T00:00:00Z"`
+	// 最后登录时间 (ISO 8601 UTC)
+	LastLoginAt *time.Time `json:"last_login_at" example:"2026-09-27T10:00:00Z"`
+	// 最后登录认证方式
+	LastLoginMethod *string `json:"last_login_method" example:"email"`
+}
+
+// UserPageResource 是用户分页列表的响应结构。
+type UserPageResource struct {
+	// 用户列表数据
+	Items []UserResource `json:"items"`
+	// 分页元信息
+	Meta response.Meta `json:"meta"`
+}
+
+// toUserResource 把模型投影为管理视角的响应资源。
+func toUserResource(entity *models.User) UserResource {
+	return UserResource{
+		Profile:         user.ProjectProfile(entity),
+		Banned:          entity.Banned,
+		BanReason:       entity.BanReason,
+		BanExpires:      models.UTCPtr(entity.BanExpires),
+		LastLoginAt:     models.UTCPtr(entity.LastLoginAt),
+		LastLoginMethod: entity.LastLoginMethod,
+	}
+}
+
+type (
+	CreateUserRequest = CreateUserBody
+	UpdateUserRequest = UpdateUserBody
+	ListUsersQuery    = ListUsersQueryParams
+	User              = UserResource
+	UserPage          = UserPageResource
+)

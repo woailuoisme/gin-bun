@@ -16,6 +16,7 @@ import (
 
 	"bgin/internal/config"
 	featurePayment "bgin/internal/features/payment"
+	"bgin/internal/middleware/global"
 	platformPayment "bgin/internal/platform/payment"
 	"bgin/internal/platform/payment/enums"
 )
@@ -43,6 +44,7 @@ func setupPaymentTest(t *testing.T) (*gin.Engine, *featurePayment.Service, *plat
 	handler := featurePayment.NewHandler(svc)
 
 	engine := gin.New()
+	engine.Use(global.New(global.Deps{}).ErrorHandler())
 	v1 := engine.Group("/v1")
 	featurePayment.RegisterRoutes(v1, handler, nil)
 

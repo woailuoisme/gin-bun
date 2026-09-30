@@ -26,18 +26,18 @@ func NewHandler(service *Service) *Handler {
 // @Tags         管理员认证
 // @Accept       json
 // @Produce      json
-// @Param        payload body SignInEmailRequest true "管理员登录凭据"
-// @Success      200 {object} SessionResponse "登录成功并颁发管理端双令牌"
+// @Param        payload body SignInEmailBody true "管理员登录凭据"
+// @Success      200 {object} SessionResource "登录成功并颁发管理端双令牌"
 // @x-order      1
 // @Router       /admin/auth/sign-in/email [post]
 func (h *Handler) SignInEmail(c *gin.Context) {
-	var req SignInEmailRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var body SignInEmailBody
+	if err := c.ShouldBindJSON(&body); err != nil {
 		_ = c.Error(err)
 		return
 	}
 
-	session, err := h.service.SignInEmail(c.Request.Context(), req)
+	session, err := h.service.SignInEmail(c.Request.Context(), body)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -53,7 +53,7 @@ func (h *Handler) SignInEmail(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
-// @Success      200 {object} GetSessionResponse "当前管理员会话档案"
+// @Success      200 {object} GetSessionResource "当前管理员会话档案"
 // @x-order      2
 // @Router       /admin/auth/get-session [get]
 func (h *Handler) GetSession(c *gin.Context) {
@@ -78,18 +78,18 @@ func (h *Handler) GetSession(c *gin.Context) {
 // @Tags         管理员认证
 // @Accept       json
 // @Produce      json
-// @Param        payload body RefreshTokenRequest true "刷新令牌凭据"
-// @Success      200 {object} SessionResponse "刷新成功并颁发新双令牌"
+// @Param        payload body RefreshTokenBody true "刷新令牌凭据"
+// @Success      200 {object} SessionResource "刷新成功并颁发新双令牌"
 // @x-order      3
 // @Router       /admin/auth/token/refresh [post]
 func (h *Handler) Refresh(c *gin.Context) {
-	var req RefreshTokenRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var body RefreshTokenBody
+	if err := c.ShouldBindJSON(&body); err != nil {
 		_ = c.Error(err)
 		return
 	}
 
-	session, err := h.service.Refresh(c.Request.Context(), req)
+	session, err := h.service.Refresh(c.Request.Context(), body)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -105,7 +105,7 @@ func (h *Handler) Refresh(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
-// @Param        payload body SignOutRequest false "可选的刷新令牌"
+// @Param        payload body SignOutBody false "可选的刷新令牌"
 // @Success      204 "已登出，无响应体"
 // @x-order      4
 // @Router       /admin/auth/sign-out [post]
@@ -115,13 +115,13 @@ func (h *Handler) SignOut(c *gin.Context) {
 		return
 	}
 
-	var req SignOutRequest
-	if err := validator.BindOptionalJSON(c, &req); err != nil {
+	var body SignOutBody
+	if err := validator.BindOptionalJSON(c, &body); err != nil {
 		_ = c.Error(err)
 		return
 	}
 
-	if err := h.service.SignOut(c.Request.Context(), req); err != nil {
+	if err := h.service.SignOut(c.Request.Context(), body); err != nil {
 		_ = c.Error(err)
 		return
 	}
@@ -136,7 +136,7 @@ func (h *Handler) SignOut(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
-// @Param        payload body ChangePasswordRequest true "当前口令与新口令"
+// @Param        payload body ChangePasswordBody true "当前口令与新口令"
 // @Success      204 "修改成功，无响应体"
 // @x-order      5
 // @Router       /admin/auth/change-password [post]
@@ -147,13 +147,13 @@ func (h *Handler) ChangePassword(c *gin.Context) {
 		return
 	}
 
-	var req ChangePasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var body ChangePasswordBody
+	if err := c.ShouldBindJSON(&body); err != nil {
 		_ = c.Error(err)
 		return
 	}
 
-	if err := h.service.ChangePassword(c.Request.Context(), id.UserID, req); err != nil {
+	if err := h.service.ChangePassword(c.Request.Context(), id.UserID, body); err != nil {
 		_ = c.Error(err)
 		return
 	}

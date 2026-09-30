@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/config"
-	"bgin/internal/middleware"
+	"bgin/internal/middleware/global"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/i18n"
 	shareduser "bgin/internal/shared/user"
@@ -36,7 +36,7 @@ func TestValidationMessageTranslation(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := middleware.New(middleware.Deps{Translator: translator})
+			m := global.New(global.Deps{Translator: translator})
 			r := gin.New()
 			r.Use(m.ErrorHandler())
 			r.PATCH("/profile", func(c *gin.Context) {

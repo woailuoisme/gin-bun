@@ -46,19 +46,19 @@ func NewService(deps Deps) *Service {
 func (s *Service) Guard() *authentication.Guard[*models.User] { return s.guard }
 
 // SignInEmail 管理员邮箱密码登录。
-func (s *Service) SignInEmail(ctx context.Context, req SignInEmailRequest) (SessionResponse, error) {
+func (s *Service) SignInEmail(ctx context.Context, body SignInEmailBody) (SessionResource, error) {
 	user, sess, err := s.guard.Attempt(ctx, authentication.Credentials{
-		Account:  req.Email,
-		Password: req.Password,
+		Account:  body.Email,
+		Password: body.Password,
 	})
 	if err != nil {
 		if errors.Is(err, shareduser.ErrRoleRestricted) {
-			return SessionResponse{}, errs.InvalidCredentials()
+			return SessionResource{}, errs.InvalidCredentials()
 		}
-		return SessionResponse{}, err
+		return SessionResource{}, err
 	}
 
-	return SessionResponse{
+	return SessionResource{
 		Token:        sess.Token,
 		RefreshToken: sess.RefreshToken,
 		ExpiresIn:    sess.ExpiresIn,
@@ -67,17 +67,17 @@ func (s *Service) SignInEmail(ctx context.Context, req SignInEmailRequest) (Sess
 }
 
 // GetSession 获取当前有效会话的管理员资料。
-func (s *Service) GetSession(ctx context.Context, userID string) (GetSessionResponse, error) {
+func (s *Service) GetSession(ctx context.Context, userID string) (GetSessionResource, error) {
 	user, err := s.guard.UserOrFail(ctx)
 	if err != nil {
 		var loadErr error
 		user, loadErr = s.loadAdmin(ctx, userID)
 		if loadErr != nil {
-			return GetSessionResponse{}, loadErr
+			return GetSessionResource{}, loadErr
 		}
 	}
 
-	return GetSessionResponse{User: shareduser.ProjectProfile(user)}, nil
+	return GetSessionResource{User: shareduser.ProjectProfile(user)}, nil
 }
 
 // loadAdmin 兜底从数据库加载管理员实体并进行状态校验。
@@ -99,13 +99,13 @@ func (s *Service) loadAdmin(ctx context.Context, userID string) (*models.User, e
 }
 
 // Refresh 刷新管理员双令牌，实现令牌轮换。
-func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (SessionResponse, error) {
-	user, sess, err := s.guard.Refresh(ctx, req.RefreshToken)
+func (s *Service) Refresh(ctx context.Context, body RefreshTokenBody) (SessionResource, error) {
+	user, sess, err := s.guard.Refresh(ctx, body.RefreshToken)
 	if err != nil {
-		return SessionResponse{}, err
+		return SessionResource{}, err
 	}
 
-	return SessionResponse{
+	return SessionResource{
 		Token:        sess.Token,
 		RefreshToken: sess.RefreshToken,
 		ExpiresIn:    sess.ExpiresIn,
@@ -114,16 +114,16 @@ func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (Session
 }
 
 // SignOut 登出并作废当前管理员访问令牌与可选的刷新令牌。
-func (s *Service) SignOut(ctx context.Context, req SignOutRequest) error {
-	if req.RefreshToken != nil {
-		return s.guard.Logout(ctx, *req.RefreshToken)
+func (s *Service) SignOut(ctx context.Context, body SignOutBody) error {
+	if body.RefreshToken != nil {
+		return s.guard.Logout(ctx, *body.RefreshToken)
 	}
 	return s.guard.Logout(ctx)
 }
 
 // ChangePassword 修改当前管理员登录密码。
-func (s *Service) ChangePassword(ctx context.Context, userID string, req ChangePasswordRequest) error {
-	if err := validator.PasswordStrength("newPassword", req.NewPassword); err != nil {
+func (s *Service) ChangePassword(ctx context.Context, userID string, body ChangePasswordBody) error {
+	if err := validator.PasswordStrength("new_password", body.NewPassword); err != nil {
 		return err
 	}
 
@@ -142,7 +142,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, req ChangeP
 		return errs.New(errs.CodeAuthPasswordMismatch, "The current password is incorrect")
 	}
 
-	matched, err := s.hasher.Check(*account.Password, req.CurrentPassword)
+	matched, err := s.hasher.Check(*account.Password, body.CurrentPassword)
 	if err != nil {
 		return errs.Internal(err)
 	}
@@ -150,7 +150,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, req ChangeP
 		return errs.New(errs.CodeAuthPasswordMismatch, "The current password is incorrect")
 	}
 
-	hash, err := s.hasher.Make(req.NewPassword)
+	hash, err := s.hasher.Make(body.NewPassword)
 	if err != nil {
 		return errs.Internal(err)
 	}

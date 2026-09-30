@@ -1,8 +1,15 @@
-// Package middleware 提供 HTTP 横切中间件。
+// Package middleware 提供业务路由/路由组级 HTTP 中间件。
+//
+// 包含按需挂载于特定业务路由或 Group 的端点保护与控制中间件：
+//   - Throttle: 类似 Laravel 的平滑滑动窗口限流（支持字符串表达式 "60,1"、命名限流器、预设档位 Tier 及强类型参数）
+//   - Auth: JWT 认证守卫（支持 "client"、"admin" 等多守卫策略与多 Guard 顺序回退）
+//   - Can: 基于 Casbin RBAC 的细粒度资源与操作权限校验
+//
+// 全局传输层中间件请参见子包 bgin/internal/middleware/global。
 package middleware
 
 import (
-	"time"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -11,59 +18,51 @@ import (
 	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/authorization"
 	"bgin/internal/platform/cache"
-	"bgin/internal/platform/i18n"
 )
 
-// Deps 是中间件所需的全部依赖，由 main 装配后注入。
+// Deps 是路由/组中间件所需的依赖，由 bootstrap 装配后注入。
 type Deps struct {
-	Tokens         *authentication.TokenIssuer
-	AuthManager    *authentication.Manager
-	Cache          *cache.Client
-	Authz          *authorization.Enforcer
-	Logger         *zap.Logger
-	Limiter        config.LimiterConfig
-	CORS           config.CORSConfig
-	Production     bool
-	Translator     *i18n.Translator
-	RequestTimeout time.Duration
-	// MaxBody 非 multipart 请求的请求体上限（字节，0 表示用默认值）。
-	MaxBody int64
-	// UploadMaxBody multipart/form-data 上传请求的请求体上限（字节，0 表示用默认值）。
-	UploadMaxBody int64
+	Tokens      *authentication.TokenIssuer
+	AuthManager *authentication.Manager
+	Cache       *cache.Client
+	Authz       *authorization.Enforcer
+	Logger      *zap.Logger
+	Limiter     config.LimiterConfig
+	SigningKey  string
 }
 
-// Middleware 持有横切逻辑所需的依赖。
+// Middleware 持有路由级中间件所需的依赖。
 type Middleware struct {
-	tokens         *authentication.TokenIssuer
-	authManager    *authentication.Manager
-	cache          *cache.Client
-	authz          *authorization.Enforcer
-	logger         *zap.Logger
-	limiter        config.LimiterConfig
-	cors           config.CORSConfig
-	production     bool
-	translator     *i18n.Translator
-	requestTimeout time.Duration
-	maxBody        int64
-	uploadMaxBody  int64
+	tokens       *authentication.TokenIssuer
+	authManager  *authentication.Manager
+	cache        *cache.Client
+	limiterStore RateLimiterStore
+	authz        *authorization.Enforcer
+	logger       *zap.Logger
+	limiter      config.LimiterConfig
+	signingKey   string
+
+	limitersMu sync.RWMutex
+	limiters   map[string]LimiterResolver
 }
 
-// New 构造 Middleware。
+// New 构造路由中间件实例。
 func New(deps Deps) *Middleware {
 	return &Middleware{
-		tokens:         deps.Tokens,
-		authManager:    deps.AuthManager,
-		cache:          deps.Cache,
-		authz:          deps.Authz,
-		logger:         deps.Logger,
-		limiter:        deps.Limiter,
-		cors:           deps.CORS,
-		production:     deps.Production,
-		translator:     deps.Translator,
-		requestTimeout: deps.RequestTimeout,
-		maxBody:        deps.MaxBody,
-		uploadMaxBody:  deps.UploadMaxBody,
+		tokens:      deps.Tokens,
+		authManager: deps.AuthManager,
+		cache:       deps.Cache,
+		authz:       deps.Authz,
+		logger:      deps.Logger,
+		limiter:     deps.Limiter,
+		signingKey:  deps.SigningKey,
+		limiters:    make(map[string]LimiterResolver),
 	}
+}
+
+// SetLimiterStore 替换限流器底层存储实现（主要用于单元测试与自定义存储注入）。
+func (m *Middleware) SetLimiterStore(store RateLimiterStore) {
+	m.limiterStore = store
 }
 
 // abortWithError 向上下文附加错误并立即中止后续处理。

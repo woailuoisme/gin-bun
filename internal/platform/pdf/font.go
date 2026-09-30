@@ -64,11 +64,6 @@ func ResolveFontConfig(fontPath, fontFamily string, log *zap.Logger) ([]entity.C
 	info, err := os.Stat(cleanFontPath)
 
 	if err != nil || info.IsDir() {
-		if log != nil {
-			log.Warn("PDF custom font file not found, falling back to core Helvetica font",
-				zap.String("family", fontFamily),
-				zap.String("path", fontPath))
-		}
 		return nil, fontfamily.Helvetica
 	}
 

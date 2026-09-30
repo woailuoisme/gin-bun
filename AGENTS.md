@@ -123,6 +123,14 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
      - **Cache Key / Redis 前缀**：必须就近封装在具体的 Cache Repository 或 Platform Cache 内部，外部调用方通过高阶仓储方法存取，严禁将原始键名前缀向外部全局扩散。
      - **异步任务与队列名 (Queue / Job Tasks)**：必须就近内聚在调度该任务的 Feature 切片或 `platform/queue` 内部，各业务独立维护 Job 签名。
      - **严禁投机性死代码与 UI 徽标元数据 (YAGNI)**：严禁预先编写全系统 0 调用的投机性常量文件，严禁在后端枚举中硬编码前端展示类元数据（如 CSS 徽标颜色、选项字典映射）。
+7. **HTTP DTO 单一文件与四大后缀强类型绑定规约 (`dto.go`)**：
+   - **单一 `dto.go` 文件集中内聚**：各 Feature 切片（`internal/features/<feature>/`）下的 HTTP 请求与响应传输对象统一合并为单一 `dto.go` 文件，彻底废除 `request.go` 与 `response.go` 物理双文件，将该垂直切片的全部传输契约与模型投影函数（`to<Entity>Resource`）单点内聚。
+   - **四大后缀与 Gin 绑定映射红线**：
+     1. **`*Body`**：对应请求体载荷（JSON / Form），Handler 统一使用 `c.ShouldBindJSON(&body)` 绑定；
+     2. **`*PathParams`**：对应路由 URI 路径参数（必须附带 `uri:"..."` 标签与校验规则），Handler 统一使用 `c.ShouldBindUri(&pathParams)` 强类型绑定与校验。**绝对严禁在 Handler 中使用裸调 `c.Param("id")` 提取路径参数**；
+     3. **`*QueryParams`**：对应 URL Query 查询参数（必须附带 `form:"..."` 与 `json:"..."` 标签），Handler 统一使用 `c.ShouldBindQuery(&queryParams)` 绑定；
+     4. **`*Resource`**：对应响应数据单体视图（如 `UserResource`）；分页列表必须显式声明 `*PageResource` 结构体（内含 `items []<Entity>Resource` 与 `meta response.Meta`），确保 Swagger/OpenAPI 无歧义精准解析。
+   - **全系统 `snake_case` 契约硬性红线**：所有 DTO 的 `json:"..."`、`form:"..."` 与 `uri:"..."` 字段标签统一使用下划线（`snake_case`），严格与 `api.md` RESTful 契约保持一致。
 
 ---
 
@@ -171,7 +179,7 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 | **终端用户错误提示** | 统一 i18n 资源 | `lang/zh-CN/*.toml`, `lang/en/*.toml` | 在业务代码中直接硬编码中文提示 |
 
 ### 4.6 时间、容量与数据格式化红线规范 (Time, Capacity & Formatting Discipline)
-- **Model 与 DTO 原生时间红线（绝对红线）**：数据库实体 Model（`internal/shared/models/`）与对外传输对象 DTO（`request.go` / `response.go`）**必须严格使用 Go 原生 `time.Time`**。严禁在数据库映射模型或对外契约中引入 `carbon.Carbon` / `carbon.DateTime` 等第三方包装类型，彻底确保 Bun ORM、PostgreSQL `timestamptz` 原生驱动与 OpenAPI RFC 3339 序列化的极致性能、类型安全与契约稳定。
+- **Model 与 DTO 原生时间红线（绝对红线）**：数据库实体 Model（`internal/shared/models/`）与对外传输对象 DTO（`dto.go`）**必须严格使用 Go 原生 `time.Time`**。严禁在数据库映射模型或对外契约中引入 `carbon.Carbon` / `carbon.DateTime` 等第三方包装类型，彻底确保 Bun ORM、PostgreSQL `timestamptz` 原生驱动与 OpenAPI RFC 3339 序列化的极致性能、类型安全与契约稳定。
 - **业务时间推导统一 Carbon**：在业务逻辑层（Service）、计划任务（Worker）、CLI 命令与报表导出（Excel）中，凡涉及复杂时间计算（如有效期加减、封禁时间推导、自然日跨度）、相对时间展示（`DiffForHumans`）以及非标日期字符串解析时，**统一使用 `github.com/golang-module/carbon/v2`**（全局时区与 Locale 自动与 `.env` 中 `APP_TIMEZONE` 和 `APP_LOCALE` 同步）。
 - **容量与数字人性化统一 Humanize**：在 CLI 报表输出、运维日志、存储元数据与监控统计中，文件/对象字节容量展示（`humanize.Bytes` / `humanize.IBytes`）、大数字千分位分割（`humanize.Comma`）**统一使用 `github.com/dustin/go-humanize`**，严禁手动编写冗余的除法换算或格式化逻辑。
 
@@ -243,11 +251,13 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
    - **显式端点排序 (`@x-order`)**：所有对外接口必须显式声明 `// @x-order <序号>` 明确同 Tag 下的展示顺序（升序排列，如注册为 1、登录为 2、会话为 4 等），配合文档引擎消除默认路径字母序乱序。
 
 2. **DTO 结构体与字段注解约束**：
+   - **结构体命名与后缀**：严格遵循四大后缀标准（`*Body`, `*PathParams`, `*QueryParams`, `*Resource`, `*PageResource`）。
    - **精简中文注释**：DTO 中每个对外暴露的字段上方必须附带精简的单行中文业务描述，严禁无注释裸字段。
    - **真实示例标签 (`example:"..."`)**：所有字段必须在 struct tag 中给出 `example:"..."`，示例值必须符合格式校验规则（如合法邮箱、UUID、E.164 手机号、示例密码等）。
    - **字符串枚举必须全量列举 (`enums:"..."`)**：针对所有固定取值范围的字符串枚举字段（如用户角色、账号状态等）：
      - 必须在 struct tag 中显式声明 `enums:"val1,val2,..."` 列出全部候选枚举；
-     - 必须在字段的中文注释中明确罗列每个候选枚举的语义（如 `// 用户角色 (user: 普通用户, admin: 系统管理员)`）。
+     - 必须在字段的中文注释中明确罗列每个候选枚举的语义（如 `// 用户权限角色 (user: 普通用户, admin: 系统管理员)`）。
+   - **强制下划线标签 (`snake_case`)**：所有 DTO 的 `json:"..."`、`form:"..."` 与 `uri:"..."` 标签必须为纯小写下划线命名，严禁使用驼峰。
 
 3. **标准代码模版示范**：
    ```go
@@ -257,13 +267,13 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
    // @Tags         认证中心
    // @Accept       json
    // @Produce      json
-   // @Param        payload body SignInEmailRequest true "登录凭据"
-   // @Success      200 {object} SessionResponse "登录成功并颁发会话凭据"
+   // @Param        payload body SignInEmailBody true "登录凭据"
+   // @Success      200 {object} SessionResource "登录成功并颁发会话凭据"
    // @x-order      2
    // @Router       /auth/sign-in/email [post]
 
-   // DTO 字段注解示范
-   type CreateUserRequest struct {
+   // DTO 字段注解示范 (dto.go)
+   type CreateUserBody struct {
        // 用户电子邮箱
        Email string `json:"email" example:"alex@example.com" validate:"required,email,max=254"`
        // 登录口令 (8-128位，须含字母与数字)

@@ -269,8 +269,7 @@ Generates / Removes:
   - internal/features/[admin|client]/<name>/repository.go
   - internal/features/[admin|client]/<name>/routes.go
   - internal/features/[admin|client]/<name>/service.go
-  - internal/features/[admin|client]/<name>/request.go
-  - internal/features/[admin|client]/<name>/response.go
+  - internal/features/[admin|client]/<name>/dto.go
   - internal/shared/models/<name>.go
   - internal/features/[admin|client]/<name>/ (if directory is empty on delete)
 

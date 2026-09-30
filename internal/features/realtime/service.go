@@ -48,7 +48,7 @@ func NewService(deps Deps) *Service {
 }
 
 // IssueToken 为指定用户签发直连 Centrifugo (WSS/SSE) 所需的 JWT 凭据。
-func (s *Service) IssueToken(ctx context.Context, userID, role string) (*TokenResponse, error) {
+func (s *Service) IssueToken(ctx context.Context, userID, role string) (*TokenResource, error) {
 	if s.gateway == nil || s.cfg == nil || !s.cfg.Realtime.Enabled {
 		return nil, errs.BadRequest("Realtime service is disabled")
 	}
@@ -73,7 +73,7 @@ func (s *Service) IssueToken(ctx context.Context, userID, role string) (*TokenRe
 		return nil, errs.Internal(err)
 	}
 
-	return &TokenResponse{
+	return &TokenResource{
 		Token:     tok,
 		ExpiresAt: exp,
 		WSURL:     s.cfg.Realtime.URL,

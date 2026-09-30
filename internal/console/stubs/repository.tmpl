@@ -13,8 +13,8 @@ import (
 
 // Repository 定义 {{ .ChineseName }} 模块的数据持久化契约。
 type Repository interface {
-	Count(ctx context.Context, query List{{ .PascalName }}Query) (int, error)
-	List(ctx context.Context, query List{{ .PascalName }}Query, offset, limit int) ([]models.{{ .PascalName }}, error)
+	Count(ctx context.Context, query List{{ .PascalName }}QueryParams) (int, error)
+	List(ctx context.Context, query List{{ .PascalName }}QueryParams, offset, limit int) ([]models.{{ .PascalName }}, error)
 	FindByID(ctx context.Context, id string) (*models.{{ .PascalName }}, error)
 	Create(ctx context.Context, entity *models.{{ .PascalName }}) error
 	Update(ctx context.Context, entity *models.{{ .PascalName }}, columns ...string) error
@@ -30,7 +30,7 @@ func NewRepository(db *bun.DB) Repository {
 	return &repository{db: db}
 }
 
-func (r *repository) Count(ctx context.Context, query List{{ .PascalName }}Query) (int, error) {
+func (r *repository) Count(ctx context.Context, query List{{ .PascalName }}QueryParams) (int, error) {
 	q := r.db.NewSelect().Model((*models.{{ .PascalName }})(nil))
 	if query.Search != "" {
 		q = q.Where("name ILIKE ?", "%"+query.Search+"%")
@@ -42,7 +42,7 @@ func (r *repository) Count(ctx context.Context, query List{{ .PascalName }}Query
 	return q.Count(ctx)
 }
 
-func (r *repository) List(ctx context.Context, query List{{ .PascalName }}Query, offset, limit int) ([]models.{{ .PascalName }}, error) {
+func (r *repository) List(ctx context.Context, query List{{ .PascalName }}QueryParams, offset, limit int) ([]models.{{ .PascalName }}, error) {
 	var list []models.{{ .PascalName }}
 	q := r.db.NewSelect().Model(&list)
 

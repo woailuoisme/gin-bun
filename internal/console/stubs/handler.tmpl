@@ -3,7 +3,6 @@ package {{ .PackageName }}
 import (
 	"github.com/gin-gonic/gin"
 
-	"bgin/internal/platform/errs"
 	"bgin/internal/platform/response"
 )
 
@@ -23,14 +22,14 @@ func NewHandler(service Service) *Handler {
 // @Tags         {{ .TagName }}
 // @Accept       json
 // @Produce      json
-// @Param        query query List{{ .PascalName }}Query false "分页查询条件"
-// @Success      200 {object} {{ .PascalName }}Page "查询成功并返回分页列表"
+// @Param        query query List{{ .PascalName }}QueryParams false "分页查询条件"
+// @Success      200 {object} {{ .PascalName }}PageResource "查询成功并返回分页列表"
 // @x-order      1
 // @Router       {{ .RoutePath }} [get]
 func (h *Handler) List(c *gin.Context) {
-	var query List{{ .PascalName }}Query
+	var query List{{ .PascalName }}QueryParams
 	if err := c.ShouldBindQuery(&query); err != nil {
-		_ = c.Error(errs.BadRequest(err.Error()))
+		_ = c.Error(err)
 		return
 	}
 	query.Normalize()
@@ -50,19 +49,19 @@ func (h *Handler) List(c *gin.Context) {
 // @Tags         {{ .TagName }}
 // @Accept       json
 // @Produce      json
-// @Param        payload body Create{{ .PascalName }}Request true "创建数据载荷"
-// @Success      201 {object} {{ .PascalName }}Response "创建成功"
+// @Param        payload body Create{{ .PascalName }}Body true "创建数据载荷"
+// @Success      201 {object} {{ .PascalName }}Resource "创建成功"
 // @x-order      2
 // @Router       {{ .RoutePath }} [post]
 func (h *Handler) Create(c *gin.Context) {
-	var req Create{{ .PascalName }}Request
-	if err := c.ShouldBindJSON(&req); err != nil {
-		_ = c.Error(errs.BadRequest(err.Error()))
+	var body Create{{ .PascalName }}Body
+	if err := c.ShouldBindJSON(&body); err != nil {
+		_ = c.Error(err)
 		return
 	}
-	req.Normalize()
+	body.Normalize()
 
-	res, err := h.service.Create(c.Request.Context(), req)
+	res, err := h.service.Create(c.Request.Context(), body)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -78,17 +77,17 @@ func (h *Handler) Create(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id path string true "{{ .ChineseName }} ID"
-// @Success      200 {object} {{ .PascalName }}Response "获取成功"
+// @Success      200 {object} {{ .PascalName }}Resource "获取成功"
 // @x-order      3
 // @Router       {{ .RoutePath }}/{id} [get]
 func (h *Handler) GetByID(c *gin.Context) {
-	var uri IDURI
-	if err := c.ShouldBindUri(&uri); err != nil {
-		_ = c.Error(errs.BadRequest(err.Error()))
+	var pathParams {{ .PascalName }}PathParams
+	if err := c.ShouldBindUri(&pathParams); err != nil {
+		_ = c.Error(err)
 		return
 	}
 
-	res, err := h.service.GetByID(c.Request.Context(), uri.ID)
+	res, err := h.service.GetByID(c.Request.Context(), pathParams.ID)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -104,25 +103,25 @@ func (h *Handler) GetByID(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id path string true "{{ .ChineseName }} ID"
-// @Param        payload body Update{{ .PascalName }}Request true "更新字段载荷"
-// @Success      200 {object} {{ .PascalName }}Response "更新成功"
+// @Param        payload body Update{{ .PascalName }}Body true "更新字段载荷"
+// @Success      200 {object} {{ .PascalName }}Resource "更新成功"
 // @x-order      4
 // @Router       {{ .RoutePath }}/{id} [patch]
 func (h *Handler) Update(c *gin.Context) {
-	var uri IDURI
-	if err := c.ShouldBindUri(&uri); err != nil {
-		_ = c.Error(errs.BadRequest(err.Error()))
+	var pathParams {{ .PascalName }}PathParams
+	if err := c.ShouldBindUri(&pathParams); err != nil {
+		_ = c.Error(err)
 		return
 	}
 
-	var req Update{{ .PascalName }}Request
-	if err := c.ShouldBindJSON(&req); err != nil {
-		_ = c.Error(errs.BadRequest(err.Error()))
+	var body Update{{ .PascalName }}Body
+	if err := c.ShouldBindJSON(&body); err != nil {
+		_ = c.Error(err)
 		return
 	}
-	req.Normalize()
+	body.Normalize()
 
-	res, err := h.service.Update(c.Request.Context(), uri.ID, req)
+	res, err := h.service.Update(c.Request.Context(), pathParams.ID, body)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -142,13 +141,13 @@ func (h *Handler) Update(c *gin.Context) {
 // @x-order      5
 // @Router       {{ .RoutePath }}/{id} [delete]
 func (h *Handler) Delete(c *gin.Context) {
-	var uri IDURI
-	if err := c.ShouldBindUri(&uri); err != nil {
-		_ = c.Error(errs.BadRequest(err.Error()))
+	var pathParams {{ .PascalName }}PathParams
+	if err := c.ShouldBindUri(&pathParams); err != nil {
+		_ = c.Error(err)
 		return
 	}
 
-	if err := h.service.Delete(c.Request.Context(), uri.ID); err != nil {
+	if err := h.service.Delete(c.Request.Context(), pathParams.ID); err != nil {
 		_ = c.Error(err)
 		return
 	}

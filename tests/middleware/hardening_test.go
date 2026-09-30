@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"bgin/internal/middleware"
+	"bgin/internal/middleware/global"
 )
 
 // TestSecurityHeaders 锁定安全响应头这道防线，以及 HSTS 只在生产下发的边界。
@@ -17,7 +17,7 @@ func TestSecurityHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	serve := func(production bool) *httptest.ResponseRecorder {
-		mw := middleware.New(middleware.Deps{Production: production})
+		mw := global.New(global.Deps{Production: production})
 		engine := gin.New()
 		engine.Use(mw.SecurityHeaders())
 		engine.GET("/ping", func(c *gin.Context) { c.String(http.StatusOK, "pong") })
@@ -47,7 +47,7 @@ func TestSecurityHeaders(t *testing.T) {
 // TestRecovery 锁定 panic 边界的对外行为：状态码统一为 500，响应体不带任何内部细节。
 func TestRecovery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	mw := middleware.New(middleware.Deps{})
+	mw := global.New(global.Deps{})
 
 	engine := gin.New()
 	// 链序与生产一致：Recovery 只负责恢复并记日志，500 由更外层的 ErrorHandler 统一渲染；
