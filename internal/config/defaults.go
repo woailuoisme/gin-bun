@@ -11,7 +11,7 @@ import (
 
 // setDefaults 集中注册所有配置项的开箱即用默认值。
 func setDefaults(v *viper.Viper) {
-	// App
+	// 应用
 	v.SetDefault("app_name", "bgin")
 	v.SetDefault("app_env", "local")
 	v.SetDefault("app_debug", false)
@@ -20,7 +20,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("app_url", "http://localhost:3300")
 	v.SetDefault("app_timezone", "UTC")
 
-	// HTTP Server
+	// HTTP 服务
 	v.SetDefault("http_read_header_timeout", 10*time.Second)
 	v.SetDefault("http_read_timeout", 15*time.Second)
 	v.SetDefault("http_write_timeout", 35*time.Second)
@@ -29,7 +29,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("http_max_header_bytes", 1048576)
 	v.SetDefault("http_request_timeout", 15*time.Second)
 
-	// Database
+	// 数据库
 	v.SetDefault("db_max_open_conns", 10)
 	v.SetDefault("db_max_idle_conns", 10)
 	v.SetDefault("db_conn_max_lifetime", 30*time.Minute)
@@ -40,10 +40,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("db_slow_threshold", 200*time.Millisecond)
 	v.SetDefault("db_debug", false)
 
-	// Seed
+	// 播种
 	v.SetDefault("seed_admin_name", "Administrator")
 
-	// Storage
+	// 存储
 	v.SetDefault("filesystem_disk", "local")
 	v.SetDefault("storage_local_root", "./storage/app/uploads")
 	v.SetDefault("aws_default_region", "us-east-1")
@@ -54,7 +54,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("jwt_ttl", 15*time.Minute)
 	v.SetDefault("jwt_refresh_ttl", 720*time.Hour)
 
-	// Mail
+	// 邮件
 	v.SetDefault("mail_driver", "mailpit")
 	v.SetDefault("mail_from_address", "no-reply@bgin.local")
 	v.SetDefault("mail_from_name", "bgin")
@@ -62,35 +62,35 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("mailpit_port", 1025)
 	v.SetDefault("resend_base_url", "https://api.resend.com")
 
-	// I18n
+	// 国际化
 	v.SetDefault("app_locale", "en")
 
-	// Log
+	// 日志
 	v.SetDefault("log_level", "info")
 	v.SetDefault("log_channel", "console")
 
-	// Auth
+	// 认证
 	v.SetDefault("require_email_verification", false)
 	v.SetDefault("otp_ttl", 10*time.Minute)
 	v.SetDefault("otp_max_attempts", 5)
 	v.SetDefault("password_reset_ttl", 30*time.Minute)
 
-	// Limiter
+	// 限流
 	v.SetDefault("ratelimit_anonymous", 60)
 	v.SetDefault("ratelimit_authenticated", 300)
 	v.SetDefault("ratelimit_sensitive", 10)
 
-	// Centrifugo (Realtime)
+	// 实时通信 (Centrifugo)
 	v.SetDefault("centrifugo_enabled", false)
 	v.SetDefault("centrifugo_token_ttl", 2*time.Hour)
 
-	// EventBus
+	// 事件总线
 	v.SetDefault("eventbus_driver", "go_channel")
 	v.SetDefault("eventbus_topic_prefix", "bgin")
 	v.SetDefault("eventbus_log_level", "warn")
 	v.SetDefault("eventbus_buffer_size", 2048)
 
-	// Media
+	// 媒体
 	v.SetDefault("media_max_file_size", int64(20971520))
 	v.SetDefault("media_default_collection", "default")
 	v.SetDefault("imgproxy_enabled", false)
@@ -99,28 +99,28 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("imgproxy_default_format", "webp")
 	v.SetDefault("imgproxy_default_quality", 85)
 
-	// Notification
+	// 通知
 	v.SetDefault("notification_worker_pool", 10)
 	v.SetDefault("notification_queue_size", 100)
 	v.SetDefault("notification_gotify_priority", 5)
-	// notification_sms_driver 故意不设默认值：非生产环境由通知装配层回落到 log 驱动，
-	// 生产环境则归一为 none。若在此填入 "log"，生产部署会带着日志驱动启动并把验证码写进日志。
+	// notification_sms_driver 故意不设默认：非生产由装配层回落 log，生产归一为 none。
+
 	v.SetDefault("notification_sms_tencent_region", "ap-guangzhou")
 	v.SetDefault("notification_telegram_api_url", "https://api.telegram.org")
 
-	// Payment
+	// 支付
 	v.SetDefault("payment_fake_enabled", false)
 	v.SetDefault("payment_certs_dir", "./storage/app/certs")
 
-	// Queue
+	// 队列
 	v.SetDefault("queue_concurrency", 10)
 	v.SetDefault("queue_shutdown_timeout", 10*time.Second)
 
-	// Scout
+	// 搜索
 	v.SetDefault("scout_driver", "noop")
 	v.SetDefault("meilisearch_host", "http://127.0.0.1:7700")
 
-	// Services
+	// 外部服务
 	v.SetDefault("geoip_enabled", false)
 	v.SetDefault("geoip_db_path", "./storage/app/geoip/ip2region_v4.xdb")
 	v.SetDefault("excel_temp_path", ".cache/excel")

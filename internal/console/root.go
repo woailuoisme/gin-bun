@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/dromara/carbon/v2"
 	"github.com/spf13/cobra"
@@ -24,6 +25,10 @@ var (
 	date    = "unknown"
 )
 
+// ErrCanceled 表示用户在交互式确认中主动放弃了操作。
+// 顶层 CLI 入口可通过 errors.Is(err, console.ErrCanceled) 拦截并以退出码 0 优雅退出。
+var ErrCanceled = core.ErrCanceled
+
 // SetVersion 供 main 注入构建元信息。
 func SetVersion(v, c, d string) {
 	version, commit, date = v, c, d
@@ -31,7 +36,12 @@ func SetVersion(v, c, d string) {
 
 // Execute 解析命令行并执行选中的命令。
 func Execute(ctx context.Context, args []string) error {
-	cmd := NewRootCommand()
+	return ExecuteWithFactory(ctx, NewDefaultFactory(), args)
+}
+
+// ExecuteWithFactory 注入依赖工厂，解析命令行并执行选中的命令。
+func ExecuteWithFactory(ctx context.Context, f Factory, args []string) error {
+	cmd := NewRootCommandWithFactory(f)
 	// 如果传入包含可执行程序名自身的 argv（如 os.Args），切掉程序名
 	if len(args) > 0 && (args[0] == "bgin" || filepath.Base(args[0]) == filepath.Base(os.Args[0])) {
 		args = args[1:]
@@ -40,8 +50,13 @@ func Execute(ctx context.Context, args []string) error {
 	return cmd.ExecuteContext(ctx)
 }
 
-// NewRootCommand 组装根命令与全部子命令。
+// NewRootCommand 组装根命令与全部子命令，使用默认依赖工厂。
 func NewRootCommand() *cobra.Command {
+	return NewRootCommandWithFactory(NewDefaultFactory())
+}
+
+// NewRootCommandWithFactory 注入依赖工厂并组装根命令与全部子命令 (IoC & DIP)。
+func NewRootCommandWithFactory(f Factory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "bgin",
 		Short:         "bgin application console",
@@ -49,6 +64,18 @@ func NewRootCommand() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			if streams := f.IOStreams(); streams != nil {
+				if out := cmd.OutOrStdout(); out != nil {
+					streams.Out = out
+				}
+				if errOut := cmd.ErrOrStderr(); errOut != nil {
+					streams.ErrOut = errOut
+				}
+				if in := cmd.InOrStdin(); in != nil {
+					streams.In = in
+				}
+			}
+
 			cfg, err := config.Load()
 			if err != nil {
 				// 刻意不阻断：route list、make:* 等命令无需完整配置即可工作。
@@ -67,94 +94,35 @@ func NewRootCommand() *cobra.Command {
 	core.SetupColoredHelp(cmd)
 
 	// 注册以命名空间命名的业务命令分类组（Laravel Artisan 风格分组）
-	groupDB := &cobra.Group{
-		ID:    "db",
-		Title: "db",
+	for _, id := range []string{"db", "geoip", "jwt", "make", "queue", "route", "scout"} {
+		cmd.AddGroup(&cobra.Group{ID: id, Title: id})
 	}
-	groupJWT := &cobra.Group{
-		ID:    "jwt",
-		Title: "jwt",
-	}
-	groupMake := &cobra.Group{
-		ID:    "make",
-		Title: "make",
-	}
-	groupQueue := &cobra.Group{
-		ID:    "queue",
-		Title: "queue",
-	}
-	groupRoute := &cobra.Group{
-		ID:    "route",
-		Title: "route",
-	}
-	groupScout := &cobra.Group{
-		ID:    "scout",
-		Title: "scout",
-	}
-
-	cmd.AddGroup(groupDB, groupJWT, groupMake, groupQueue, groupRoute, groupScout)
-
-	// 通用与基础服务命令（无前缀，归属于根级 Available commands）
-	serveCmd := newServeCmd()
-
-	// 数据库命令（db:migrate, db:seed, db:fresh）
-	dbMigrateCmd := newDBMigrateCmd()
-	dbMigrateCmd.GroupID = groupDB.ID
-
-	dbSeedCmd := newDBSeedCmd()
-	dbSeedCmd.GroupID = groupDB.ID
-
-	dbFreshCmd := newDBFreshCmd()
-	dbFreshCmd.GroupID = groupDB.ID
-
-	// JWT 安全凭据命令（jwt:secret）
-	jwtSecretCmd := newJWTSecretCmd()
-	jwtSecretCmd.GroupID = groupJWT.ID
-
-	// 代码生成命令（make:crud）
-	makeCRUDCmd := newMakeCRUDCmd()
-	makeCRUDCmd.GroupID = groupMake.ID
-
-	// 异步队列命令（queue:work, queue:failed, queue:retry, queue:flush）
-	queueWorkCmd := newQueueWorkCmd()
-	queueWorkCmd.GroupID = groupQueue.ID
-
-	queueFailedCmd := newQueueFailedCmd()
-	queueFailedCmd.GroupID = groupQueue.ID
-
-	queueRetryCmd := newQueueRetryCmd()
-	queueRetryCmd.GroupID = groupQueue.ID
-
-	queueFlushCmd := newQueueFlushCmd()
-	queueFlushCmd.GroupID = groupQueue.ID
-
-	// 路由诊断命令（route:list）
-	routeListCmd := newRouteListCmd()
-	routeListCmd.GroupID = groupRoute.ID
-
-	// 搜索引擎命令（scout:import, scout:flush）
-	scoutImportCmd := newScoutImportCmd()
-	scoutImportCmd.GroupID = groupScout.ID
-
-	scoutFlushCmd := newScoutFlushCmd()
-	scoutFlushCmd.GroupID = groupScout.ID
 
 	// 挂载纯冒号 Artisan 风格一等公民命令
-	cmd.AddCommand(
-		serveCmd,
-		dbMigrateCmd,
-		dbSeedCmd,
-		dbFreshCmd,
-		jwtSecretCmd,
-		makeCRUDCmd,
-		queueWorkCmd,
-		queueFailedCmd,
-		queueRetryCmd,
-		queueFlushCmd,
-		routeListCmd,
-		scoutImportCmd,
-		scoutFlushCmd,
-	)
+	commands := []*cobra.Command{
+		newServeCmd(f),
+		newDBMigrateCmd(f),
+		newDBSeedCmd(f),
+		newDBFreshCmd(f),
+		newGeoIPUpdateCmd(f),
+		newJWTSecretCmd(f),
+		newMakeCRUDCmd(f),
+		newQueueWorkCmd(f),
+		newQueueFailedCmd(f),
+		newQueueRetryCmd(f),
+		newQueueFlushCmd(f),
+		newRouteListCmd(f),
+		newScoutImportCmd(f),
+		newScoutFlushCmd(f),
+	}
+
+	for _, subCmd := range commands {
+		if prefix, _, ok := strings.Cut(subCmd.Name(), ":"); ok {
+			subCmd.GroupID = prefix
+		}
+	}
+
+	cmd.AddCommand(commands...)
 
 	return cmd
 }

@@ -9,7 +9,7 @@ import (
 var matchFirstCap = regexp.MustCompile("(.)([A-Z][a-z]+)")
 var matchAllCap = regexp.MustCompile("([a-z0-9])([A-Z])")
 
-// ToSnakeCase converts a string (CamelCase, PascalCase, kebab-case, or spaces) to snake_case.
+// ToSnakeCase 把 CamelCase / PascalCase / kebab-case / 空格分隔的字符串转为 snake_case。
 func ToSnakeCase(str string) string {
 	s := strings.TrimSpace(str)
 	s = strings.ReplaceAll(s, "-", "_")
@@ -19,12 +19,12 @@ func ToSnakeCase(str string) string {
 	return strings.ToLower(snake)
 }
 
-// ToKebabCase converts a string to kebab-case.
+// ToKebabCase 把字符串转为 kebab-case。
 func ToKebabCase(str string) string {
 	return strings.ReplaceAll(ToSnakeCase(str), "_", "-")
 }
 
-// ToPascalCase converts a string (snake_case, kebab-case, space separated) to PascalCase.
+// ToPascalCase 把 snake_case / kebab-case / 空格分隔的字符串转为 PascalCase。
 func ToPascalCase(str string) string {
 	words := splitWords(str)
 	var sb strings.Builder
@@ -38,7 +38,7 @@ func ToPascalCase(str string) string {
 	return sb.String()
 }
 
-// ToCamelCase converts a string to camelCase.
+// ToCamelCase 把字符串转为 camelCase。
 func ToCamelCase(str string) string {
 	pascal := ToPascalCase(str)
 	if len(pascal) == 0 {
@@ -47,7 +47,7 @@ func ToCamelCase(str string) string {
 	return strings.ToLower(pascal[:1]) + pascal[1:]
 }
 
-// splitWords splits an arbitrary string into lowercase words based on separators or camelCase boundaries.
+// splitWords 按分隔符或驼峰边界把字符串切成小写单词。
 func splitWords(s string) []string {
 	snake := ToSnakeCase(s)
 	raw := strings.Split(snake, "_")
@@ -61,7 +61,7 @@ func splitWords(s string) []string {
 	return result
 }
 
-// Pluralize produces a pragmatic English plural form for standard model/resource nouns.
+// Pluralize 为模型/资源名词生成务实可用的英文复数形式。
 func Pluralize(noun string) string {
 	s := strings.TrimSpace(noun)
 	if len(s) == 0 {
@@ -70,7 +70,7 @@ func Pluralize(noun string) string {
 	lower := strings.ToLower(s)
 	lastChar := lower[len(lower)-1]
 
-	// Irregular / special cases
+	// 不规则与特殊形式
 	switch lower {
 	case "person":
 		return matchCase(s, "people")
@@ -82,23 +82,23 @@ func Pluralize(noun string) string {
 		return matchCase(s, "women")
 	}
 
-	// -y preceded by a consonant: category -> categories
+	// 辅音 + y：category -> categories
 	if lastChar == 'y' && len(lower) > 1 && !isVowel(lower[len(lower)-2]) {
 		return s[:len(s)-1] + "ies"
 	}
 
-	// -s, -sh, -ch, -x, -z: bus -> buses, box -> boxes
+	// s/sh/ch/x/z 结尾：bus -> buses, box -> boxes
 	if strings.HasSuffix(lower, "s") || strings.HasSuffix(lower, "sh") ||
 		strings.HasSuffix(lower, "ch") || strings.HasSuffix(lower, "x") ||
 		strings.HasSuffix(lower, "z") {
 		return s + "es"
 	}
 
-	// Default append 's'
+	// 默认加 s
 	return s + "s"
 }
 
-// Singularize produces a pragmatic English singular form for standard model/resource nouns.
+// Singularize 为模型/资源名词生成务实可用的英文单数形式。
 func Singularize(noun string) string {
 	s := strings.TrimSpace(noun)
 	if len(s) == 0 {

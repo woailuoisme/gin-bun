@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -17,76 +18,125 @@ import (
 // jwtSecretRegexp 匹配 .env 中已存在的 JWT_SECRET 配置行。
 var jwtSecretRegexp = regexp.MustCompile(`(?m)^JWT_SECRET=(.*)$`)
 
+// JWTSecretOptions 封装 jwt:secret 命令的参数与依赖容器 (SRP & DIP)。
+type JWTSecretOptions struct {
+	Show    bool
+	Force   bool
+	EnvPath string
+	Factory Factory
+}
+
+// NewJWTSecretOptions 构造 JWTSecretOptions 实例。
+func NewJWTSecretOptions(f Factory) *JWTSecretOptions {
+	return &JWTSecretOptions{
+		EnvPath: ".env",
+		Factory: f,
+	}
+}
+
+// Complete 从命令行上下文解析并补全配置。
+func (o *JWTSecretOptions) Complete(_ *cobra.Command, _ []string) error {
+	return nil
+}
+
+// Validate 校验命令选项合法性。
+func (o *JWTSecretOptions) Validate() error {
+	if o.EnvPath == "" {
+		return &ValidationError{Field: "envPath", Message: "cannot be empty"}
+	}
+	return nil
+}
+
+// Run 执行 JWT 密钥生成或写入。
+func (o *JWTSecretOptions) Run(_ context.Context) error {
+	secret, err := GenerateRandomSecret(32)
+	if err != nil {
+		return fmt.Errorf("failed to generate secret: %w", err)
+	}
+
+	ioStreams := o.Factory.IOStreams()
+	if o.Show {
+		_, _ = fmt.Fprintln(ioStreams.Out, secret)
+		return nil
+	}
+
+	o.ensureEnvFile()
+
+	content, err := os.ReadFile(o.EnvPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to read %s: %w", o.EnvPath, err)
+	}
+
+	strContent := string(content)
+	matches := jwtSecretRegexp.FindStringSubmatch(strContent)
+
+	if len(matches) > 1 && strings.TrimSpace(matches[1]) != "" && !o.Force {
+		confirmed, err := o.Factory.Prompter().Confirm(
+			"A valid JWT_SECRET already exists in .env. Overwrite it?",
+			"This will invalidate all previously issued tokens.",
+			"Yes, overwrite",
+		)
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			core.WarnTo(ioStreams.Out, "JWT secret update cancelled.")
+			return nil
+		}
+	}
+
+	var newContent string
+	if jwtSecretRegexp.MatchString(strContent) {
+		newContent = jwtSecretRegexp.ReplaceAllString(strContent, "JWT_SECRET="+secret)
+	} else {
+		if len(strContent) > 0 && !strings.HasSuffix(strContent, "\n") {
+			strContent += "\n"
+		}
+		newContent = strContent + "JWT_SECRET=" + secret + "\n"
+	}
+
+	if err := os.WriteFile(o.EnvPath, []byte(newContent), 0o600); err != nil {
+		return fmt.Errorf("failed to write %s: %w", o.EnvPath, err)
+	}
+
+	core.SuccessTo(ioStreams.Out, "JWT secret [%s] set successfully.", secret)
+	return nil
+}
+
+func (o *JWTSecretOptions) ensureEnvFile() {
+	if _, err := os.Stat(o.EnvPath); !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	exampleContent, err := os.ReadFile(".env.example")
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(o.EnvPath, exampleContent, 0o600); err == nil {
+		core.TitleTo(o.Factory.IOStreams().Out, ".env file not found, created from .env.example.")
+	}
+}
+
 // newJWTSecretCmd 创建或更新 .env 中的 JWT_SECRET 签名密钥（仿照 Laravel artisan jwt:secret）。
-func newJWTSecretCmd() *cobra.Command {
-	var show bool
-	var force bool
+func newJWTSecretCmd(f Factory) *cobra.Command {
+	opts := NewJWTSecretOptions(f)
 
 	cmd := &cobra.Command{
 		Use:   "jwt:secret",
 		Short: "Set the JWT secret key in .env file",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			// 1. 生成 32 字节高强度随机密钥并做 base64 编码 (44 字符，完全满足 >= 32 位安全要求)
-			secret, err := GenerateRandomSecret(32)
-			if err != nil {
-				return fmt.Errorf("failed to generate secret: %w", err)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := opts.Complete(cmd, args); err != nil {
+				return err
 			}
-
-			if show {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), secret)
-				return nil
+			if err := opts.Validate(); err != nil {
+				return err
 			}
-
-			// 2. 检查 .env 文件是否存在；不存在时若有 .env.example 则拷贝一份作为起点
-			envPath := ".env"
-			ensureEnvFile(cmd, envPath)
-
-			// 3. 读取 .env 内容
-			content, err := os.ReadFile(envPath)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("failed to read %s: %w", envPath, err)
-			}
-
-			strContent := string(content)
-			matches := jwtSecretRegexp.FindStringSubmatch(strContent)
-
-			// 若已存在且非空，未加 --force 时需进行交互确认
-			if len(matches) > 1 && strings.TrimSpace(matches[1]) != "" && !force {
-				confirmed, err := core.Confirm("A valid JWT_SECRET already exists in .env. Overwrite it?",
-					"This will invalidate all previously issued tokens.",
-					"Yes, overwrite")
-				if err != nil {
-					return err
-				}
-				if !confirmed {
-					core.Warn(cmd, "JWT secret update cancelled.")
-					return nil
-				}
-			}
-
-			// 4. 替换现有键值或在末尾追加
-			var newContent string
-			if jwtSecretRegexp.MatchString(strContent) {
-				newContent = jwtSecretRegexp.ReplaceAllString(strContent, "JWT_SECRET="+secret)
-			} else {
-				if len(strContent) > 0 && !strings.HasSuffix(strContent, "\n") {
-					strContent += "\n"
-				}
-				newContent = strContent + "JWT_SECRET=" + secret + "\n"
-			}
-
-			if err := os.WriteFile(envPath, []byte(newContent), 0o600); err != nil {
-				return fmt.Errorf("failed to write %s: %w", envPath, err)
-			}
-
-			core.Success(cmd, "JWT secret [%s] set successfully.", secret)
-			return nil
+			return opts.Run(cmd.Context())
 		},
 	}
 
-	cmd.Flags().BoolVarP(&show, "show", "s", false, "Display the key instead of modifying files")
-	cmd.Flags().BoolVarP(&force, core.FlagForce, "f", false, "Skip confirmation prompt when overwriting an existing key")
+	cmd.Flags().BoolVarP(&opts.Show, "show", "s", false, "Display the key instead of modifying files")
+	cmd.Flags().BoolVarP(&opts.Force, core.FlagForce, "f", false, "Skip confirmation prompt when overwriting an existing key")
 
 	return cmd
 }
@@ -98,18 +148,4 @@ func GenerateRandomSecret(byteLength int) (string, error) {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(b), nil
-}
-
-// ensureEnvFile 检查目标环境文件是否存在，若不存在则尝试从 .env.example 复制一份作为起点。
-func ensureEnvFile(cmd *cobra.Command, envPath string) {
-	if _, err := os.Stat(envPath); !errors.Is(err, os.ErrNotExist) {
-		return
-	}
-	exampleContent, err := os.ReadFile(".env.example")
-	if err != nil {
-		return
-	}
-	if err := os.WriteFile(envPath, exampleContent, 0o600); err == nil {
-		core.Title(cmd, ".env file not found, created from .env.example.")
-	}
 }

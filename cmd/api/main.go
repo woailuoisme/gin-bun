@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -48,6 +49,11 @@ func main() {
 	console.SetVersion(version, commit, date)
 
 	if err := console.Execute(context.Background(), os.Args); err != nil {
+		// 用户在交互式控制台中主动选择取消属于正常意图分支，静默以退出码 0 退出，避免产生虚假错误日志
+		if errors.Is(err, console.ErrCanceled) {
+			os.Exit(0)
+		}
+
 		log := logger.Default()
 		// 通过结构化日志记录致命退出事件（生产 JSON 模式下供 APM/Loki 搜集）
 		log.Error("process terminated with error", zap.Error(err))

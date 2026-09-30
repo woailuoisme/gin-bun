@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -27,103 +28,139 @@ type RouteEntry struct {
 	RawHandler string `json:"raw_handler"`
 }
 
+// RouteListOptions 封装 route:list 命令的参数与依赖容器 (SRP & DIP)。
+type RouteListOptions struct {
+	MethodFilter string
+	PathFilter   string
+	SortField    string
+	Reverse      bool
+	JSONOutput   bool
+	Interactive  bool
+	Factory      Factory
+}
+
+// NewRouteListOptions 构造 RouteListOptions 实例。
+func NewRouteListOptions(f Factory) *RouteListOptions {
+	return &RouteListOptions{
+		SortField: "path",
+		Factory:   f,
+	}
+}
+
+// Complete 从命令行上下文解析并补全配置。
+func (o *RouteListOptions) Complete(_ *cobra.Command, _ []string) error {
+	return nil
+}
+
+// Validate 校验路由查询与排序选项。
+func (o *RouteListOptions) Validate() error {
+	sort := strings.ToLower(strings.TrimSpace(o.SortField))
+	if sort != "" && sort != "path" && sort != "method" && sort != "handler" {
+		return &ValidationError{Field: "sort", Message: "must be one of: path, method, handler"}
+	}
+	return nil
+}
+
+// Run 执行路由列表提取与表格渲染。
+func (o *RouteListOptions) Run(_ context.Context) error {
+	streams := o.Factory.IOStreams()
+
+	cfg, cfgErr := o.Factory.Config()
+	if cfgErr != nil || cfg == nil {
+		_, _ = fmt.Fprintf(streams.ErrOut, "warning: load config failed, rendering routes with defaults: %v\n", cfgErr)
+		cfg = config.Default()
+	}
+
+	engine, err := bootstrap.InspectEngine(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to inspect engine routes: %w", err)
+	}
+
+	rawRoutes := engine.Routes()
+	routes := make([]RouteEntry, 0, len(rawRoutes))
+	for _, r := range rawRoutes {
+		if o.MethodFilter != "" && !strings.EqualFold(r.Method, o.MethodFilter) {
+			continue
+		}
+		if o.PathFilter != "" && !strings.Contains(strings.ToLower(r.Path), strings.ToLower(o.PathFilter)) {
+			continue
+		}
+
+		routes = append(routes, RouteEntry{
+			Method:     r.Method,
+			Path:       r.Path,
+			Handler:    formatHandlerName(r.Handler),
+			RawHandler: r.Handler,
+		})
+	}
+
+	slices.SortFunc(routes, func(a, b RouteEntry) int {
+		var res int
+		switch strings.ToLower(o.SortField) {
+		case "method":
+			res = strings.Compare(a.Method, b.Method)
+			if res == 0 {
+				res = strings.Compare(a.Path, b.Path)
+			}
+		case "handler":
+			res = strings.Compare(a.Handler, b.Handler)
+			if res == 0 {
+				res = strings.Compare(a.Path, b.Path)
+			}
+		default: // "path"
+			res = strings.Compare(a.Path, b.Path)
+			if res == 0 {
+				res = strings.Compare(a.Method, b.Method)
+			}
+		}
+		if o.Reverse {
+			return -res
+		}
+		return res
+	})
+
+	if o.JSONOutput {
+		data, err := json.MarshalIndent(routes, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal routes to JSON: %w", err)
+		}
+		_, _ = fmt.Fprintln(streams.Out, string(data))
+		return nil
+	}
+
+	if o.Interactive {
+		return runInteractiveRouteTable(streams, routes)
+	}
+
+	renderLipglossTable(streams, routes)
+	return nil
+}
+
 // newRouteListCmd 构造列出所有已注册路由的命令。
-func newRouteListCmd() *cobra.Command {
-	var (
-		methodFilter string
-		pathFilter   string
-		sortField    string
-		reverse      bool
-		jsonOutput   bool
-		interactive  bool
-	)
+func newRouteListCmd(f Factory) *cobra.Command {
+	opts := NewRouteListOptions(f)
 
 	cmd := &cobra.Command{
 		Use:   "route:list",
 		Short: "List all registered HTTP routes with methods and handlers",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, cfgErr := config.Load()
-			if cfgErr != nil || cfg == nil {
-				// route list 属自省命令：配置不可用时用最小配置渲染路由表，
-				// 但必须提示结果未必反映真实运行时的中间件行为。
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: load config failed, rendering routes with defaults: %v\n", cfgErr)
-				cfg = config.Default()
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := opts.Complete(cmd, args); err != nil {
+				return err
 			}
-
-			engine, err := bootstrap.InspectEngine(cfg)
-			if err != nil {
-				return fmt.Errorf("failed to inspect engine routes: %w", err)
+			if err := opts.Validate(); err != nil {
+				return err
 			}
-
-			rawRoutes := engine.Routes()
-			routes := make([]RouteEntry, 0, len(rawRoutes))
-			for _, r := range rawRoutes {
-				if methodFilter != "" && !strings.EqualFold(r.Method, methodFilter) {
-					continue
-				}
-				if pathFilter != "" && !strings.Contains(strings.ToLower(r.Path), strings.ToLower(pathFilter)) {
-					continue
-				}
-
-				routes = append(routes, RouteEntry{
-					Method:     r.Method,
-					Path:       r.Path,
-					Handler:    formatHandlerName(r.Handler),
-					RawHandler: r.Handler,
-				})
-			}
-
-			// 排序规则
-			slices.SortFunc(routes, func(a, b RouteEntry) int {
-				var res int
-				switch strings.ToLower(sortField) {
-				case "method":
-					res = strings.Compare(a.Method, b.Method)
-					if res == 0 {
-						res = strings.Compare(a.Path, b.Path)
-					}
-				case "handler":
-					res = strings.Compare(a.Handler, b.Handler)
-					if res == 0 {
-						res = strings.Compare(a.Path, b.Path)
-					}
-				default: // "path"
-					res = strings.Compare(a.Path, b.Path)
-					if res == 0 {
-						res = strings.Compare(a.Method, b.Method)
-					}
-				}
-				if reverse {
-					return -res
-				}
-				return res
-			})
-
-			if jsonOutput {
-				data, err := json.MarshalIndent(routes, "", "  ")
-				if err != nil {
-					return fmt.Errorf("failed to marshal routes to JSON: %w", err)
-				}
-				_, _ = fmt.Fprintln(core.ResolveWriter(cmd), string(data))
-				return nil
-			}
-
-			if interactive {
-				return runInteractiveRouteTable(cmd, routes)
-			}
-
-			renderLipglossTable(cmd, routes)
-			return nil
+			return opts.Run(cmd.Context())
 		},
 	}
 
-	cmd.Flags().StringVarP(&methodFilter, "method", "m", "", "Filter routes by HTTP method (GET, POST, etc.)")
-	cmd.Flags().StringVarP(&pathFilter, "path", "p", "", "Filter routes by URI path pattern")
-	cmd.Flags().StringVarP(&sortField, "sort", "s", "path", "Sort by column: path, method, handler")
-	cmd.Flags().BoolVarP(&reverse, "reverse", "r", false, "Reverse route sorting order")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output route list as formatted JSON")
-	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Explore routes interactively using bubbles/table TUI")
+	cmd.Flags().StringVarP(&opts.MethodFilter, "method", "m", "", "Filter routes by HTTP method (GET, POST, etc.)")
+	cmd.Flags().StringVarP(&opts.PathFilter, "path", "p", "", "Filter routes by URI path pattern")
+	cmd.Flags().StringVarP(&opts.SortField, "sort", "s", "path", "Sort by column: path, method, handler")
+	cmd.Flags().BoolVarP(&opts.Reverse, "reverse", "r", false, "Reverse route sorting order")
+	cmd.Flags().BoolVar(&opts.JSONOutput, "json", false, "Output route list as formatted JSON")
+	cmd.Flags().BoolVarP(&opts.Interactive, "interactive", "i", false, "Explore routes interactively using bubbles/table TUI")
 
 	return cmd
 }
@@ -163,14 +200,13 @@ func methodStyle(method string) lipgloss.Style {
 }
 
 // renderLipglossTable 采用 lipgloss/table 渲染标准 ANSI 静态彩色表格。
-func renderLipglossTable(cmd *cobra.Command, routes []RouteEntry) {
-	writer := core.ResolveWriter(cmd)
+func renderLipglossTable(streams *core.IOStreams, routes []RouteEntry) {
 	if len(routes) == 0 {
-		core.Warn(cmd, "No routes found matching current filter criteria.")
+		core.WarnTo(streams.Out, "No routes found matching current filter criteria.")
 		return
 	}
 
-	core.Title(cmd, fmt.Sprintf("HTTP Route List (%d routes registered)", len(routes)))
+	core.TitleTo(streams.Out, fmt.Sprintf("HTTP Route List (%d routes registered)", len(routes)))
 
 	rows := make([][]string, len(routes))
 	for i, r := range routes {
@@ -205,8 +241,8 @@ func renderLipglossTable(cmd *cobra.Command, routes []RouteEntry) {
 	}
 	t.Width(termWidth)
 
-	_, _ = fmt.Fprintln(writer, t.Render())
-	core.Info(cmd, "Total: %d routes", len(routes))
+	_, _ = fmt.Fprintln(streams.Out, t.Render())
+	core.InfoTo(streams.Out, "Total: %d routes", len(routes))
 }
 
 // routeTUIModel 是基于 bubbles/table 的全屏交互式 Bubble Tea 模型。
@@ -244,10 +280,10 @@ func (m routeTUIModel) View() tea.View {
 }
 
 // runInteractiveRouteTable 唤起全屏 bubbles/table 交互式浏览窗口。
-func runInteractiveRouteTable(cmd *cobra.Command, routes []RouteEntry) error {
-	if !core.IsInteractive() {
-		core.Warn(cmd, "Interactive mode requires a TTY terminal, falling back to standard table.")
-		renderLipglossTable(cmd, routes)
+func runInteractiveRouteTable(streams *core.IOStreams, routes []RouteEntry) error {
+	if !streams.CanPrompt() {
+		core.WarnTo(streams.Out, "Interactive mode requires a TTY terminal, falling back to standard table.")
+		renderLipglossTable(streams, routes)
 		return nil
 	}
 
@@ -283,7 +319,7 @@ func runInteractiveRouteTable(cmd *cobra.Command, routes []RouteEntry) error {
 	)
 
 	m := routeTUIModel{table: t, routes: routes}
-	p := tea.NewProgram(m, tea.WithOutput(core.ResolveWriter(cmd)))
+	p := tea.NewProgram(m, tea.WithOutput(streams.Out))
 	_, err := p.Run()
 	return err
 }

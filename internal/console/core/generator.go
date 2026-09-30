@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go/format"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,104 +129,151 @@ func BuildTemplateData(opts GeneratorOptions) TemplateData {
 	}
 }
 
-// FilePlan 描述一个待生成的目标文件与模板对应关系。
-type FilePlan struct {
+// PlannedFile 描述待生成文件的路径、模板名与渲染上下文数据。
+type PlannedFile struct {
 	RelPath  string
 	Template string
+	Data     any
 }
 
-// Plan 生成指定模块全部文件的物理目标规划。
-func Plan(opts GeneratorOptions, data TemplateData) []FilePlan {
-	featureDir := filepath.Join("internal", "features", "client", data.KebabName)
-	if opts.IsAdmin {
-		featureDir = filepath.Join("internal", "features", "admin", data.KebabName)
-	}
-
-	plans := []FilePlan{
-		{RelPath: filepath.Join("internal", "shared", "models", data.SnakeName+".go"), Template: "model.tmpl"},
-		{RelPath: filepath.Join(featureDir, "request.go"), Template: "request.tmpl"},
-		{RelPath: filepath.Join(featureDir, "response.go"), Template: "response.tmpl"},
-		{RelPath: filepath.Join(featureDir, "repository.go"), Template: "repository.tmpl"},
-		{RelPath: filepath.Join(featureDir, "service.go"), Template: "service.tmpl"},
-		{RelPath: filepath.Join(featureDir, "handler.go"), Template: "handler.tmpl"},
-		{RelPath: filepath.Join(featureDir, "routes.go"), Template: "routes.tmpl"},
-	}
-
-	return plans
+// Plan 描述任意脚手架生成规划契约 (OCP & ISP)。
+type Plan interface {
+	Name() string
+	Files() ([]PlannedFile, error)
+	CleanupDirs() []string
 }
 
-// GenerateCRUD 执行完整的 CRUD 模块代码脚手架生成。
-func GenerateCRUD(opts GeneratorOptions) ([]GeneratedResult, error) {
-	if strings.TrimSpace(opts.Name) == "" {
-		return nil, errors.New("module name cannot be empty")
+// CRUDPlan 实现针对 Domain-First CRUD 模块的生成规划契约。
+type CRUDPlan struct {
+	opts GeneratorOptions
+	data TemplateData
+}
+
+// NewCRUDPlan 构造针对 CRUD 模块的生成规划。
+func NewCRUDPlan(opts GeneratorOptions) *CRUDPlan {
+	return &CRUDPlan{
+		opts: opts,
+		data: BuildTemplateData(opts),
 	}
+}
 
-	data := BuildTemplateData(opts)
-	plans := Plan(opts, data)
+// Name 返回当前规划的模块名称。
+func (p *CRUDPlan) Name() string {
+	return p.opts.Name
+}
 
-	rootDir := opts.RootDir
+// Data 返回模板上下文数据。
+func (p *CRUDPlan) Data() TemplateData {
+	return p.data
+}
+
+func (p *CRUDPlan) featureDir() string {
+	scope := "client"
+	if p.opts.IsAdmin {
+		scope = "admin"
+	}
+	return filepath.Join("internal", "features", scope, p.data.KebabName)
+}
+
+// Files 返回 CRUD 规划中全部目标文件及渲染模板。
+func (p *CRUDPlan) Files() ([]PlannedFile, error) {
+	featureDir := p.featureDir()
+	return []PlannedFile{
+		{RelPath: filepath.Join("internal", "shared", "models", p.data.SnakeName+".go"), Template: "model.tmpl", Data: p.data},
+		{RelPath: filepath.Join(featureDir, "request.go"), Template: "request.tmpl", Data: p.data},
+		{RelPath: filepath.Join(featureDir, "response.go"), Template: "response.tmpl", Data: p.data},
+		{RelPath: filepath.Join(featureDir, "repository.go"), Template: "repository.tmpl", Data: p.data},
+		{RelPath: filepath.Join(featureDir, "service.go"), Template: "service.tmpl", Data: p.data},
+		{RelPath: filepath.Join(featureDir, "handler.go"), Template: "handler.tmpl", Data: p.data},
+		{RelPath: filepath.Join(featureDir, "routes.go"), Template: "routes.tmpl", Data: p.data},
+	}, nil
+}
+
+// CleanupDirs 返回该模块在销毁回退时需要尝试清理的目录列表。
+func (p *CRUDPlan) CleanupDirs() []string {
+	return []string{p.featureDir()}
+}
+
+// Pipeline 提供可插拔的代码生成与回退执行管线引擎 (SRP & OCP)。
+type Pipeline struct {
+	TemplateFS fs.FS
+	RootDir    string
+	Force      bool
+	DryRun     bool
+}
+
+// NewPipeline 构造带有默认配置的生成管线实例。
+func NewPipeline(templateFS fs.FS, rootDir string, force, dryRun bool) *Pipeline {
+	if templateFS == nil {
+		templateFS = stubs.FS
+	}
 	if rootDir == "" {
 		rootDir = "."
+	}
+	return &Pipeline{
+		TemplateFS: templateFS,
+		RootDir:    rootDir,
+		Force:      force,
+		DryRun:     dryRun,
+	}
+}
+
+// Execute 调度执行指定的生成规划，完成模板读取、渲染、Go格式化、冲突检测与文件写入。
+func (p *Pipeline) Execute(plan Plan) ([]GeneratedResult, error) {
+	files, err := plan.Files()
+	if err != nil {
+		return nil, err
 	}
 
 	var results []GeneratedResult
 
-	for _, p := range plans {
-		absPath := filepath.Join(rootDir, p.RelPath)
+	for _, f := range files {
+		absPath := filepath.Join(p.RootDir, f.RelPath)
+		_, statErr := os.Stat(absPath)
+		exists := statErr == nil
 
-		// 检查文件是否已存在
-		exists := false
-		if _, err := os.Stat(absPath); err == nil {
-			exists = true
-		}
-
-		if exists && !opts.Force {
+		if exists && !p.Force {
 			results = append(results, GeneratedResult{
-				Path:     p.RelPath,
-				Template: p.Template,
+				Path:     f.RelPath,
+				Template: f.Template,
 				Action:   ActionSkipped,
 				Message:  "file already exists, skipped (use --force to overwrite)",
 			})
 			continue
 		}
 
-		// 读取并渲染模板
-		tmplContent, err := stubs.FS.ReadFile(p.Template)
+		tmplContent, err := fs.ReadFile(p.TemplateFS, f.Template)
 		if err != nil {
-			return results, fmt.Errorf("failed to read template %s: %w", p.Template, err)
+			return results, fmt.Errorf("failed to read template %s: %w", f.Template, err)
 		}
 
-		tmpl, err := template.New(p.Template).Parse(string(tmplContent))
+		tmpl, err := template.New(f.Template).Parse(string(tmplContent))
 		if err != nil {
-			return results, fmt.Errorf("failed to parse template %s: %w", p.Template, err)
+			return results, fmt.Errorf("failed to parse template %s: %w", f.Template, err)
 		}
 
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, data); err != nil {
-			return results, fmt.Errorf("failed to render template %s: %w", p.Template, err)
+		if err := tmpl.Execute(&buf, f.Data); err != nil {
+			return results, fmt.Errorf("failed to render template %s: %w", f.Template, err)
 		}
 
-		// 针对 Go 源码执行标准格式化
 		formatted := buf.Bytes()
-		if strings.HasSuffix(p.RelPath, ".go") {
-			if f, err := format.Source(buf.Bytes()); err == nil {
-				formatted = f
+		if strings.HasSuffix(f.RelPath, ".go") {
+			if src, err := format.Source(buf.Bytes()); err == nil {
+				formatted = src
 			}
 		}
 
-		if opts.DryRun {
+		if p.DryRun {
 			results = append(results, GeneratedResult{
-				Path:     p.RelPath,
-				Template: p.Template,
+				Path:     f.RelPath,
+				Template: f.Template,
 				Action:   ActionDryRun,
 				Message:  fmt.Sprintf("would write %d bytes", len(formatted)),
 			})
 			continue
 		}
 
-		// 确保父目录存在。
-		// 生成物是仓库源码，必须对同仓库其他开发者与 CI 可读，因此显式放宽到 0755/0644，
-		// 并按用途豁免 gosec 的 G301/G306 默认权限要求。
 		parentDir := filepath.Dir(absPath)
 		if err := os.MkdirAll(parentDir, 0o755); err != nil { //nolint:gosec // 生成物目录需对协作者与 CI 可读
 			return results, fmt.Errorf("failed to create directory %s: %w", parentDir, err)
@@ -243,8 +291,8 @@ func GenerateCRUD(opts GeneratorOptions) ([]GeneratedResult, error) {
 		}
 
 		results = append(results, GeneratedResult{
-			Path:     p.RelPath,
-			Template: p.Template,
+			Path:     f.RelPath,
+			Template: f.Template,
 			Action:   action,
 			Message:  msg,
 		})
@@ -253,39 +301,32 @@ func GenerateCRUD(opts GeneratorOptions) ([]GeneratedResult, error) {
 	return results, nil
 }
 
-// DestroyCRUD 回退并安全清理指定 CRUD 模块的生成文件与空目录。
-func DestroyCRUD(opts GeneratorOptions) ([]GeneratedResult, error) {
-	if strings.TrimSpace(opts.Name) == "" {
-		return nil, errors.New("module name cannot be empty")
-	}
-
-	data := BuildTemplateData(opts)
-	plans := Plan(opts, data)
-
-	rootDir := opts.RootDir
-	if rootDir == "" {
-		rootDir = "."
+// Destroy 调度执行指定的规划回退，安全删除生成文件与空目录。
+func (p *Pipeline) Destroy(plan Plan) ([]GeneratedResult, error) {
+	files, err := plan.Files()
+	if err != nil {
+		return nil, err
 	}
 
 	var results []GeneratedResult
 
-	for _, p := range plans {
-		absPath := filepath.Join(rootDir, p.RelPath)
+	for _, f := range files {
+		absPath := filepath.Join(p.RootDir, f.RelPath)
 
 		if _, err := os.Stat(absPath); os.IsNotExist(err) {
 			results = append(results, GeneratedResult{
-				Path:     p.RelPath,
-				Template: p.Template,
+				Path:     f.RelPath,
+				Template: f.Template,
 				Action:   ActionSkipped,
 				Message:  "file does not exist, skipped",
 			})
 			continue
 		}
 
-		if opts.DryRun {
+		if p.DryRun {
 			results = append(results, GeneratedResult{
-				Path:     p.RelPath,
-				Template: p.Template,
+				Path:     f.RelPath,
+				Template: f.Template,
 				Action:   ActionDryRun,
 				Message:  "would delete file",
 			})
@@ -297,22 +338,41 @@ func DestroyCRUD(opts GeneratorOptions) ([]GeneratedResult, error) {
 		}
 
 		results = append(results, GeneratedResult{
-			Path:     p.RelPath,
-			Template: p.Template,
+			Path:     f.RelPath,
+			Template: f.Template,
 			Action:   ActionDeleted,
 			Message:  "successfully deleted",
 		})
 	}
 
-	// 若未处于 DryRun 模式，尝试安全清理可能变空的 feature 目录
-	if !opts.DryRun {
-		featureDir := filepath.Join(rootDir, "internal", "features", "client", data.KebabName)
-		if opts.IsAdmin {
-			featureDir = filepath.Join(rootDir, "internal", "features", "admin", data.KebabName)
+	if !p.DryRun {
+		for _, dir := range plan.CleanupDirs() {
+			absDir := filepath.Join(p.RootDir, dir)
+			_ = os.Remove(absDir)
 		}
-		// os.Remove 仅当目录为空时才会删除，若含有用户自建的其他文件则保留
-		_ = os.Remove(featureDir)
 	}
 
 	return results, nil
+}
+
+// GenerateCRUD 执行完整的 CRUD 模块代码脚手架生成。
+func GenerateCRUD(opts GeneratorOptions) ([]GeneratedResult, error) {
+	if strings.TrimSpace(opts.Name) == "" {
+		return nil, errors.New("module name cannot be empty")
+	}
+
+	plan := NewCRUDPlan(opts)
+	pipeline := NewPipeline(stubs.FS, opts.RootDir, opts.Force, opts.DryRun)
+	return pipeline.Execute(plan)
+}
+
+// DestroyCRUD 回退并安全清理指定 CRUD 模块的生成文件与空目录。
+func DestroyCRUD(opts GeneratorOptions) ([]GeneratedResult, error) {
+	if strings.TrimSpace(opts.Name) == "" {
+		return nil, errors.New("module name cannot be empty")
+	}
+
+	plan := NewCRUDPlan(opts)
+	pipeline := NewPipeline(stubs.FS, opts.RootDir, opts.Force, opts.DryRun)
+	return pipeline.Destroy(plan)
 }

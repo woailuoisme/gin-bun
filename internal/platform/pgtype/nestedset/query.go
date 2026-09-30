@@ -66,7 +66,6 @@ func OrderByDepth(q *bun.SelectQuery, column string, asc bool) *bun.SelectQuery 
 
 // ApplyMoveSubtree 向 Bun UpdateQuery 注入整棵子树原子迁移挂载的 SET 与 WHERE 表达式。
 // 利用 PostgreSQL ltree 原生 subpath 函数将所有旧前缀子孙节点原子改写为新前缀：
-// SET column = newPrefix::ltree || subpath(column, nlevel(oldPrefix::ltree)) WHERE column <@ oldPrefix::ltree
 func ApplyMoveSubtree(q *bun.UpdateQuery, column string, oldPrefix, newPrefix Path) *bun.UpdateQuery {
 	if q == nil {
 		return nil

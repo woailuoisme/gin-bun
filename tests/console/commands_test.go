@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/console"
+	"bgin/internal/console/core"
 )
 
 // TestRootCommand_Registration 验证所有预期的 CLI 命令均已按纯冒号方式注册，并正确分配到对应的命名空间分组。
@@ -23,6 +24,7 @@ func TestRootCommand_Registration(t *testing.T) {
 		"db:migrate",
 		"db:seed",
 		"db:fresh",
+		"geoip:update",
 		"jwt:secret",
 		"make:crud",
 		"queue:work",
@@ -47,6 +49,7 @@ func TestRootCommand_Registration(t *testing.T) {
 		"queue",
 		"route",
 		"db",
+		"geoip",
 		"scout",
 		"jwt",
 		"make",
@@ -60,7 +63,7 @@ func TestRootCommand_Registration(t *testing.T) {
 	groupIDs := lo.Map(cmd.Groups(), func(g *cobra.Group, _ int) string {
 		return g.ID
 	})
-	assert.ElementsMatch(t, []string{"db", "jwt", "make", "queue", "route", "scout"}, groupIDs)
+	assert.ElementsMatch(t, []string{"db", "geoip", "jwt", "make", "queue", "route", "scout"}, groupIDs)
 
 	cmdMap := lo.KeyBy(cmd.Commands(), func(c *cobra.Command) string {
 		return c.Name()
@@ -70,6 +73,7 @@ func TestRootCommand_Registration(t *testing.T) {
 	assert.Equal(t, "db", cmdMap["db:migrate"].GroupID)
 	assert.Equal(t, "db", cmdMap["db:seed"].GroupID)
 	assert.Equal(t, "db", cmdMap["db:fresh"].GroupID)
+	assert.Equal(t, "geoip", cmdMap["geoip:update"].GroupID)
 	assert.Equal(t, "jwt", cmdMap["jwt:secret"].GroupID)
 	assert.Equal(t, "make", cmdMap["make:crud"].GroupID)
 	assert.Equal(t, "queue", cmdMap["queue:work"].GroupID)
@@ -158,4 +162,10 @@ func TestCommand_ValidationErrors(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `unknown command "queue"`)
 	})
+}
+
+// TestErrCanceled_Export 验证 console 包导出的 ErrCanceled 变量与 core.ErrCanceled 完全一致。
+func TestErrCanceled_Export(t *testing.T) {
+	require.ErrorIs(t, console.ErrCanceled, core.ErrCanceled)
+	assert.Equal(t, "operation canceled by user", console.ErrCanceled.Error())
 }

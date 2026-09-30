@@ -157,9 +157,7 @@ func encodeGeometry(g orb.Geometry, srid int) (driver.Value, error) {
 	return bytes, nil
 }
 
-// -----------------------------------------------------------------------------
 // Point Codec 实现
-// -----------------------------------------------------------------------------
 
 // Scan 实现 sql.Scanner 接口，从数据库读取空间点。
 func (p *Point) Scan(src any) error {
@@ -316,9 +314,7 @@ func extractCoord(m map[string]any, keys ...string) (float64, bool) {
 	return 0, false
 }
 
-// -----------------------------------------------------------------------------
 // LineString Codec 实现
-// -----------------------------------------------------------------------------
 
 // Scan 实现 sql.Scanner。
 func (ls *LineString) Scan(src any) error {
@@ -384,7 +380,6 @@ func (ls *LineString) UnmarshalJSON(data []byte) error {
 		}
 	}
 
-	// GeoJSON
 	geom, err := geojson.UnmarshalGeometry(data)
 	if err != nil {
 		return fmt.Errorf("geo: failed to unmarshal LineString JSON: %w", err)
@@ -398,9 +393,7 @@ func (ls *LineString) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// -----------------------------------------------------------------------------
 // Polygon Codec 实现
-// -----------------------------------------------------------------------------
 
 // Scan 实现 sql.Scanner。
 func (poly *Polygon) Scan(src any) error {
@@ -466,7 +459,6 @@ func (poly *Polygon) UnmarshalJSON(data []byte) error {
 		}
 	}
 
-	// GeoJSON
 	geom, err := geojson.UnmarshalGeometry(data)
 	if err != nil {
 		return fmt.Errorf("geo: failed to unmarshal Polygon JSON: %w", err)
@@ -480,9 +472,7 @@ func (poly *Polygon) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// -----------------------------------------------------------------------------
 // MultiPolygon Codec 实现
-// -----------------------------------------------------------------------------
 
 // Scan 实现 sql.Scanner。
 func (mp *MultiPolygon) Scan(src any) error {
@@ -538,7 +528,6 @@ func (mp *MultiPolygon) UnmarshalJSON(data []byte) error {
 		}
 	}
 
-	// GeoJSON
 	geom, err := geojson.UnmarshalGeometry(data)
 	if err != nil {
 		return fmt.Errorf("geo: failed to unmarshal MultiPolygon JSON: %w", err)
@@ -552,9 +541,7 @@ func (mp *MultiPolygon) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// -----------------------------------------------------------------------------
 // Geometry 多态容器 Codec 实现
-// -----------------------------------------------------------------------------
 
 // Scan 实现 sql.Scanner。
 func (g *Geometry) Scan(src any) error {
@@ -606,7 +593,6 @@ func (g *Geometry) UnmarshalJSON(data []byte) error {
 		}
 	}
 
-	// GeoJSON
 	geom, err := geojson.UnmarshalGeometry(data)
 	if err != nil {
 		return fmt.Errorf("geo: failed to unmarshal Geometry JSON: %w", err)
