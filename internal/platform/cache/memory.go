@@ -296,6 +296,36 @@ func (m *MemoryStore) Delete(ctx context.Context, keys ...string) (int64, error)
 	return deleted, nil
 }
 
+// DeleteIfMatch 仅当键的当前值等于 expected 时原子删除该键，返回是否真正删除。
+func (m *MemoryStore) DeleteIfMatch(ctx context.Context, key, expected string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return false, errClosed
+	}
+
+	item, found := m.hot.Peek(key)
+	if !found {
+		return false, nil
+	}
+
+	if item.isExpired(time.Now()) {
+		m.hot.Delete(key)
+		return false, nil
+	}
+
+	if item.value != expected {
+		return false, nil
+	}
+
+	m.hot.Delete(key)
+	return true, nil
+}
+
 // Remember 实现 cache-aside 模式，通过 singleflight 防止进程内并发击穿。
 func (m *MemoryStore) Remember(
 	ctx context.Context,

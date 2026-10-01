@@ -127,3 +127,102 @@ func TestAccessLog500ErrorWithStack(t *testing.T) {
 	assert.Equal(t, "access", accessLog.Message)
 	assert.Equal(t, 500, accessLog.Status)
 }
+
+// TestAccessLog_ProbeSilencing 验证探针路径（/readyz 与 /livez）在正常状态（<400）下静默无日志，
+// 但在发生异常（如 500）时依然正常输出日志。
+func TestAccessLog_ProbeSilencing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var buf bytes.Buffer
+	testLogger := logger.NewWithOptions(
+		logger.WithLevel("debug"),
+		logger.WithChannel("json"),
+		logger.WithWriter(&buf),
+	)
+
+	mw := global.New(global.Deps{Logger: testLogger})
+	engine := gin.New()
+	engine.Use(
+		mw.RequestID(),
+		mw.AccessLog(),
+		mw.ErrorHandler(),
+	)
+
+	engine.GET("/readyz", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+	engine.GET("/livez", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+	engine.GET("/readyz-fail", func(c *gin.Context) {
+		_ = c.Error(errs.Internal(errors.New("db ping failed")))
+	})
+
+	// 1. 测试正常状态的 /readyz 与 /livez：不产生任何访问日志，且未传追踪头时免于多余内存分配
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, strings.TrimSpace(buf.String()), "正常 /readyz 探测禁止输出访问日志")
+	assert.Empty(t, rec.Header().Get("x-request-id"), "未提供追踪头的探针免于分配 UUID 追踪标识以优化 GC")
+
+	rec = httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, strings.TrimSpace(buf.String()), "正常 /livez 探测禁止输出访问日志")
+
+	// 1.1 显式传递追踪头的探针请求必须被正常透传
+	reqWithID := httptest.NewRequest(http.MethodGet, "/livez", nil)
+	reqWithID.Header.Set("x-request-id", "probe-trace-123")
+	recWithID := httptest.NewRecorder()
+	engine.ServeHTTP(recWithID, reqWithID)
+	assert.Equal(t, "probe-trace-123", recWithID.Header().Get("x-request-id"))
+
+	// 2. 测试异常状态的探针（状态码 >= 400 或 500）：必须输出告警或错误日志
+	rec = httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz-fail", nil))
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.NotEmpty(t, strings.TrimSpace(buf.String()), "异常状态探针必须保留日志用于监控告警")
+}
+
+// TestObservability_Recovery_MarksSentryReported 验证 Recovery 中间件捕获 panic 后，
+// 会在 gin.Context 注入染色标记 sentry_reported = true，避免后续 ErrorHandler 二次重复上报。
+func TestObservability_Recovery_MarksSentryReported(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var reported bool
+	mw := global.New(global.Deps{})
+	engine := gin.New()
+	engine.Use(
+		mw.ErrorHandler(),
+		func(c *gin.Context) {
+			c.Next()
+			reported = global.IsSentryReported(c)
+		},
+		mw.Recovery(),
+	)
+
+	engine.GET("/panic", func(c *gin.Context) {
+		panic("database connection lost")
+	})
+
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/panic", nil))
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.True(t, reported, "发生 panic 时 Recovery 必须将上下文标记为已上报，杜绝重复 Issue")
+}
+
+// TestGlobal_SentryReportedHelpers 验证上下文染色辅助函数的安全边界与判断逻辑。
+func TestGlobal_SentryReportedHelpers(t *testing.T) {
+	assert.False(t, global.IsSentryReported(nil))
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	assert.False(t, global.IsSentryReported(c))
+
+	global.MarkSentryReported(c)
+	assert.True(t, global.IsSentryReported(c))
+
+	// 重复标记幂等
+	global.MarkSentryReported(c)
+	assert.True(t, global.IsSentryReported(c))
+}

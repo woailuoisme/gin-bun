@@ -151,6 +151,7 @@ func (u *UnitOfWork) RunInTx(ctx context.Context, opts *sql.TxOptions, fn func(c
 	txErr := u.transactor.RunInTx(ctx, opts, func(txCtx context.Context, tx bun.Tx) error {
 		scopedCtx := context.WithValue(txCtx, uowCtxKey{}, collector)
 		scopedCtx = context.WithValue(scopedCtx, txCtxKey{}, &tx)
+		scopedCtx = WithDB(scopedCtx, &tx)
 
 		if err := fn(scopedCtx, tx); err != nil {
 			return err

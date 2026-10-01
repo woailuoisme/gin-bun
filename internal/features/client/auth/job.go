@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/samber/oops"
@@ -64,10 +63,26 @@ func (j *WelcomeEmailJob) Handle(ctx context.Context) error {
 		return nil
 	}
 
+	htmlBody, err := mailer.RenderTemplate("welcome", map[string]any{
+		"Name":    j.Name,
+		"AppName": "bgin",
+		"Button": map[string]any{
+			"Text":  "Get Started",
+			"Url":   "#",
+			"Color": "primary",
+		},
+	})
+	if err != nil {
+		return oops.Code(string(errs.CodeInternal)).
+			With("task", TaskSendWelcomeEmail).
+			With("email", j.Email).
+			Wrap(err)
+	}
+
 	msg := mailer.Message{
 		To:      j.Email,
 		Subject: "Welcome to bgin",
-		Body:    fmt.Sprintf("<h1>Welcome, %s!</h1><p>Thank you for joining us.</p>", j.Name),
+		Body:    htmlBody,
 		IsHTML:  true,
 	}
 

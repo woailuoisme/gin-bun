@@ -12,13 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/config"
+	"bgin/internal/database/models"
 	adminauth "bgin/internal/features/admin/auth"
 	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
-	"bgin/internal/shared/models"
+	shareduser "bgin/internal/shared/user"
 )
 
 func init() {
@@ -96,7 +97,7 @@ func (m *mockRepo) RecordLogin(_ context.Context, userID, _ string) error {
 	return nil
 }
 
-func setupService(repo adminauth.Repository) (*adminauth.Service, *authentication.TokenIssuer) {
+func setupService(repo *mockRepo) (*adminauth.Service, *authentication.TokenIssuer) {
 	h := hasher.New()
 	tokens := authentication.NewTokenIssuer(config.JWTConfig{
 		Secret:     testJWTSecret,
@@ -105,8 +106,9 @@ func setupService(repo adminauth.Repository) (*adminauth.Service, *authenticatio
 		RefreshTTL: 24 * time.Hour,
 	}, nil)
 
+	guard := authentication.NewGuard(tokens, repo, shareduser.AdminPolicy{})
 	service := adminauth.NewService(adminauth.Deps{
-		Repo:   repo,
+		Guard:  guard,
 		Tokens: tokens,
 		Hasher: h,
 	})
@@ -297,7 +299,7 @@ func TestAdminRefreshDemotedUserDenied(t *testing.T) {
 	service, tokens := setupService(repo)
 	ctx := t.Context()
 
-	pair, err := tokens.Issue("demoted", models.RoleAdmin)
+	pair, err := tokens.Issue("demoted", string(models.RoleAdmin))
 	require.NoError(t, err)
 
 	_, err = service.Refresh(ctx, adminauth.RefreshTokenRequest{
@@ -420,7 +422,7 @@ func TestAdminAuthDTOSerialization(t *testing.T) {
 	assert.Equal(t, "admin@bgin.local", req.Email)
 	assert.Equal(t, "secret", req.Password)
 
-	signOutRaw := []byte(`{"refresh_token":"rt_test123"}`)
+	signOutRaw := []byte(`{"refreshToken":"rt_test123"}`)
 	var signOutReq adminauth.SignOutRequest
 	require.NoError(t, json.Unmarshal(signOutRaw, &signOutReq))
 	require.NotNil(t, signOutReq.RefreshToken)

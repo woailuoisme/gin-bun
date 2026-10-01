@@ -98,7 +98,7 @@ func TestGenerateCRUD_Execution(t *testing.T) {
 	// 1. 初次生成
 	results, err := core.GenerateCRUD(opts)
 	require.NoError(t, err)
-	require.Len(t, results, 6)
+	require.Len(t, results, 5)
 
 	for _, r := range results {
 		assert.Equal(t, core.ActionCreated, r.Action)
@@ -133,7 +133,7 @@ func TestGenerateCRUD_Execution(t *testing.T) {
 	assert.Contains(t, string(routesContent), "RegisterAdminRoutes")
 	assert.Contains(t, string(routesContent), `mw.Can(authorization.Resource("articles")`)
 
-	modelPath := filepath.Join(tempDir, "internal", "shared", "models", "article.go")
+	modelPath := filepath.Join(tempDir, "internal", "database", "models", "article.go")
 	modelContent, err := os.ReadFile(modelPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(modelContent), `bun:"table:articles,alias:a"`)
@@ -142,7 +142,7 @@ func TestGenerateCRUD_Execution(t *testing.T) {
 	// 3. 不带 force 再次生成，应当被全部跳过
 	results2, err := core.GenerateCRUD(opts)
 	require.NoError(t, err)
-	require.Len(t, results2, 6)
+	require.Len(t, results2, 5)
 	for _, r := range results2 {
 		assert.Equal(t, core.ActionSkipped, r.Action)
 	}
@@ -151,7 +151,7 @@ func TestGenerateCRUD_Execution(t *testing.T) {
 	opts.Force = true
 	results3, err := core.GenerateCRUD(opts)
 	require.NoError(t, err)
-	require.Len(t, results3, 6)
+	require.Len(t, results3, 5)
 	for _, r := range results3 {
 		assert.Equal(t, core.ActionOverwritten, r.Action)
 	}
@@ -160,7 +160,7 @@ func TestGenerateCRUD_Execution(t *testing.T) {
 	opts.DryRun = true
 	results4, err := core.GenerateCRUD(opts)
 	require.NoError(t, err)
-	require.Len(t, results4, 6)
+	require.Len(t, results4, 5)
 	for _, r := range results4 {
 		assert.Equal(t, core.ActionDryRun, r.Action)
 	}
@@ -199,13 +199,13 @@ func TestDestroyCRUD_Execution(t *testing.T) {
 	// 1. 先生成文件
 	results, err := core.GenerateCRUD(opts)
 	require.NoError(t, err)
-	require.Len(t, results, 6)
+	require.Len(t, results, 5)
 
 	// 2. Dry-run 回退删除
 	opts.DryRun = true
 	destroyDryRun, err := core.DestroyCRUD(opts)
 	require.NoError(t, err)
-	require.Len(t, destroyDryRun, 6)
+	require.Len(t, destroyDryRun, 5)
 	for _, r := range destroyDryRun {
 		assert.Equal(t, core.ActionDryRun, r.Action)
 	}
@@ -219,7 +219,7 @@ func TestDestroyCRUD_Execution(t *testing.T) {
 	opts.DryRun = false
 	destroyResults, err := core.DestroyCRUD(opts)
 	require.NoError(t, err)
-	require.Len(t, destroyResults, 6)
+	require.Len(t, destroyResults, 5)
 	for _, r := range destroyResults {
 		assert.Equal(t, core.ActionDeleted, r.Action)
 	}
@@ -239,7 +239,7 @@ func TestDestroyCRUD_Execution(t *testing.T) {
 	// 4. 重复执行回退删除，应安全跳过（ActionSkipped）
 	destroyAgain, err := core.DestroyCRUD(opts)
 	require.NoError(t, err)
-	require.Len(t, destroyAgain, 6)
+	require.Len(t, destroyAgain, 5)
 	for _, r := range destroyAgain {
 		assert.Equal(t, core.ActionSkipped, r.Action)
 	}

@@ -214,7 +214,7 @@
                         "type": "integer",
                         "example": 20,
                         "description": "每页条数 (1-100，默认 20)",
-                        "name": "page_size",
+                        "name": "pageSize",
                         "in": "query"
                     },
                     {
@@ -243,8 +243,8 @@
                     {
                         "maxLength": 120,
                         "type": "string",
-                        "example": "-created_at",
-                        "description": "排序字段 (字段名前加 - 表示倒序，如 -created_at)",
+                        "example": "-createdAt",
+                        "description": "排序字段 (字段名前加 - 表示倒序，如 -createdAt)",
                         "name": "sort",
                         "in": "query"
                     },
@@ -358,7 +358,7 @@
                         "type": "integer",
                         "example": 20,
                         "description": "每页条数 (1-100，默认 20)",
-                        "name": "page_size",
+                        "name": "pageSize",
                         "in": "query"
                     },
                     {
@@ -387,8 +387,8 @@
                     {
                         "maxLength": 120,
                         "type": "string",
-                        "example": "-created_at",
-                        "description": "排序字段 (字段名前加 - 表示倒序，如 -created_at)",
+                        "example": "-createdAt",
+                        "description": "排序字段 (字段名前加 - 表示倒序，如 -createdAt)",
                         "name": "sort",
                         "in": "query"
                     },
@@ -566,7 +566,7 @@
                     "maxLength": 254,
                     "example": "alex@example.com"
                 },
-                "email_verified": {
+                "emailVerified": {
                     "description": "邮箱是否已完成验证",
                     "type": "boolean",
                     "example": true
@@ -649,13 +649,13 @@
         "admin.UpdateUserBody": {
             "type": "object",
             "properties": {
-                "ban_expires": {
+                "banExpires": {
                     "description": "封禁到期时间 (ISO 8601 UTC)",
                     "type": "string",
                     "x-nullable": true,
                     "example": "2026-10-01T00:00:00Z"
                 },
-                "ban_reason": {
+                "banReason": {
                     "description": "封禁原因",
                     "type": "string",
                     "x-nullable": true,
@@ -667,13 +667,13 @@
                     "x-nullable": true,
                     "example": false
                 },
-                "display_username": {
+                "displayUsername": {
                     "description": "用户显示名称",
                     "type": "string",
                     "x-nullable": true,
                     "example": "Alex Mercer"
                 },
-                "email_verified": {
+                "emailVerified": {
                     "description": "邮箱是否已验证",
                     "type": "boolean",
                     "x-nullable": true,
@@ -691,7 +691,7 @@
                     "x-nullable": true,
                     "example": "Alex Mercer"
                 },
-                "phone_number": {
+                "phoneNumber": {
                     "description": "E.164 格式手机号",
                     "type": "string",
                     "x-nullable": true,
@@ -749,12 +749,12 @@
         "admin.UserResource": {
             "type": "object",
             "properties": {
-                "ban_expires": {
+                "banExpires": {
                     "description": "封禁到期时间 (ISO 8601 UTC)",
                     "type": "string",
                     "example": "2026-10-01T00:00:00Z"
                 },
-                "ban_reason": {
+                "banReason": {
                     "description": "封禁原因说明",
                     "type": "string",
                     "example": "违规发布广告"
@@ -764,12 +764,12 @@
                     "type": "boolean",
                     "example": false
                 },
-                "created_at": {
+                "createdAt": {
                     "description": "账号创建时间 (ISO 8601 UTC)",
                     "type": "string",
                     "example": "2026-09-27T10:00:00Z"
                 },
-                "display_username": {
+                "displayUsername": {
                     "description": "用户显示名称",
                     "type": "string",
                     "example": "Alex Mercer"
@@ -779,7 +779,7 @@
                     "type": "string",
                     "example": "alex@example.com"
                 },
-                "email_verified": {
+                "emailVerified": {
                     "description": "邮箱是否已验证",
                     "type": "boolean",
                     "example": true
@@ -794,12 +794,12 @@
                     "type": "string",
                     "example": "https://example.com/avatar.png"
                 },
-                "last_login_at": {
+                "lastLoginAt": {
                     "description": "最后登录时间 (ISO 8601 UTC)",
                     "type": "string",
                     "example": "2026-09-27T10:00:00Z"
                 },
-                "last_login_method": {
+                "lastLoginMethod": {
                     "description": "最后登录认证方式",
                     "type": "string",
                     "example": "email"
@@ -809,7 +809,7 @@
                     "type": "string",
                     "example": "Alex Mercer"
                 },
-                "phone_number": {
+                "phoneNumber": {
                     "description": "E.164 格式手机号",
                     "type": "string",
                     "example": "+8613800138000"
@@ -841,7 +841,7 @@
                     ],
                     "example": "active"
                 },
-                "updated_at": {
+                "updatedAt": {
                     "description": "账号更新时间 (ISO 8601 UTC)",
                     "type": "string",
                     "example": "2026-09-27T10:00:00Z"
@@ -856,16 +856,16 @@
         "adminauth.ChangePasswordBody": {
             "type": "object",
             "required": [
-                "current_password",
-                "new_password"
+                "currentPassword",
+                "newPassword"
             ],
             "properties": {
-                "current_password": {
+                "currentPassword": {
                     "description": "当前登录口令",
                     "type": "string",
                     "example": "Admin123!"
                 },
-                "new_password": {
+                "newPassword": {
                     "description": "新登录口令 (8-128位，须含字母与数字)",
                     "type": "string",
                     "maxLength": 128,
@@ -890,12 +890,12 @@
         "adminauth.Profile": {
             "type": "object",
             "properties": {
-                "created_at": {
+                "createdAt": {
                     "description": "账号创建时间 (ISO 8601 UTC)",
                     "type": "string",
                     "example": "2026-09-27T10:00:00Z"
                 },
-                "display_username": {
+                "displayUsername": {
                     "description": "用户显示名称",
                     "type": "string",
                     "example": "Alex Mercer"
@@ -905,7 +905,7 @@
                     "type": "string",
                     "example": "alex@example.com"
                 },
-                "email_verified": {
+                "emailVerified": {
                     "description": "邮箱是否已验证",
                     "type": "boolean",
                     "example": true
@@ -925,7 +925,7 @@
                     "type": "string",
                     "example": "Alex Mercer"
                 },
-                "phone_number": {
+                "phoneNumber": {
                     "description": "E.164 格式手机号",
                     "type": "string",
                     "example": "+8613800138000"
@@ -957,7 +957,7 @@
                     ],
                     "example": "active"
                 },
-                "updated_at": {
+                "updatedAt": {
                     "description": "账号更新时间 (ISO 8601 UTC)",
                     "type": "string",
                     "example": "2026-09-27T10:00:00Z"
@@ -972,10 +972,10 @@
         "adminauth.RefreshTokenBody": {
             "type": "object",
             "required": [
-                "refresh_token"
+                "refreshToken"
             ],
             "properties": {
-                "refresh_token": {
+                "refreshToken": {
                     "description": "刷新令牌凭据",
                     "type": "string",
                     "example": "rt_01J9X4N8Y0EFGH"
@@ -985,12 +985,12 @@
         "adminauth.SessionResource": {
             "type": "object",
             "properties": {
-                "expires_in": {
+                "expiresIn": {
                     "description": "访问令牌有效期（秒）",
                     "type": "integer",
                     "example": 900
                 },
-                "refresh_token": {
+                "refreshToken": {
                     "description": "刷新令牌 (Refresh Token)",
                     "type": "string",
                     "example": "rt_01J9X4N8Y0EFGH"
@@ -1032,7 +1032,7 @@
         "adminauth.SignOutBody": {
             "type": "object",
             "properties": {
-                "refresh_token": {
+                "refreshToken": {
                     "description": "待作废的刷新令牌 (可选，同时作废可真正阻断续签)",
                     "type": "string",
                     "example": "rt_01J9X4N8Y0EFGH"
@@ -1078,13 +1078,13 @@
                 "page": {
                     "type": "integer"
                 },
-                "page_size": {
+                "pageSize": {
                     "type": "integer"
                 },
                 "total": {
                     "type": "integer"
                 },
-                "total_pages": {
+                "totalPages": {
                     "type": "integer"
                 }
             }

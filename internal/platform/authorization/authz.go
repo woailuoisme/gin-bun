@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"slices"
 	"strings"
 
 	"github.com/casbin/casbin/v3"
@@ -136,12 +137,10 @@ func (e *Enforcer) CanRole(role, resource, action string) (bool, error) {
 
 // CanRoles 判定一组角色中是否有任一角色具备指定权限。
 func (e *Enforcer) CanRoles(roles []string, resource, action string) bool {
-	for _, role := range roles {
-		if allowed, _ := e.CanRole(role, resource, action); allowed {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(roles, func(role string) bool {
+		allowed, _ := e.CanRole(role, resource, action)
+		return allowed
+	})
 }
 
 // Can 实现 authentication.Gate 契约：从上下文提取主体角色并判断权限。

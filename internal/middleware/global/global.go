@@ -26,7 +26,7 @@ import (
 
 // Deps 描述全局中间件所需的全部外部依赖。
 type Deps struct {
-	Cache          *cache.Client
+	Cache          cache.Store
 	Logger         *zap.Logger
 	CORS           config.CORSConfig
 	Production     bool
@@ -40,7 +40,7 @@ type Deps struct {
 
 // Middleware 承载全局传输层中间件的实例依赖。
 type Middleware struct {
-	cache          *cache.Client
+	cache          cache.Store
 	logger         *zap.Logger
 	cors           config.CORSConfig
 	production     bool

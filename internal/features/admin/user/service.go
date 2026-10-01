@@ -2,21 +2,18 @@ package admin
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"io"
 	"strings"
-	"time"
 
-	"github.com/aarondl/opt/omitnull"
 	"github.com/samber/lo"
+	"github.com/uptrace/bun"
 
+	"bgin/internal/database/models"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/excel"
 	"bgin/internal/platform/response"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
-	"bgin/internal/shared/models"
 	"bgin/internal/shared/user"
 )
 
@@ -27,19 +24,29 @@ type passwordHasher interface {
 
 // Deps 声明用户管理服务的外部依赖。
 type Deps struct {
-	Repo   *user.Repository
-	Hasher passwordHasher
+	DB          *bun.DB
+	UserService *user.Service
+	Hasher      passwordHasher
 }
 
 // Service 实现后台用户管理用例。
 type Service struct {
-	repo   *user.Repository
-	hasher passwordHasher
+	db          bun.IDB
+	userService *user.Service
+	hasher      passwordHasher
 }
 
 // NewService 构造管理服务。
 func NewService(deps Deps) *Service {
-	return &Service{repo: deps.Repo, hasher: deps.Hasher}
+	userService := deps.UserService
+	if userService == nil && deps.DB != nil {
+		userService = user.NewService(deps.DB)
+	}
+	return &Service{
+		db:          deps.DB,
+		userService: userService,
+		hasher:      deps.Hasher,
+	}
 }
 
 // ListUsers 返回分页用户列表，排序与过滤都走白名单。
@@ -52,14 +59,9 @@ func (s *Service) ListUsers(ctx context.Context, query ListUsersQueryParams) ([]
 		Sort:   user.NormaliseSort(query.Sort),
 	}
 
-	total, err := s.repo.Count(ctx, filter)
+	users, total, err := s.userService.List(ctx, filter, (page-1)*pageSize, pageSize)
 	if err != nil {
-		return nil, response.Meta{}, errs.Internal(err)
-	}
-
-	users, err := s.repo.List(ctx, filter, (page-1)*pageSize, pageSize)
-	if err != nil {
-		return nil, response.Meta{}, errs.Internal(err)
+		return nil, response.Meta{}, err
 	}
 
 	items := lo.Map(users, func(entity models.User, _ int) UserResource {
@@ -76,17 +78,17 @@ func (s *Service) ExportUsers(ctx context.Context, query ListUsersQueryParams, w
 		Role:   enums.Role(strings.TrimSpace(string(query.Role))),
 		Sort:   user.NormaliseSort(query.Sort),
 	}
-	return ExportChunkedStream(ctx, w, s.repo, filter, opts...)
+	fetcher := UserFetchFunc(func(ctx context.Context, f user.ListFilter, offset, limit int) ([]models.User, error) {
+		return s.userService.ListChunk(ctx, f, offset, limit)
+	})
+	return ExportChunkedStream(ctx, w, fetcher, filter, opts...)
 }
 
 // GetUser 返回管理视角的单个用户。
 func (s *Service) GetUser(ctx context.Context, id string) (UserResource, error) {
-	entity, err := s.repo.FindByID(ctx, id)
+	entity, err := s.userService.Get(ctx, id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return UserResource{}, errs.NotFound("The requested user does not exist")
-		}
-		return UserResource{}, errs.Internal(err)
+		return UserResource{}, err
 	}
 	return toUserResource(entity), nil
 }
@@ -102,8 +104,8 @@ func (s *Service) CreateUser(ctx context.Context, req CreateUserBody) (UserResou
 		Email:         user.NormaliseEmail(req.Email),
 		EmailVerified: req.EmailVerified,
 		Image:         req.Image,
-		Role:          string(req.Role),
-		Status:        string(enums.StatusActive),
+		Role:          req.Role,
+		Status:        enums.StatusActive,
 	}
 	if req.Username != nil {
 		normalised := user.NormaliseUsername(*req.Username)
@@ -115,93 +117,26 @@ func (s *Service) CreateUser(ctx context.Context, req CreateUserBody) (UserResou
 	if err != nil {
 		return UserResource{}, errs.Internal(err)
 	}
-	if err := s.repo.CreateWithCredential(ctx, entity, hash); err != nil {
-		return UserResource{}, user.MapUniqueConflict(err)
+
+	created, err := s.userService.CreateWithCredential(ctx, entity, hash)
+	if err != nil {
+		return UserResource{}, err
 	}
-	return toUserResource(entity), nil
+	return toUserResource(created), nil
 }
 
 // UpdateUser 由管理员局部更新用户，含角色、状态与封禁信息。
 func (s *Service) UpdateUser(ctx context.Context, id string, req UpdateUserBody) (UserResource, error) {
-	fields, err := s.buildAdminFields(ctx, id, req)
+	entity, err := s.userService.UpdateAdminUser(ctx, id, req.adminFieldSet())
 	if err != nil {
 		return UserResource{}, err
 	}
-	if err := user.ApplyUpdate(ctx, s.repo, id, fields); err != nil {
-		return UserResource{}, err
-	}
-	return s.GetUser(ctx, id)
+	return toUserResource(entity), nil
 }
 
 // DeleteUser 软删除指定用户。
 func (s *Service) DeleteUser(ctx context.Context, id string) error {
-	if err := s.repo.SoftDelete(ctx, id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return errs.NotFound("The requested user does not exist")
-		}
-		return errs.Internal(err)
-	}
-	return nil
-}
-
-// buildAdminFields 把管理端三态更新请求转换为待更新字段映射。
-func (s *Service) buildAdminFields(ctx context.Context, id string, req UpdateUserBody) (map[string]any, error) {
-	fields, err := user.CollectFields(ctx, s.repo, id, req.fieldSet())
-	if err != nil {
-		return nil, err
-	}
-
-	if req.EmailVerified.IsValue() {
-		fields["email_verified"] = req.EmailVerified.MustGet()
-	}
-	if err := setRequiredString(fields, "role", req.Role); err != nil {
-		return nil, err
-	}
-	if err := setRequiredString(fields, "status", req.Status); err != nil {
-		return nil, err
-	}
-	if req.Banned.IsValue() {
-		fields["banned"] = req.Banned.MustGet()
-	}
-	if !req.BanReason.IsUnset() {
-		user.SetNullable(fields, "ban_reason", req.BanReason)
-	}
-	if !req.BanExpires.IsUnset() {
-		fields["ban_expires"] = nullableTime(req.BanExpires)
-	}
-
-	reconcileBanState(fields)
-	return fields, nil
-}
-
-// setRequiredString 处理库层 NOT NULL、因而不接受显式 null 的字符串或枚举列。
-func setRequiredString[T ~string](fields map[string]any, column string, value omitnull.Val[T]) error {
-	if value.IsUnset() {
-		return nil
-	}
-	if value.IsNull() {
-		return user.FieldCannotBeNull(column)
-	}
-	fields[column] = string(value.MustGet())
-	return nil
-}
-
-// nullableTime 把三态时间字段转换为可写入列的值，并统一归一到 UTC。
-func nullableTime(value omitnull.Val[time.Time]) any {
-	if value.IsNull() {
-		return nil
-	}
-	return value.MustGet().UTC()
-}
-
-// reconcileBanState 保证 banned 布尔值与 status 状态相互协同一致。
-func reconcileBanState(fields map[string]any) {
-	if status, ok := fields["status"].(string); ok && status == string(enums.StatusBanned) {
-		fields["banned"] = true
-	}
-	if banned, ok := fields["banned"].(bool); ok && banned {
-		fields["status"] = string(enums.StatusBanned)
-	}
+	return s.userService.Delete(ctx, id)
 }
 
 // NormalisePagination 将分页参数收敛到允许的安全区间。

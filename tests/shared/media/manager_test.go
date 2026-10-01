@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/config"
+	"bgin/internal/database/models"
 	"bgin/internal/platform/storage"
 	"bgin/internal/shared/media"
-	"bgin/internal/shared/models"
 )
 
 func TestManager_ContractsAndURLDerivation(t *testing.T) {

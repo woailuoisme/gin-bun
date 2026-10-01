@@ -2,6 +2,7 @@
 package mailer
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -70,48 +71,42 @@ type Mailer interface {
 type DriverFactory func(cfg config.MailConfig, log *zap.Logger) (Mailer, error)
 
 var (
-	driverMu sync.RWMutex
-	drivers  = make(map[string]DriverFactory)
+	driverMu      sync.RWMutex
+	customDrivers = make(map[string]DriverFactory)
 )
 
-func init() {
-	RegisterDriver("mailpit", func(cfg config.MailConfig, log *zap.Logger) (Mailer, error) {
-		return newMailpitMailer(cfg, log)
-	})
-	RegisterDriver("resend", func(cfg config.MailConfig, log *zap.Logger) (Mailer, error) {
-		return newResendMailer(cfg, log)
-	})
-	RegisterDriver("memory", func(_ config.MailConfig, _ *zap.Logger) (Mailer, error) {
-		return NewMemoryMailer(), nil
-	})
-}
-
-// RegisterDriver 注册邮件发送器驱动工厂（遵循开闭原则 OCP，便于系统扩展新邮件渠道）。
+// RegisterDriver 注册自定义邮件发送器驱动工厂（遵循开闭原则 OCP，便于测试或第三方驱动接入）。
 func RegisterDriver(name string, factory DriverFactory) {
 	driverMu.Lock()
 	defer driverMu.Unlock()
-	drivers[strings.ToLower(strings.TrimSpace(name))] = factory
+	customDrivers[strings.ToLower(strings.TrimSpace(name))] = factory
 }
 
-// New 根据 MailConfig 创建邮件发送器驱动实例。
+// New 根据 MailConfig 创建邮件发送器驱动实例（内置驱动静态分发，无 init 副作用）。
 func New(cfg config.MailConfig, log *zap.Logger) (Mailer, error) {
 	if log == nil {
 		log = zap.NewNop()
 	}
-	driverName := strings.ToLower(strings.TrimSpace(cfg.Driver))
-	if driverName == "" {
-		driverName = "mailpit"
-	}
+	driverName := cmp.Or(strings.ToLower(strings.TrimSpace(cfg.Driver)), "mailpit")
 
-	driverMu.RLock()
-	factory, exists := drivers[driverName]
-	driverMu.RUnlock()
+	switch driverName {
+	case "mailpit":
+		return newMailpitMailer(cfg, log)
+	case "resend":
+		return newResendMailer(cfg, log)
+	case "memory":
+		return NewMemoryMailer(), nil
+	default:
+		driverMu.RLock()
+		factory, exists := customDrivers[driverName]
+		driverMu.RUnlock()
 
-	if !exists {
-		return nil, oops.Code(string(errs.CodeInternal)).
-			Errorf("unsupported mail driver: %s", cfg.Driver)
+		if !exists {
+			return nil, oops.Code(string(errs.CodeInternal)).
+				Errorf("unsupported mail driver: %s", cfg.Driver)
+		}
+		return factory(cfg, log)
 	}
-	return factory(cfg, log)
 }
 
 // sendMailable 将 Mailable 实体渲染为消息并通过目标驱动发送。

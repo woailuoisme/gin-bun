@@ -49,6 +49,14 @@ func (a *Application) Serve(ctx context.Context) error {
 		}
 	}()
 
+	if a.eventbus != nil {
+		go func() {
+			if err := a.eventbus.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				a.logger.Warn("event bus router stopped with error", zap.Error(err))
+			}
+		}()
+	}
+
 	select {
 	case err := <-errCh:
 		return fmt.Errorf("HTTP server exited unexpectedly: %w", err)

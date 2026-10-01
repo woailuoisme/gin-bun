@@ -264,7 +264,7 @@ func TestInvoiceRequiresTranslator(t *testing.T) {
 	assert.Contains(t, err.Error(), "translator not initialized")
 }
 
-func TestGlobalServiceAccess(t *testing.T) {
+func TestRegisterPDFServiceInstance(t *testing.T) {
 	ctx := t.Context()
 	cfg := &config.Config{
 		PDF: config.PDFConfig{
@@ -275,10 +275,9 @@ func TestGlobalServiceAccess(t *testing.T) {
 	service, err := pdf.RegisterPDF(cfg, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, service)
-	assert.Equal(t, service, pdf.DefaultService())
 
-	doc := &simpleTestDoc{title: "Global Service", content: "Testing global invocation"}
-	data, err := pdf.Render(ctx, doc)
+	doc := &simpleTestDoc{title: "RegisterPDF Service", content: "Testing instance invocation"}
+	data, err := service.Render(ctx, doc)
 	require.NoError(t, err)
 	assert.True(t, bytes.HasPrefix(data, []byte("%PDF")))
 }

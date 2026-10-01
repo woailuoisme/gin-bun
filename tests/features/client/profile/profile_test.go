@@ -26,8 +26,8 @@ func TestUpdateProfileRequestShape(t *testing.T) {
 		"name":"Alice",
 		"image":null,
 		"username":"alice_01",
-		"display_username":"Alice",
-		"phone_number":"+8613800138000",
+		"displayUsername":"Alice",
+		"phoneNumber":"+8613800138000",
 		"email":"should-be-ignored@bgin.local",
 		"role":"admin"
 	}`), &request))
@@ -41,6 +41,8 @@ func TestUpdateProfileRequestShape(t *testing.T) {
 	assert.True(t, request.Name.IsValue())
 	assert.True(t, request.Image.IsNull())
 	assert.True(t, request.Username.IsValue())
+	assert.True(t, request.DisplayUsername.IsValue())
+	assert.True(t, request.PhoneNumber.IsValue())
 }
 
 // TestUploadAvatarValidation 校验上传头像的权限要求、字段提取与魔数格式防御。

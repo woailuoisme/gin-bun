@@ -8,8 +8,9 @@ import (
 	"github.com/brianvoe/gofakeit/v7"
 	"github.com/uptrace/bun"
 
+	"bgin/internal/database"
+	"bgin/internal/database/models"
 	"bgin/internal/platform/hasher"
-	"bgin/internal/shared/models"
 )
 
 // AccountFactory 是面向 models.Account 凭据实体的领域工厂。
@@ -29,7 +30,7 @@ func NewAccountFactory(db bun.IDB) *AccountFactory {
 			hashedPwd := hashPasswordOrPanic(pwdHasher, FixturePassword)
 
 			return &models.Account{
-				Base: models.Base{
+				Base: database.Base{
 					ID:        id.String(),
 					CreatedAt: now,
 					UpdatedAt: now,

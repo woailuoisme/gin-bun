@@ -24,7 +24,7 @@ import (
 type Deps struct {
 	Tokens      *authentication.TokenIssuer
 	AuthManager *authentication.Manager
-	Cache       *cache.Client
+	Cache       cache.Store
 	Authz       *authorization.Enforcer
 	Logger      *zap.Logger
 	Limiter     config.LimiterConfig
@@ -35,7 +35,7 @@ type Deps struct {
 type Middleware struct {
 	tokens       *authentication.TokenIssuer
 	authManager  *authentication.Manager
-	cache        *cache.Client
+	cache        cache.Store
 	limiterStore RateLimiterStore
 	authz        *authorization.Enforcer
 	logger       *zap.Logger

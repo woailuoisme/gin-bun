@@ -60,12 +60,12 @@ func tokenLockKey(appID string) string {
 
 // redisTokenStore 基于 internal/platform/cache 实现 TokenStore 接口。
 type redisTokenStore struct {
-	cache *cache.Client
+	cache cache.Store
 }
 
 var _ TokenStore = (*redisTokenStore)(nil)
 
-func newRedisTokenStore(client *cache.Client) TokenStore {
+func newRedisTokenStore(client cache.Store) TokenStore {
 	if client == nil {
 		return newMemoryTokenStore()
 	}

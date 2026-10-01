@@ -3,6 +3,7 @@
 package resilience
 
 import (
+	"cmp"
 	"context"
 	"time"
 
@@ -94,11 +95,7 @@ func NewCircuitBreaker[R any](cfg CircuitBreakerConfig) circuitbreaker.CircuitBr
 
 // NewBulkhead 构建并发隔离舱，限制对下游的最大并发请求数并提供排队等待缓冲。
 func NewBulkhead[R any](cfg BulkheadConfig) bulkhead.Bulkhead[R] {
-	concurrency := cfg.MaxConcurrency
-	if concurrency == 0 {
-		concurrency = 10
-	}
-	builder := bulkhead.NewBuilder[R](concurrency)
+	builder := bulkhead.NewBuilder[R](cmp.Or(cfg.MaxConcurrency, 10))
 	if cfg.MaxWaitTime > 0 {
 		builder = builder.WithMaxWaitTime(cfg.MaxWaitTime)
 	}

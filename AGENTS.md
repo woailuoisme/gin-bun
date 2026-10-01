@@ -66,7 +66,8 @@ internal/
 ├── bootstrap/                  # 依赖组装、引擎初始化与服务生命周期管理
 ├── config/                     # 基于 caarlos0/env 的强类型环境配置加载
 ├── console/                    # Artisan 风格 CLI 命令（serve, db:seed, db:fresh）
-├── database/                   # Bun ORM 客户端初始化与目标 DDL
+├── database/                   # Bun ORM 客户端、事务工作单元、Base 实体基座与通用 Active Record 泛型引擎
+│   ├── models/                 # 数据库表实体模型（Account, User, Verification 等）
 │   └── schemas/                # 声明式目标 DDL（Atlas 迁移计算的事实源）
 ├── features/                   # 垂直领域切片（核心业务逻辑）
 │   ├── admin/auth/             # 管理端认证
@@ -94,7 +95,6 @@ internal/
 │   ├── events/                 # 跨切片领域事件模型
 │   ├── indexes/                # 全文检索索引器定义与集中装配
 │   ├── media/                  # 媒体处理、验证、签名与多态附件管理（基于 storage 与 models）
-│   ├── models/                 # 数据库表实体模型（Account, User, Verification 等）
 │   ├── notification/           # 跨切片通知类型与数据载荷
 │   └── user/                   # 共享 User View、字段约束与基础查询契约
 tests/                          # 外部测试包（测试代码与业务逻辑彻底解耦）
@@ -130,7 +130,7 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
      2. **`*PathParams`**：对应路由 URI 路径参数（必须附带 `uri:"..."` 标签与校验规则），Handler 统一使用 `c.ShouldBindUri(&pathParams)` 强类型绑定与校验。**绝对严禁在 Handler 中使用裸调 `c.Param("id")` 提取路径参数**；
      3. **`*QueryParams`**：对应 URL Query 查询参数（必须附带 `form:"..."` 与 `json:"..."` 标签），Handler 统一使用 `c.ShouldBindQuery(&queryParams)` 绑定；
      4. **`*Resource`**：对应响应数据单体视图（如 `UserResource`）；分页列表必须显式声明 `*PageResource` 结构体（内含 `items []<Entity>Resource` 与 `meta response.Meta`），确保 Swagger/OpenAPI 无歧义精准解析。
-   - **全系统 `snake_case` 契约硬性红线**：所有 DTO 的 `json:"..."`、`form:"..."` 与 `uri:"..."` 字段标签统一使用下划线（`snake_case`），严格与 `api.md` RESTful 契约保持一致。
+   - **全系统 `camelCase` 契约硬性红线**：所有 DTO 的 `json:"..."`、`form:"..."` 与 `uri:"..."` 字段标签统一使用小驼峰（`camelCase`），严格与 `api.md` RESTful 契约保持一致。
 
 ---
 
@@ -179,7 +179,7 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 | **终端用户错误提示** | 统一 i18n 资源 | `lang/zh-CN/*.toml`, `lang/en/*.toml` | 在业务代码中直接硬编码中文提示 |
 
 ### 4.6 时间、容量与数据格式化红线规范 (Time, Capacity & Formatting Discipline)
-- **Model 与 DTO 原生时间红线（绝对红线）**：数据库实体 Model（`internal/shared/models/`）与对外传输对象 DTO（`dto.go`）**必须严格使用 Go 原生 `time.Time`**。严禁在数据库映射模型或对外契约中引入 `carbon.Carbon` / `carbon.DateTime` 等第三方包装类型，彻底确保 Bun ORM、PostgreSQL `timestamptz` 原生驱动与 OpenAPI RFC 3339 序列化的极致性能、类型安全与契约稳定。
+- **Model 与 DTO 原生时间红线（绝对红线）**：数据库实体 Model（`internal/database/models/`）与对外传输对象 DTO（`dto.go`）**必须严格使用 Go 原生 `time.Time`**。严禁在数据库映射模型或对外契约中引入 `carbon.Carbon` / `carbon.DateTime` 等第三方包装类型，彻底确保 Bun ORM、PostgreSQL `timestamptz` 原生驱动与 OpenAPI RFC 3339 序列化的极致性能、类型安全与契约稳定。
 - **业务时间推导统一 Carbon**：在业务逻辑层（Service）、计划任务（Worker）、CLI 命令与报表导出（Excel）中，凡涉及复杂时间计算（如有效期加减、封禁时间推导、自然日跨度）、相对时间展示（`DiffForHumans`）以及非标日期字符串解析时，**统一使用 `github.com/golang-module/carbon/v2`**（全局时区与 Locale 自动与 `.env` 中 `APP_TIMEZONE` 和 `APP_LOCALE` 同步）。
 - **容量与数字人性化统一 Humanize**：在 CLI 报表输出、运维日志、存储元数据与监控统计中，文件/对象字节容量展示（`humanize.Bytes` / `humanize.IBytes`）、大数字千分位分割（`humanize.Comma`）**统一使用 `github.com/dustin/go-humanize`**，严禁手动编写冗余的除法换算或格式化逻辑。
 
@@ -208,6 +208,35 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
    - 严格避免深层 `if-else` 分支嵌套，优先使用错误与边界条件的卫语句提前 `return`，保持主逻辑处于最浅缩进层级。
 7. **面向使用者定义最小接口 (Accept Interfaces, Return Structs)**：
    - 服务构造器统一返回具体的结构体指针（如 `*Service`），避免过早抽象导致调用方受制于肥接口；接口由具体的消费方（Caller）在依赖处按需就地定义最小接口契约。
+
+### 4.8 全链路追踪标识与类型前缀 UUIDv7 规范 (Type-Prefixed UUIDv7 Specification)
+- **Stripe 风格前缀紧凑 UUIDv7 标准**：全链路请求追踪 ID（`request_id`）统一采用工业界标准的**类型前缀紧凑型 UUIDv7**（形如 `req_<32hex>`，例如 `req_01a0f7382105731198af306440d05dca`）。
+- **核心结构优势**：
+  1. **实体类型上下文 (`req_`)**：提供即时的业务语义上下文，在跨服务 APM、微服务分布式链路追踪与日志检索中可瞬间识别资源属性，杜绝跨字段误用；
+  2. **高精度时序局部性**：基于 RFC 9562 Version 7 规范，高 48 位嵌入毫秒级 Unix 时间戳，天然具备全局单调递增性，彻底消除经典 UUIDv4 在数据库索引与日志检索中的 B-Tree 随机页分裂（Page Split）；
+  3. **紧凑与高效存储**：去除连字符（hyphen）压缩为 32 字符十六进制，方便双击全选与 URL/Header 传递；在需要写入数据库原生 `uuid` 字段时，可直接进行二进制转换，零额外开销。
+
+### 4.9 云原生高可用治理与双探针解耦纪律 (Cloud-Native Probes & Resilience)
+
+系统在面临外部依赖（PostgreSQL 18 与 Valkey/Redis）异常与抖动时，遵循严格的云原生分级容灾与治理规范：
+
+#### 1. 双探针职责彻底解耦（避免惊群重启雪崩）
+- **致命反模式阻断**：行业里最致命的反模式是“数据库挂了，让整个服务死掉重启”。在微服务多副本场景下，这会导致集群内几百个 Pod 同时反复重启，造成数据库刚缓过来又被瞬间冲垮（引发灾难性的惊群雪崩）。
+- **存活探针 [handler.go#L36](file:///Users/seaside/Projects/go/gin-bun/internal/features/system/handler.go#L36-L39) (`GET /livez`)**：
+  - 只要 Go 进程自身没发生死锁或僵死，**永远返回 200**。Kubernetes 确认进程存活，绝不会盲目杀死重启容器。
+  - **绝对禁令**：严禁在 `/livez` 中绑定数据库或外部依赖连通性。
+- **就绪探针 [service.go#L58-L62](file:///Users/seaside/Projects/go/gin-bun/internal/features/system/service.go#L58-L62) (`GET /readyz`)**：
+  - **数据库 (`ComponentDatabase`, Critical = true)**：一旦 Postgres 断开，`/readyz` 立即返回 `503 Service Unavailable`。Kubernetes/负载均衡器收到 503 后，会瞬间将该实例从服务节点剔除，切断新流量接入，保护终端用户免受报错影响；一旦数据库恢复，探针重新变绿（200），网关瞬间自动将流量重新注入！
+  - **Redis 缓存 (`ComponentCache`, Critical = false)**：Redis 属于非致命加速层，如果宕机，`/readyz` 返回 `200 degraded`，系统识别为降级状态，依旧允许接流。
+
+#### 2. 全生命周期闭环保障
+- **启动期**：配置错、DB 连不上 $\to$ 快速失败退出（Fail-Fast），绝不带病上线。在 [internal/bootstrap/wire.go](file:///Users/seaside/Projects/go/gin-bun/internal/bootstrap/wire.go#L62-L66) 执行 `sqlDB.PingContext(ctx)` 失败即通过 `teardown` 逆序释放资源并以非零退出码（`os.Exit(1)`）退出。
+- **运行期网络抖动**：长连接池自适应重试重连，业务请求转为 500 结构化错误，进程长青。底层 `pgx/v5` 与 `rueidis` 连接池内置保活与自动重连，网络恢复后无需人工干预即可自动恢复流量处理。
+- **运行期外部服务宕机**：`/readyz` 秒级将流量自动排空摘除，杜绝雪崩扩散；恢复后秒级自动回切。
+
+#### 3. 高频探针日志健康静默纪律 (Probe Health Silence)
+- 为避免本地开发与生产容器探针高频轮询（每 2~3 秒一次）导致控制台与集中式日志系统被正常心跳日志刷屏，中间件 [internal/middleware/global/observability.go](file:///Users/seaside/Projects/go/gin-bun/internal/middleware/global/observability.go#L64-L67) **在 `status < 400` 时对 `/livez` 与 `/readyz` 实行完全静默，不记录访问日志**。
+- 一旦探针出现任何异常（`status >= 400` 或 `>= 500`），强制保留 `Warn` 或 `Error` 级别结构化日志与堆栈，确保 APM 告警与应急排障无死角。
 
 ---
 
@@ -257,7 +286,7 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
    - **字符串枚举必须全量列举 (`enums:"..."`)**：针对所有固定取值范围的字符串枚举字段（如用户角色、账号状态等）：
      - 必须在 struct tag 中显式声明 `enums:"val1,val2,..."` 列出全部候选枚举；
      - 必须在字段的中文注释中明确罗列每个候选枚举的语义（如 `// 用户权限角色 (user: 普通用户, admin: 系统管理员)`）。
-   - **强制下划线标签 (`snake_case`)**：所有 DTO 的 `json:"..."`、`form:"..."` 与 `uri:"..."` 标签必须为纯小写下划线命名，严禁使用驼峰。
+   - **强制小驼峰标签 (`camelCase`)**：所有 DTO 的 `json:"..."`、`form:"..."` 与 `uri:"..."` 标签必须为标准小驼峰命名（`camelCase`），严格对齐 `api.md` RESTful 契约。
 
 3. **标准代码模版示范**：
    ```go
@@ -307,7 +336,7 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
 [migrations/YYYYMMDD_name.sql] ──(版本化记录)──> 真实执行的增量迁移脚本
              │
              ▼ (同步映射)
-[internal/shared/models/*.go] ──(ORM 实体定义)──> Bun ORM 强类型 Go Struct
+[internal/database/models/*.go] ──(ORM 实体定义)──> Bun ORM 强类型 Go Struct
 ```
 
 ### 数据库操作硬性准则：

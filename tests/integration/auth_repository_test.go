@@ -13,11 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
 
-	"bgin/internal/features/client/auth"
-	"bgin/internal/shared/models"
+	"bgin/internal/database/models"
 )
 
-// testHash 是占位口令哈希，仓储层不校验 argon2id 本身。
+// testHash 是占位口令哈希，模型层不校验 argon2id 本身。
 const testHash = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0c2E$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhh"
 
 // cleanupUser 按外键顺序清理测试数据，避免污染测试库。
@@ -35,7 +34,6 @@ func cleanupUser(db *bun.DB, userID, identifier string) {
 // TestRepositoryUserLifecycle 覆盖用户与凭据的完整读写路径。
 func TestRepositoryUserLifecycle(t *testing.T) {
 	db := openTestDB(t)
-	repo := auth.NewRepository(db, nil)
 	ctx := t.Context()
 	email := uniqueEmail()
 
@@ -45,7 +43,7 @@ func TestRepositoryUserLifecycle(t *testing.T) {
 		Role:   models.RoleUser,
 		Status: models.StatusActive,
 	}
-	require.NoError(t, repo.CreateWithCredential(ctx, user, testHash))
+	require.NoError(t, models.CreateUserWithCredential(ctx, db, user, testHash))
 	require.NotEmpty(t, user.ID)
 	t.Cleanup(func() { cleanupUser(db, user.ID, "") })
 
@@ -53,47 +51,47 @@ func TestRepositoryUserLifecycle(t *testing.T) {
 	assert.Equal(t, byte('7'), user.ID[14], "应为 UUIDv7，实际 id=%s", user.ID)
 
 	t.Run("邮箱查询大小写不敏感", func(t *testing.T) {
-		found, err := repo.FindByEmail(ctx, strings.ToUpper(email))
+		found, err := models.FindUserByEmail(ctx, db, strings.ToUpper(email))
 		require.NoError(t, err)
 		assert.Equal(t, user.ID, found.ID)
 	})
 
 	t.Run("主键查询命中", func(t *testing.T) {
-		found, err := repo.FindByID(ctx, user.ID)
+		found, err := models.FindUserByID(ctx, db, user.ID)
 		require.NoError(t, err)
 		assert.Equal(t, email, found.Email)
 		assert.Equal(t, user.CreatedAt.UTC(), found.CreatedAt.UTC(), "时间戳必须按 UTC 存取")
 	})
 
 	t.Run("凭据账号可取回", func(t *testing.T) {
-		account, err := repo.FindCredentialAccount(ctx, user.ID)
+		account, err := models.FindCredentialAccount(ctx, db, user.ID)
 		require.NoError(t, err)
 		require.NotNil(t, account.Password)
 		assert.Equal(t, testHash, *account.Password)
 	})
 
 	t.Run("不存在的用户返回 ErrNoRows", func(t *testing.T) {
-		_, err := repo.FindByEmail(ctx, "nobody@bgin.local")
+		_, err := models.FindUserByEmail(ctx, db, "nobody@bgin.local")
 		assert.ErrorIs(t, err, sql.ErrNoRows)
 	})
 
 	t.Run("重复邮箱被唯一索引拦下", func(t *testing.T) {
 		duplicate := &models.User{Name: "Dup", Email: email, Role: models.RoleUser, Status: models.StatusActive}
-		err := repo.CreateWithCredential(ctx, duplicate, testHash)
+		err := models.CreateUserWithCredential(ctx, db, duplicate, testHash)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "idx_user_email")
 	})
 
 	t.Run("改写口令影响一行", func(t *testing.T) {
-		require.NoError(t, repo.UpdatePassword(ctx, user.ID, testHash+"x"))
-		assert.ErrorIs(t, repo.UpdatePassword(ctx, "u_missing", testHash), sql.ErrNoRows)
+		require.NoError(t, models.UpdatePassword(ctx, db, user.ID, testHash+"x"))
+		assert.ErrorIs(t, models.UpdatePassword(ctx, db, "u_missing", testHash), sql.ErrNoRows)
 	})
 
 	t.Run("记录登录与邮箱验证", func(t *testing.T) {
-		require.NoError(t, repo.RecordLogin(ctx, user.ID, models.ProviderCredential))
-		require.NoError(t, repo.MarkEmailVerified(ctx, user.ID))
+		require.NoError(t, user.RecordLogin(ctx, db, models.ProviderCredential))
+		require.NoError(t, user.MarkEmailVerified(ctx, db))
 
-		found, err := repo.FindByID(ctx, user.ID)
+		found, err := models.FindUserByID(ctx, db, user.ID)
 		require.NoError(t, err)
 		assert.True(t, found.EmailVerified)
 		require.NotNil(t, found.LastLoginMethod)
@@ -102,7 +100,7 @@ func TestRepositoryUserLifecycle(t *testing.T) {
 	})
 
 	t.Run("用户计数不为零", func(t *testing.T) {
-		count, err := repo.CountActiveUsers(ctx)
+		count, err := models.CountActiveUsers(ctx, db)
 		require.NoError(t, err)
 		assert.Positive(t, count)
 	})
@@ -111,28 +109,27 @@ func TestRepositoryUserLifecycle(t *testing.T) {
 // TestRepositoryVerificationLifecycle 覆盖一次性凭据的写入、读取与核销。
 func TestRepositoryVerificationLifecycle(t *testing.T) {
 	db := openTestDB(t)
-	repo := auth.NewRepository(db, nil)
 	ctx := t.Context()
 
 	identifier := "email-verify:" + uniqueEmail()
 	t.Cleanup(func() { cleanupUser(db, "", identifier) })
 
 	expiresAt := time.Now().UTC().Add(10 * time.Minute)
-	require.NoError(t, repo.SaveVerification(ctx, identifier, "digest-1", expiresAt))
+	require.NoError(t, models.SaveVerification(ctx, db, identifier, "digest-1", expiresAt))
 
-	record, err := repo.FindVerification(ctx, identifier)
+	record, err := models.FindVerification(ctx, db, identifier)
 	require.NoError(t, err)
 	assert.Equal(t, "digest-1", record.Value)
 	assert.True(t, record.ExpiresAt.UTC().Equal(expiresAt), "过期时间必须按 UTC 存取")
 
 	// 同 identifier 再次写入必须覆盖，保证一个主体只有一条待核销凭据。
-	require.NoError(t, repo.SaveVerification(ctx, identifier, "digest-2", expiresAt))
-	again, err := repo.FindVerification(ctx, identifier)
+	require.NoError(t, models.SaveVerification(ctx, db, identifier, "digest-2", expiresAt))
+	again, err := models.FindVerification(ctx, db, identifier)
 	require.NoError(t, err)
 	assert.Equal(t, "digest-2", again.Value)
 
-	require.NoError(t, repo.DeleteVerification(ctx, again.ID))
-	_, err = repo.FindVerification(ctx, identifier)
+	require.NoError(t, models.DeleteVerification(ctx, db, again.ID))
+	_, err = models.FindVerification(ctx, db, identifier)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
 
@@ -140,12 +137,11 @@ func TestRepositoryVerificationLifecycle(t *testing.T) {
 // 这依赖 schema 里 idx_user_email 的 WHERE deleted_at IS NULL 部分唯一索引。
 func TestSoftDeleteFreesEmail(t *testing.T) {
 	db := openTestDB(t)
-	repo := auth.NewRepository(db, nil)
 	ctx := t.Context()
 	email := uniqueEmail()
 
 	first := &models.User{Name: "First", Email: email, Role: models.RoleUser, Status: models.StatusActive}
-	require.NoError(t, repo.CreateWithCredential(ctx, first, testHash))
+	require.NoError(t, models.CreateUserWithCredential(ctx, db, first, testHash))
 	t.Cleanup(func() { cleanupUser(db, first.ID, "") })
 
 	now := time.Now().UTC()
@@ -158,12 +154,12 @@ func TestSoftDeleteFreesEmail(t *testing.T) {
 	require.NoError(t, err)
 
 	// 软删后原邮箱对业务查询不可见。
-	_, err = repo.FindByEmail(ctx, email)
+	_, err = models.FindUserByEmail(ctx, db, email)
 	require.ErrorIs(t, err, sql.ErrNoRows, "软删用户不应出现在业务查询里")
 
 	// 且同一邮箱可以重新注册，这正是部分唯一索引的设计意图。
 	second := &models.User{Name: "Second", Email: email, Role: models.RoleUser, Status: models.StatusActive}
-	require.NoError(t, repo.CreateWithCredential(ctx, second, testHash))
+	require.NoError(t, models.CreateUserWithCredential(ctx, db, second, testHash))
 	t.Cleanup(func() { cleanupUser(db, second.ID, "") })
 	assert.NotEqual(t, first.ID, second.ID)
 }
@@ -171,12 +167,11 @@ func TestSoftDeleteFreesEmail(t *testing.T) {
 // TestSchemaEnforcesRoleAndStatusChecks 校验库层的 CHECK 约束确实生效（ADR-0004）。
 func TestSchemaEnforcesRoleAndStatusChecks(t *testing.T) {
 	db := openTestDB(t)
-	repo := auth.NewRepository(db, nil)
 	ctx := t.Context()
 
 	t.Run("非法角色被拒绝", func(t *testing.T) {
 		user := &models.User{Name: "Bad Role", Email: uniqueEmail(), Role: "editor", Status: models.StatusActive}
-		err := repo.CreateWithCredential(ctx, user, testHash)
+		err := models.CreateUserWithCredential(ctx, db, user, testHash)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "ck_user_role")
 		cleanupUser(db, user.ID, "")
@@ -184,7 +179,7 @@ func TestSchemaEnforcesRoleAndStatusChecks(t *testing.T) {
 
 	t.Run("非法状态被拒绝", func(t *testing.T) {
 		user := &models.User{Name: "Bad Status", Email: uniqueEmail(), Role: models.RoleUser, Status: "sleeping"}
-		err := repo.CreateWithCredential(ctx, user, testHash)
+		err := models.CreateUserWithCredential(ctx, db, user, testHash)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "ck_user_status")
 		cleanupUser(db, user.ID, "")

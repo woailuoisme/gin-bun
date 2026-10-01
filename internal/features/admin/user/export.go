@@ -6,14 +6,22 @@ import (
 	"slices"
 	"time"
 
+	"bgin/internal/database/models"
 	"bgin/internal/platform/excel"
-	"bgin/internal/shared/models"
 	"bgin/internal/shared/user"
 )
 
-// UserFetcher 声明按条件分页物理拉取用户实体的抽象契约（ISP），由 *user.Repository 满足。
+// UserFetcher 声明按条件分页物理拉取用户实体的抽象契约（ISP），由 models 或函数适配器满足。
 type UserFetcher interface {
 	List(ctx context.Context, filter user.ListFilter, offset, limit int) ([]models.User, error)
+}
+
+// UserFetchFunc 是 UserFetcher 的函数式适配器。
+type UserFetchFunc func(ctx context.Context, filter user.ListFilter, offset, limit int) ([]models.User, error)
+
+// List 实现 UserFetcher 接口。
+func (f UserFetchFunc) List(ctx context.Context, filter user.ListFilter, offset, limit int) ([]models.User, error) {
+	return f(ctx, filter, offset, limit)
 }
 
 // UsersExport 封装用户数据列表导出为 Excel 文件的声明与格式化映射。
@@ -35,7 +43,7 @@ func (e *UsersExport) FromSlice() any {
 
 // Headings 定义 Excel 导出表头。
 func (e *UsersExport) Headings() []string {
-	return []string{"ID", "Name", "Email", "Role", "Status", "Created At"}
+	return slices.Clone(defaultUserHeadings)
 }
 
 // Mapping 将单条 User 实体映射为单元格数据行。
@@ -48,9 +56,15 @@ func (e *UsersExport) Title() string {
 	return "Users"
 }
 
+// defaultUserHeadings 用户导出默认表头定义。
+var defaultUserHeadings = []string{"ID", "Name", "Email", "Role", "Status", "Created At"}
+
 // ExportStream 辅助函数：将用户切片直接流式序列化并写入指定的 io.Writer。
 func ExportStream(ctx context.Context, w io.Writer, users []*models.User, opts ...excel.ExportOption) error {
-	return excel.Export(ctx, NewUsersExport(users), w, opts...)
+	exportOpts := append([]excel.ExportOption{excel.WithSheetName("Users")}, opts...)
+	return excel.ExportSlice(ctx, w, users, defaultUserHeadings, func(u *models.User) []any {
+		return mapUserRow(u)
+	}, exportOpts...)
 }
 
 const defaultUserChunkSize = 500
@@ -103,7 +117,7 @@ func (e *UsersChunkedExport) FetchChunk(ctx context.Context, offset int, limit i
 
 // Headings 定义 Excel 导出表头。
 func (e *UsersChunkedExport) Headings() []string {
-	return []string{"ID", "Name", "Email", "Role", "Status", "Created At"}
+	return slices.Clone(defaultUserHeadings)
 }
 
 // Mapping 将单条 User 实体映射为单元格数据行。
@@ -124,7 +138,40 @@ func ExportChunkedStream(
 	filter user.ListFilter,
 	opts ...excel.ExportOption,
 ) error {
-	return excel.Export(ctx, NewUsersChunkedExport(fetcher, filter), w, opts...)
+	size := defaultUserChunkSize
+	exportOpts := append([]excel.ExportOption{excel.WithSheetName("Users")}, opts...)
+	return excel.NewExportBuilder[*models.User]().
+		WithHeadings(defaultUserHeadings...).
+		WithMapping(func(u *models.User) []any {
+			return mapUserRow(u)
+		}).
+		FromGenerator(func(yield func(item *models.User) bool) error {
+			if fetcher == nil {
+				return nil
+			}
+			offset := 0
+			for {
+				chunk, err := fetcher.List(ctx, filter, offset, size)
+				if err != nil {
+					return err
+				}
+				if len(chunk) == 0 {
+					break
+				}
+				for i := range chunk {
+					if !yield(&chunk[i]) {
+						return nil
+					}
+				}
+				if len(chunk) < size {
+					break
+				}
+				offset += len(chunk)
+			}
+			return nil
+		}).
+		WithOptions(exportOpts...).
+		Write(ctx, w)
 }
 
 func mapUserRow(row any) []any {

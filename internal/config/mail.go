@@ -33,7 +33,7 @@ type ResendConfig struct {
 }
 
 // Validate 检查邮件配置合法性。
-func (m MailConfig) Validate() error {
+func (m *MailConfig) Validate() error {
 	driver := strings.ToLower(strings.TrimSpace(m.Driver))
 	switch driver {
 	case "mailpit", "":

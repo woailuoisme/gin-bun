@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -18,6 +19,12 @@ import (
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/queue"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m,
+		goleak.IgnoreTopFunction("github.com/redis/go-redis/v9/maintnotifications.(*CircuitBreakerManager).cleanupLoop"),
+	)
+}
 
 type dummyJob struct {
 	queue.JobMeta

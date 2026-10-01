@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/johnfercher/maroto/v2"
@@ -39,11 +38,6 @@ type Service struct {
 	fontFamily string
 }
 
-var (
-	defaultMu      sync.RWMutex
-	defaultService *Service
-)
-
 // NewService 实例化 PDF 服务。
 func NewService(cfg config.PDFConfig, disk storage.Disk, log *zap.Logger) *Service {
 	fonts, resolvedFamily := ResolveFontConfig(cfg.FontPath, cfg.FontFamily, log)
@@ -57,7 +51,7 @@ func NewService(cfg config.PDFConfig, disk storage.Disk, log *zap.Logger) *Servi
 	}
 }
 
-// RegisterPDF 注册并初始化全局默认 PDF 服务。
+// RegisterPDF 注册并初始化 PDF 服务实例。
 func RegisterPDF(cfg *config.Config, disk storage.Disk, log *zap.Logger) (*Service, error) {
 	pdfCfg := config.PDFConfig{
 		FontFamily: "SourceHanSans",
@@ -68,59 +62,7 @@ func RegisterPDF(cfg *config.Config, disk storage.Disk, log *zap.Logger) (*Servi
 		pdfCfg = cfg.PDF
 	}
 
-	service := NewService(pdfCfg, disk, log)
-	SetDefaultService(service)
-	return service, nil
-}
-
-// SetDefaultService 注册全局默认的 PDF 服务实例。
-func SetDefaultService(service *Service) {
-	defaultMu.Lock()
-	defer defaultMu.Unlock()
-	defaultService = service
-}
-
-// DefaultService 获取全局默认的 PDF 服务实例。
-func DefaultService() *Service {
-	defaultMu.RLock()
-	defer defaultMu.RUnlock()
-	return defaultService
-}
-
-// Render 全局快捷渲染入口。
-func Render(ctx context.Context, doc Document) ([]byte, error) {
-	s := DefaultService()
-	if s == nil {
-		return nil, oops.Errorf("pdf: default service not initialized")
-	}
-	return s.Render(ctx, doc)
-}
-
-// RenderToWriter 全局快捷流式写入入口。
-func RenderToWriter(ctx context.Context, doc Document, w io.Writer) error {
-	s := DefaultService()
-	if s == nil {
-		return oops.Errorf("pdf: default service not initialized")
-	}
-	return s.RenderToWriter(ctx, doc, w)
-}
-
-// StreamToHTTP 全局快捷标准 HTTP 响应写入入口。
-func StreamToHTTP(ctx context.Context, w http.ResponseWriter, filename string, doc Document, mode DeliveryMode) error {
-	s := DefaultService()
-	if s == nil {
-		return oops.Errorf("pdf: default service not initialized")
-	}
-	return s.StreamToHTTP(ctx, w, filename, doc, mode)
-}
-
-// SaveToStorage 全局快捷转存入口。
-func SaveToStorage(ctx context.Context, path string, doc Document) (string, error) {
-	s := DefaultService()
-	if s == nil {
-		return "", oops.Errorf("pdf: default service not initialized")
-	}
-	return s.SaveToStorage(ctx, path, doc)
+	return NewService(pdfCfg, disk, log), nil
 }
 
 // Render 将 Document 编排并编译生成原始 PDF 二进制字节切片。
@@ -165,13 +107,8 @@ func (s *Service) StreamToHTTP(ctx context.Context, w http.ResponseWriter, filen
 		return oops.Wrap(err)
 	}
 
-	if filename == "" {
-		filename = "document.pdf"
-	}
-	disposition := string(mode)
-	if disposition == "" {
-		disposition = string(DeliveryInline)
-	}
+	filename = cmp.Or(filename, "document.pdf")
+	disposition := cmp.Or(string(mode), string(DeliveryInline))
 
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))

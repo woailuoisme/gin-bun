@@ -11,9 +11,9 @@ type TokenResource struct {
 	// Centrifugo 客户端连接 Token (JWT)
 	Token string `json:"token" example:"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."`
 	// Token 过期时间戳 (RFC3339)
-	ExpiresAt time.Time `json:"expires_at" example:"2026-09-27T19:30:00Z"`
+	ExpiresAt time.Time `json:"expiresAt" example:"2026-09-27T19:30:00Z"`
 	// Centrifugo WebSocket/SSE 服务端地址
-	WSURL string `json:"ws_url" example:"ws://127.0.0.1:8000/connection/websocket"`
+	WSURL string `json:"wsUrl" example:"ws://127.0.0.1:8000/connection/websocket"`
 }
 
 // SubscribeBody 为 Centrifugo HTTP Proxy 订阅鉴权请求别名（供 Swagger 注解直接引用）。

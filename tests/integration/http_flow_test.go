@@ -77,7 +77,7 @@ func TestSignUpAndSessionContract(t *testing.T) {
 		require.NotEmpty(t, user)
 		assert.Equal(t, email, str(user, "email"))
 		assert.NotContains(t, result.Body, "session", "本系统没有会话实体")
-		assert.NotContains(t, result.Body, "refresh_token", "get-session 是纯只读，不续签")
+		assert.NotContains(t, result.Body, "refreshToken", "get-session 是纯只读，不续签")
 	})
 
 	t.Run("时间戳按 UTC 且以 Z 结尾", func(t *testing.T) {
@@ -250,8 +250,8 @@ func TestPasswordChangeAndReset(t *testing.T) {
 
 	t.Run("当前口令错误返回 422", func(t *testing.T) {
 		result := callJSON(t, engine, http.MethodPost, "/v1/auth/change-password", map[string]any{
-			"current_password": "wrong-password",
-			"new_password":     "secret54321",
+			"currentPassword": "wrong-password",
+			"newPassword":     "secret54321",
 		}, token)
 
 		require.Equal(t, http.StatusUnprocessableEntity, result.Status)
@@ -260,8 +260,8 @@ func TestPasswordChangeAndReset(t *testing.T) {
 
 	t.Run("改密成功返回 204 且新口令可用", func(t *testing.T) {
 		result := callJSON(t, engine, http.MethodPost, "/v1/auth/change-password", map[string]any{
-			"current_password": "secret12345",
-			"new_password":     "secret54321",
+			"currentPassword": "secret12345",
+			"newPassword":     "secret54321",
 		}, token)
 
 		require.Equal(t, http.StatusNoContent, result.Status, result.Raw)
@@ -275,13 +275,13 @@ func TestPasswordChangeAndReset(t *testing.T) {
 
 	t.Run("弱口令被拒绝", func(t *testing.T) {
 		result := callJSON(t, engine, http.MethodPost, "/v1/auth/change-password", map[string]any{
-			"current_password": "secret54321",
-			"new_password":     "onlyletters",
+			"currentPassword": "secret54321",
+			"newPassword":     "onlyletters",
 		}, token)
 
 		require.Equal(t, http.StatusUnprocessableEntity, result.Status)
 		assert.Equal(t, string(errs.CodeAuthPasswordTooWeak), result.Body["code"])
-		assert.NotEmpty(t, errorMessages(result.Body, "new_password"))
+		assert.NotEmpty(t, errorMessages(result.Body, "newPassword"))
 	})
 
 	t.Run("忘记密码不会暴露邮箱是否存在", func(t *testing.T) {
@@ -295,7 +295,7 @@ func TestPasswordChangeAndReset(t *testing.T) {
 
 	t.Run("重置验证码错误返回 422", func(t *testing.T) {
 		result := callJSON(t, engine, http.MethodPost, "/v1/auth/reset-password", map[string]any{
-			"email": email, "otp": "000000", "new_password": "secret98765",
+			"email": email, "otp": "000000", "newPassword": "secret98765",
 		}, "")
 
 		require.Equal(t, http.StatusUnprocessableEntity, result.Status)
@@ -304,7 +304,7 @@ func TestPasswordChangeAndReset(t *testing.T) {
 
 	t.Run("既无令牌也无验证码返回 422", func(t *testing.T) {
 		result := callJSON(t, engine, http.MethodPost, "/v1/auth/reset-password", map[string]any{
-			"email": email, "new_password": "secret98765",
+			"email": email, "newPassword": "secret98765",
 		}, "")
 
 		require.Equal(t, http.StatusUnprocessableEntity, result.Status)
@@ -321,18 +321,18 @@ func TestTokenRefreshRotationAndSignOut(t *testing.T) {
 
 	t.Run("刷新换取新令牌", func(t *testing.T) {
 		result := callJSON(t, engine, http.MethodPost, "/v1/auth/token/refresh", map[string]any{
-			"refresh_token": refreshToken,
+			"refreshToken": refreshToken,
 		}, "")
 
 		require.Equal(t, http.StatusOK, result.Status, result.Raw)
 		assert.NotEmpty(t, str(result.Body, "token"))
-		rotatedRefresh = str(result.Body, "refresh_token")
+		rotatedRefresh = str(result.Body, "refreshToken")
 		assert.NotEqual(t, refreshToken, rotatedRefresh, "刷新令牌必须轮换")
 	})
 
 	t.Run("旧刷新令牌立即失效", func(t *testing.T) {
 		result := callJSON(t, engine, http.MethodPost, "/v1/auth/token/refresh", map[string]any{
-			"refresh_token": refreshToken,
+			"refreshToken": refreshToken,
 		}, "")
 
 		require.Equal(t, http.StatusUnauthorized, result.Status, "轮换后旧令牌必须被拒")
@@ -341,7 +341,7 @@ func TestTokenRefreshRotationAndSignOut(t *testing.T) {
 
 	t.Run("登出返回 204", func(t *testing.T) {
 		result := callJSON(t, engine, http.MethodPost, "/v1/auth/sign-out", map[string]any{
-			"refresh_token": rotatedRefresh,
+			"refreshToken": rotatedRefresh,
 		}, token)
 
 		require.Equal(t, http.StatusNoContent, result.Status, result.Raw)
@@ -356,7 +356,7 @@ func TestTokenRefreshRotationAndSignOut(t *testing.T) {
 
 	t.Run("登出后刷新令牌也不可用", func(t *testing.T) {
 		result := callJSON(t, engine, http.MethodPost, "/v1/auth/token/refresh", map[string]any{
-			"refresh_token": rotatedRefresh,
+			"refreshToken": rotatedRefresh,
 		}, "")
 
 		assert.Equal(t, http.StatusUnauthorized, result.Status)
@@ -378,7 +378,7 @@ func TestAdminUserCRUDAndPermissions(t *testing.T) {
 	adminToken := signInAdmin(t, engine)
 
 	t.Run("管理员列表使用 items/meta 信封", func(t *testing.T) {
-		result := call(t, engine, http.MethodGet, "/v1/admin/users?page=1&page_size=5&sort=-created_at", "", adminToken)
+		result := call(t, engine, http.MethodGet, "/v1/admin/users?page=1&pageSize=5&sort=-createdAt", "", adminToken)
 
 		require.Equal(t, http.StatusOK, result.Status, result.Raw)
 		items, ok := result.Body["items"].([]any)
@@ -387,8 +387,8 @@ func TestAdminUserCRUDAndPermissions(t *testing.T) {
 
 		meta := nested(result.Body, "meta")
 		assert.Equal(t, 1, num(meta, "page"))
-		assert.Equal(t, 5, num(meta, "page_size"))
-		assert.GreaterOrEqual(t, num(meta, "total_pages"), 0)
+		assert.Equal(t, 5, num(meta, "pageSize"))
+		assert.GreaterOrEqual(t, num(meta, "totalPages"), 0)
 	})
 
 	t.Run("搜索结果为空时 items 仍是数组", func(t *testing.T) {
@@ -399,10 +399,10 @@ func TestAdminUserCRUDAndPermissions(t *testing.T) {
 	})
 
 	t.Run("分页与排序非法值返回 422", func(t *testing.T) {
-		result := call(t, engine, http.MethodGet, "/v1/admin/users?page_size=999&sort=hacked", "", adminToken)
+		result := call(t, engine, http.MethodGet, "/v1/admin/users?pageSize=999&sort=hacked", "", adminToken)
 
 		require.Equal(t, http.StatusUnprocessableEntity, result.Status)
-		assert.NotEmpty(t, errorMessages(result.Body, "page_size"))
+		assert.NotEmpty(t, errorMessages(result.Body, "pageSize"))
 		assert.NotEmpty(t, errorMessages(result.Body, "sort"))
 	})
 
@@ -434,8 +434,8 @@ func TestAdminUserCRUDAndPermissions(t *testing.T) {
 
 	t.Run("管理员封禁用户会同步 status", func(t *testing.T) {
 		result := callJSON(t, engine, http.MethodPatch, "/v1/admin/users/"+userID, map[string]any{
-			"banned":     true,
-			"ban_reason": "integration test",
+			"banned":    true,
+			"banReason": "integration test",
 		}, adminToken)
 
 		require.Equal(t, http.StatusOK, result.Status, result.Raw)

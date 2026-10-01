@@ -4,7 +4,6 @@ package search_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,7 +11,7 @@ import (
 
 	"bgin/internal/config"
 	"bgin/internal/platform/search"
-	"bgin/internal/shared/models"
+	"bgin/tests/testutil"
 )
 
 func TestNoopClientContract(t *testing.T) {
@@ -123,24 +122,14 @@ func TestModelDescriptorRegistry(t *testing.T) {
 func TestUserSearchableContract(t *testing.T) {
 	username := "alex_dev"
 	display := "Alex"
-	phone := "+1234567890"
-	now := time.Now().UTC()
-
-	u := &models.User{
-		Base: models.Base{
-			ID:        "usr_123",
-			CreatedAt: now,
-			UpdatedAt: now,
-		},
-		Name:            "Alex Doe",
-		Email:           "alex@example.com",
-		Role:            models.RoleUser,
-		Status:          models.StatusActive,
-		EmailVerified:   true,
-		Username:        &username,
-		DisplayUsername: &display,
-		PhoneNumber:     &phone,
-	}
+	u := testutil.User().
+		WithID("usr_123").
+		WithName("Alex Doe").
+		WithEmail("alex@example.com").
+		WithPhone("+1234567890").
+		Build()
+	u.Username = &username
+	u.DisplayUsername = &display
 
 	// 静态类型断言：*models.User 满足 search.Searchable 接口
 	var _ search.Searchable = u
@@ -158,6 +147,6 @@ func TestUserSearchableContract(t *testing.T) {
 	assert.Equal(t, "alex_dev", doc["username"])
 	assert.Equal(t, "Alex", doc["display_username"])
 	assert.Equal(t, "+1234567890", doc["phone_number"])
-	assert.Equal(t, now.Unix(), doc["created_at"])
-	assert.Equal(t, now.Unix(), doc["updated_at"])
+	assert.Equal(t, u.CreatedAt.Unix(), doc["created_at"])
+	assert.Equal(t, u.UpdatedAt.Unix(), doc["updated_at"])
 }

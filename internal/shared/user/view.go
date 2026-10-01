@@ -3,8 +3,8 @@ package user
 import (
 	"time"
 
+	"bgin/internal/database/models"
 	"bgin/internal/shared/enums"
-	"bgin/internal/shared/models"
 )
 
 // Profile 是用户档案响应视图，面向客户端自助与后台管理共用。
@@ -16,7 +16,7 @@ type Profile struct {
 	// 用户电子邮箱
 	Email string `json:"email" example:"alex@example.com"`
 	// 邮箱是否已验证
-	EmailVerified bool `json:"email_verified" example:"true"`
+	EmailVerified bool `json:"emailVerified" example:"true"`
 	// 用户头像 URL
 	Image *string `json:"image" example:"https://example.com/avatar.png"`
 	// 用户权限角色 (user: 普通用户, admin: 系统管理员)
@@ -26,13 +26,13 @@ type Profile struct {
 	// 唯一登录用户名
 	Username *string `json:"username" example:"alexmercer"`
 	// 用户显示名称
-	DisplayUsername *string `json:"display_username" example:"Alex Mercer"`
+	DisplayUsername *string `json:"displayUsername" example:"Alex Mercer"`
 	// E.164 格式手机号
-	PhoneNumber *string `json:"phone_number" example:"+8613800138000"`
+	PhoneNumber *string `json:"phoneNumber" example:"+8613800138000"`
 	// 账号创建时间 (ISO 8601 UTC)
-	CreatedAt time.Time `json:"created_at" example:"2026-09-27T10:00:00Z"`
+	CreatedAt time.Time `json:"createdAt" example:"2026-09-27T10:00:00Z"`
 	// 账号更新时间 (ISO 8601 UTC)
-	UpdatedAt time.Time `json:"updated_at" example:"2026-09-27T10:00:00Z"`
+	UpdatedAt time.Time `json:"updatedAt" example:"2026-09-27T10:00:00Z"`
 }
 
 // ProjectProfile 把用户模型投影为档案视图。
@@ -43,8 +43,8 @@ func ProjectProfile(entity *models.User) Profile {
 		Email:           entity.Email,
 		EmailVerified:   entity.EmailVerified,
 		Image:           entity.Image,
-		Role:            enums.Role(entity.Role),
-		Status:          enums.Status(entity.Status),
+		Role:            entity.Role,
+		Status:          entity.Status,
 		Username:        entity.Username,
 		DisplayUsername: entity.DisplayUsername,
 		PhoneNumber:     entity.PhoneNumber,

@@ -18,9 +18,6 @@ import (
 	"bgin/internal/config"
 )
 
-// fallbackLogger 是装配期未注入日志器时的兜底输出。
-var fallbackLogger = zap.L()
-
 const (
 	// internalIP 表示内网/局域网/环回地址的默认标识。
 	internalIP = "Internal IP"
@@ -221,9 +218,14 @@ type xdbEngine struct {
 	version *xdb.Version
 	cBuff   []byte
 	pool    sync.Pool
+	log     *zap.Logger
 }
 
-func newEngine(dbPath string, cBuff []byte) (*xdbEngine, error) {
+func newEngine(dbPath string, cBuff []byte, log *zap.Logger) (*xdbEngine, error) {
+	if log == nil {
+		log = zap.NewNop()
+	}
+
 	header, err := xdb.LoadHeaderFromBuff(cBuff)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load ip2region header: %w", err)
@@ -238,12 +240,13 @@ func newEngine(dbPath string, cBuff []byte) (*xdbEngine, error) {
 		dbPath:  dbPath,
 		version: version,
 		cBuff:   cBuff,
+		log:     log,
 	}
 
 	eng.pool.New = func() any {
 		searcher, err := xdb.NewWithBuffer(eng.version, eng.cBuff)
 		if err != nil {
-			fallbackLogger.Error("failed to create pooled ip2region searcher", zap.Error(err))
+			eng.log.Error("failed to create pooled ip2region searcher", zap.Error(err))
 			return nil
 		}
 		return searcher
@@ -252,12 +255,12 @@ func newEngine(dbPath string, cBuff []byte) (*xdbEngine, error) {
 	return eng, nil
 }
 
-func loadEngine(path string) (*xdbEngine, error) {
+func loadEngine(path string, log *zap.Logger) (*xdbEngine, error) {
 	cBuff, err := xdb.LoadContentFromFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load geoip xdb content: %w", err)
 	}
-	return newEngine(path, cBuff)
+	return newEngine(path, cBuff, log)
 }
 
 func (e *xdbEngine) search(ipBytes []byte) (string, error) {
@@ -325,9 +328,17 @@ func (n *noopProvider) Close() error {
 type defaultService struct {
 	cfg      config.GeoIPConfig
 	provider atomic.Pointer[Provider]
+	log      *zap.Logger
 }
 
 var _ Service = (*defaultService)(nil)
+
+func (s *defaultService) getLogger() *zap.Logger {
+	if s.log != nil {
+		return s.log
+	}
+	return zap.NewNop()
+}
 
 // LookupCtx 解析指定 IP 字符串并返回结构化归属地数据（带 Context 传播与超时控制）。
 func (s *defaultService) LookupCtx(ctx context.Context, ipStr string) (*Location, error) {
@@ -390,7 +401,7 @@ func (s *defaultService) Reload(dbPaths ...string) error {
 		return fmt.Errorf("geoip database file stat failed: %w", err)
 	}
 
-	eng, err := loadEngine(targetPath)
+	eng, err := loadEngine(targetPath, s.getLogger())
 	if err != nil {
 		return err
 	}
@@ -412,40 +423,47 @@ func (s *defaultService) Close() {
 // NewNoop 创建安全的降级空实现。
 func NewNoop() Service {
 	var p Provider = &noopProvider{}
-	svc := &defaultService{}
+	svc := &defaultService{log: zap.NewNop()}
 	svc.provider.Store(&p)
 	return svc
 }
 
 // NewWithProvider 允许外部显式注入自定义 Provider 构建服务。
 func NewWithProvider(p Provider) Service {
-	svc := &defaultService{}
+	svc := &defaultService{log: zap.NewNop()}
 	svc.provider.Store(&p)
 	return svc
 }
 
 // NewService 根据配置构建 GeoIP 服务实例。若数据库文件缺失则自动启用安全降级。
-func NewService(cfg config.GeoIPConfig) (Service, error) {
+func NewService(cfg config.GeoIPConfig, log ...*zap.Logger) (Service, error) {
+	var l *zap.Logger
+	if len(log) > 0 && log[0] != nil {
+		l = log[0]
+	} else {
+		l = zap.NewNop()
+	}
+
 	if !cfg.Enabled {
 		return NewNoop(), nil
 	}
 
 	if _, err := os.Stat(cfg.DBPath); os.IsNotExist(err) {
-		fallbackLogger.Warn("geoip database file does not exist, degrading to noop service",
+		l.Warn("geoip database file does not exist, degrading to noop service",
 			zap.String("path", cfg.DBPath))
 		return NewNoop(), nil
 	}
 
-	eng, err := loadEngine(cfg.DBPath)
+	eng, err := loadEngine(cfg.DBPath, l)
 	if err != nil {
-		fallbackLogger.Warn("failed to load geoip xdb engine, degrading to noop service",
+		l.Warn("failed to load geoip xdb engine, degrading to noop service",
 			zap.Error(err),
 			zap.String("path", cfg.DBPath))
 		return NewNoop(), nil
 	}
 
 	var p Provider = newXDBProvider(eng)
-	svc := &defaultService{cfg: cfg}
+	svc := &defaultService{cfg: cfg, log: l}
 	svc.provider.Store(&p)
 	return svc, nil
 }

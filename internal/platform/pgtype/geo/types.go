@@ -121,8 +121,8 @@ func NewPolygonWithSRID(rings []orb.Ring, srid int) Polygon {
 }
 
 // String 输出多边形的 WKT 表达。
-func (p Polygon) String() string {
-	return wkt.MarshalString(p.Polygon)
+func (poly Polygon) String() string {
+	return wkt.MarshalString(poly.Polygon)
 }
 
 // MultiPolygon 表示由多个互不重叠的多边形构成的复合几何区划，内嵌 orb.MultiPolygon。

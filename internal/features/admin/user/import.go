@@ -7,10 +7,10 @@ import (
 
 	"github.com/samber/oops"
 
+	"bgin/internal/database/models"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/excel"
 	"bgin/internal/shared/enums"
-	"bgin/internal/shared/models"
 )
 
 // UsersImport 封装用户数据批量导入的解析与验证逻辑。
@@ -51,7 +51,7 @@ func (i *UsersImport) ToModel(row []string) (any, error) {
 		Name:   name,
 		Email:  email,
 		Role:   models.RoleUser,
-		Status: string(enums.StatusActive),
+		Status: enums.StatusActive,
 	}
 
 	i.importedCount++

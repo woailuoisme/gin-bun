@@ -71,7 +71,7 @@ var _ MiniProgramClient = (*Client)(nil)
 // NewClient 依据小程序凭据构造客户端。
 //
 // 凭据未声明时返回 nil，调用方据此判定小程序能力未启用。
-func NewClient(cfg config.WeChatMiniProgramConfig, cacheClient *cache.Client, opts ...Option) *Client {
+func NewClient(cfg config.WeChatMiniProgramConfig, cacheClient cache.Store, opts ...Option) *Client {
 	if !cfg.Declared() {
 		return nil
 	}

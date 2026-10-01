@@ -8,10 +8,12 @@ import (
 	"errors"
 	"time"
 
+	"github.com/uptrace/bun"
+
 	"bgin/internal/config"
+	"bgin/internal/database/models"
 	"bgin/internal/platform/errs"
 	platformRealtime "bgin/internal/platform/realtime"
-	shareduser "bgin/internal/shared/user"
 )
 
 // Deps 汇总实时通信服务的装配依赖。
@@ -22,9 +24,8 @@ type Deps struct {
 	Cfg *config.Config
 	// Secret Centrifugo 反向代理请求的 HMAC 签名密钥。
 	Secret string
-	// Users 用户仓库：注入后签发的连接凭据以库中最新角色为准；
-	// 未注入时（如单元测试）沿用调用方传入的角色。
-	Users *shareduser.Repository
+	// DB 数据库连接，注入后签发的连接凭据以库中最新角色为准；未注入时沿用调用方传入的角色。
+	DB bun.IDB
 }
 
 // Service 承载实时通信业务规则与鉴权编排。
@@ -33,8 +34,8 @@ type Service struct {
 	cfg     *config.Config
 	// secret 是 Centrifugo 反向代理请求的 HMAC 签名密钥。
 	secret string
-	// users 用于签发前核对账号当前角色；未注入时退回调用方传入的角色。
-	users *shareduser.Repository
+	// db 用于签发前核对账号当前角色；未注入时退回调用方传入的角色。
+	db bun.IDB
 }
 
 // NewService 创建实时通信服务。
@@ -43,7 +44,7 @@ func NewService(deps Deps) *Service {
 		gateway: deps.Gateway,
 		cfg:     deps.Cfg,
 		secret:  deps.Secret,
-		users:   deps.Users,
+		db:      deps.DB,
 	}
 }
 
@@ -53,15 +54,15 @@ func (s *Service) IssueToken(ctx context.Context, userID, role string) (*TokenRe
 		return nil, errs.BadRequest("Realtime service is disabled")
 	}
 
-	if s.users != nil {
-		entity, err := s.users.FindByID(ctx, userID)
+	if s.db != nil {
+		entity, err := models.FindUserByID(ctx, s.db, userID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil, errs.NotFound("The requested user does not exist")
 			}
 			return nil, errs.Internal(err)
 		}
-		role = entity.Role
+		role = string(entity.Role)
 	}
 
 	// 有效期来自配置；cmp.Or 让显式零值回退到 2 小时（envDefault 已覆盖常规情况）。

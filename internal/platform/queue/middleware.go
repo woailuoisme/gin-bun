@@ -11,6 +11,7 @@ import (
 
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/logger"
+	platformsentry "bgin/internal/platform/sentry"
 )
 
 // Handler 描述任务执行的原子处理函数契约 (SRP)。
@@ -50,6 +51,7 @@ func RecoveryMiddleware(l *zap.Logger) Middleware {
 						zap.String("stack", stack),
 					)
 					execErr = fmt.Errorf("queue: job panic: %v", r)
+					platformsentry.CaptureExceptionWithContext(ctx, execErr)
 				}
 			}()
 			return next(ctx, job)
@@ -63,7 +65,9 @@ func TracingMiddleware(l *zap.Logger, headers map[string]string) Middleware {
 		return func(ctx context.Context, job Job) error {
 			if reqID := headers["request_id"]; reqID != "" {
 				ctx = logger.WithContext(ctx, l, reqID)
+				platformsentry.SetTag(ctx, "request_id", reqID)
 			}
+			platformsentry.SetTag(ctx, "task", job.TaskName())
 			return next(ctx, job)
 		}
 	}

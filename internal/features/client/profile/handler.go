@@ -1,15 +1,7 @@
 package profile
 
 import (
-	"cmp"
-	"errors"
-	"io"
-	"mime/multipart"
-	"path/filepath"
-	"strings"
-
 	"github.com/aarondl/opt/omitnull"
-	"github.com/gabriel-vasile/mimetype"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 
@@ -130,29 +122,11 @@ func (h *Handler) UploadAvatar(c *gin.Context) {
 		return
 	}
 
-	if err := validateAvatarFile(file); err != nil {
-		_ = c.Error(err)
-		return
-	}
-
-	if h.mediaManager == nil {
-		_ = c.Error(errs.Internal(errors.New("media manager is not configured")))
-		return
-	}
-
-	mediaRecord, err := h.mediaManager.Attach(
-		c.Request.Context(),
-		media.Model("user", id.UserID),
-		"avatar",
-		file,
-		media.WithSingleFile(),
-	)
+	avatarURL, err := h.mediaManager.AttachAvatar(c.Request.Context(), id.UserID, file)
 	if err != nil {
 		_ = c.Error(err)
 		return
 	}
-
-	avatarURL := cmp.Or(h.mediaManager.Avatar(mediaRecord, 256), h.mediaManager.URL(mediaRecord), mediaRecord.FileName)
 
 	profile, err := h.userService.UpdateProfile(
 		c.Request.Context(),
@@ -168,44 +142,4 @@ func (h *Handler) UploadAvatar(c *gin.Context) {
 	}
 
 	response.OK(c, profile)
-}
-
-const maxAvatarSize = 2 * 1024 * 1024 // 2MB
-
-// validateAvatarFile 校验头像文件的大小、扩展名与真实魔数。
-func validateAvatarFile(file *multipart.FileHeader) error {
-	if file == nil || file.Size <= 0 {
-		return errs.BadRequest("Avatar file cannot be empty")
-	}
-	if file.Size > maxAvatarSize {
-		return errs.BadRequest("Avatar file size must not exceed 2MB")
-	}
-
-	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.Filename), "."))
-	switch ext {
-	case "jpg", "jpeg", "png", "webp":
-	default:
-		return errs.BadRequest("Invalid image extension; only jpg, jpeg, png, and webp are allowed")
-	}
-
-	src, err := file.Open()
-	if err != nil {
-		return errs.BadRequest("Failed to open uploaded file")
-	}
-	defer func() { _ = src.Close() }()
-
-	header := make([]byte, 512)
-	n, err := io.ReadFull(src, header)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return errs.BadRequest("Failed to read uploaded file")
-	}
-
-	mtype := mimetype.Detect(header[:n])
-	detectedMime := mtype.String()
-	switch detectedMime {
-	case "image/jpeg", "image/png", "image/webp":
-		return nil
-	default:
-		return errs.BadRequest("Invalid image format; only JPEG, PNG, and WebP are allowed")
-	}
 }

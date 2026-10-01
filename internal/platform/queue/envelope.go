@@ -22,10 +22,10 @@ var ErrPayloadTooLarge = errors.New("queue: task payload exceeds 2MB limit")
 
 // TaskEnvelope 封装任务载荷与全链路追踪元数据信封。
 type TaskEnvelope struct {
-	TaskName     string            `json:"task_name"`
+	TaskName     string            `json:"taskName"`
 	Payload      json.RawMessage   `json:"payload"`
 	Headers      map[string]string `json:"headers,omitempty"`
-	DispatchedAt time.Time         `json:"dispatched_at"`
+	DispatchedAt time.Time         `json:"dispatchedAt"`
 }
 
 // wrapEnvelope 将任务结构体序列化并封装进 TaskEnvelope 信封中。

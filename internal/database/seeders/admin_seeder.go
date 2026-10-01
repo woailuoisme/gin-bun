@@ -11,11 +11,10 @@ import (
 	"go.uber.org/zap"
 
 	"bgin/internal/config"
+	"bgin/internal/database/models"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/logger"
 	"bgin/internal/platform/validator"
-	"bgin/internal/shared/models"
-	"bgin/internal/shared/user"
 )
 
 func init() {
@@ -51,8 +50,7 @@ func (s *AdminSeeder) Seed(ctx context.Context, db *bun.DB) error {
 	}
 
 	pwdHasher := hasher.New()
-	repo := user.NewRepository(db, pwdHasher)
-	_, err := repo.FindByEmail(ctx, cfg.Seed.AdminEmail)
+	_, err := models.FindUserByEmail(ctx, db, cfg.Seed.AdminEmail)
 	switch {
 	case err == nil:
 		logger.FromContext(ctx).Warn("admin account already exists, skipping seeding",
@@ -75,7 +73,7 @@ func (s *AdminSeeder) Seed(ctx context.Context, db *bun.DB) error {
 		Status:        models.StatusActive,
 	}
 
-	if err := repo.CreateWithCredential(ctx, admin, hash); err != nil {
+	if err := models.CreateUserWithCredential(ctx, db, admin, hash); err != nil {
 		return fmt.Errorf("admin seeder create account failed: %w", err)
 	}
 

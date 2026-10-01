@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 
+	"github.com/uptrace/bun"
+
+	"bgin/internal/database/models"
 	"bgin/internal/platform/errs"
 )
 
@@ -20,29 +23,26 @@ const (
 
 // Service 提供高内聚、高杠杆的用户档案领域服务。
 type Service struct {
-	repo *Repository
+	db *bun.DB
 }
 
 // NewService 构造用户档案领域服务。
-func NewService(repo *Repository) *Service {
-	return &Service{repo: repo}
+func NewService(db *bun.DB) *Service {
+	return &Service{db: db}
 }
 
 // GetProfile 获取指定用户的档案视图。
 func (s *Service) GetProfile(ctx context.Context, userID string) (Profile, error) {
-	entity, err := s.repo.FindByID(ctx, userID)
+	entity, err := s.Get(ctx, userID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Profile{}, errs.NotFound("The requested user does not exist")
-		}
-		return Profile{}, errs.Internal(err)
+		return Profile{}, err
 	}
 	return ProjectProfile(entity), nil
 }
 
 // UpdateProfile 根据授权作用域执行档案的三态局部更新与唯一性冲突消解。
 func (s *Service) UpdateProfile(ctx context.Context, userID string, patch FieldSet, scope Scope) (Profile, error) {
-	fields, err := CollectFields(ctx, s.repo, userID, patch)
+	fields, err := CollectFields(ctx, s.db, userID, patch)
 	if err != nil {
 		return Profile{}, err
 	}
@@ -57,9 +57,80 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, patch FieldS
 		}
 	}
 
-	if err := ApplyUpdate(ctx, s.repo, userID, fields); err != nil {
+	if err := ApplyUpdate(ctx, s.db, userID, fields); err != nil {
 		return Profile{}, err
 	}
 
 	return s.GetProfile(ctx, userID)
+}
+
+// UpdateAdminUser 由管理员局部更新用户，含基础档案、角色、状态与封禁信息。
+func (s *Service) UpdateAdminUser(ctx context.Context, userID string, patch AdminFieldSet) (*models.User, error) {
+	fields, err := CollectAdminFields(ctx, s.db, userID, patch)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ApplyUpdate(ctx, s.db, userID, fields); err != nil {
+		return nil, err
+	}
+
+	return s.Get(ctx, userID)
+}
+
+// List 分页查询用户列表并返回符合条件的总记录数。
+func (s *Service) List(ctx context.Context, filter ListFilter, offset, limit int) ([]models.User, int, error) {
+	total, err := models.CountUsers(ctx, s.db, filter)
+	if err != nil {
+		return nil, 0, errs.Internal(err)
+	}
+	users, err := models.ListUsers(ctx, s.db, filter, offset, limit)
+	if err != nil {
+		return nil, 0, errs.Internal(err)
+	}
+	return users, total, nil
+}
+
+// ListChunk 供流式导出等批量场景按块读取用户列表。
+func (s *Service) ListChunk(ctx context.Context, filter ListFilter, offset, limit int) ([]models.User, error) {
+	users, err := models.ListUsers(ctx, s.db, filter, offset, limit)
+	if err != nil {
+		return nil, errs.Internal(err)
+	}
+	return users, nil
+}
+
+// Get 根据主键 ID 获取单个用户实体，不存在时返回 404 语义错误。
+func (s *Service) Get(ctx context.Context, id string) (*models.User, error) {
+	entity, err := models.FindUserByID(ctx, s.db, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errs.NotFound("The requested user does not exist")
+		}
+		return nil, errs.Internal(err)
+	}
+	return entity, nil
+}
+
+// CreateWithCredential 在事务中原子创建用户实体与其口令凭据。
+func (s *Service) CreateWithCredential(ctx context.Context, entity *models.User, passwordHash string) (*models.User, error) {
+	if err := models.CreateUserWithCredential(ctx, s.db, entity, passwordHash); err != nil {
+		return nil, MapUniqueConflict(err)
+	}
+	return entity, nil
+}
+
+// Delete 软删除指定主键的用户。
+func (s *Service) Delete(ctx context.Context, id string) error {
+	entity, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := entity.Delete(ctx, s.db); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errs.NotFound("The requested user does not exist")
+		}
+		return errs.Internal(err)
+	}
+	return nil
 }

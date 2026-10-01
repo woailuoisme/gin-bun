@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/config"
+	"bgin/internal/database/models"
 	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/errs"
-	"bgin/internal/shared/models"
 	"bgin/internal/shared/user"
 )
 

@@ -247,5 +247,5 @@ func signUp(t *testing.T, engine *gin.Engine) (token, refreshToken, userID, emai
 	}, "")
 	require.Equal(t, http.StatusCreated, result.Status, "注册失败: %s", result.Raw)
 
-	return str(result.Body, "token"), str(result.Body, "refresh_token"), str(nested(result.Body, "user"), "id"), email
+	return str(result.Body, "token"), str(result.Body, "refreshToken"), str(nested(result.Body, "user"), "id"), email
 }

@@ -12,51 +12,65 @@ import (
 	"sync"
 	"time"
 
+	"github.com/uptrace/bun"
 	"go.uber.org/zap"
 
 	"bgin/internal/config"
+	"bgin/internal/database"
+	"bgin/internal/database/models"
 	platformauth "bgin/internal/platform/authentication"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/errs"
+	"bgin/internal/platform/eventbus"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/i18n"
 	"bgin/internal/platform/logger"
 	"bgin/internal/platform/mailer"
+	"bgin/internal/platform/notification"
+	"bgin/internal/platform/notification/contract"
 	"bgin/internal/platform/validator"
-	"bgin/internal/shared/models"
+	"bgin/internal/shared/events"
 	shareduser "bgin/internal/shared/user"
 )
 
+// NotificationSender 定义外发通知的高层抽象契约。
+type NotificationSender interface {
+	Send(ctx context.Context, notifiables any, notif contract.Notification, opts ...notification.SendOption) error
+}
+
 // Deps 是认证服务所需的依赖，由 main 装配后注入。
 type Deps struct {
-	Repo       *Repository
+	DB         *bun.DB
 	Guard      *platformauth.Guard[*models.User]
 	Tokens     *platformauth.TokenIssuer
 	Hasher     *hasher.Hasher
-	Cache      *cache.Client
+	Cache      cache.Store
 	Mailer     mailer.Mailer
+	Notifier   NotificationSender
+	UOW        *database.UnitOfWork
 	Translator *i18n.Translator
 	Config     *config.Config
+	Publisher  eventbus.Publisher
 }
 
 // Service 实现认证用例。
 type Service struct {
-	repo       *Repository
+	db         *bun.DB
 	guard      *platformauth.Guard[*models.User]
 	hasher     *hasher.Hasher
 	mailer     mailer.Mailer
+	notifier   NotificationSender
+	uow        *database.UnitOfWork
 	translator *i18n.Translator
 	cfg        *config.Config
 	verifier   *verifier
+	publisher  eventbus.Publisher
 }
 
 // NewService 构造认证服务。
 func NewService(deps Deps) *Service {
-	if deps.Repo != nil && deps.Hasher != nil {
-		deps.Repo.WithHasher(deps.Hasher)
-	}
 	guard := deps.Guard
-	if guard == nil && deps.Tokens != nil && deps.Repo != nil {
+	if guard == nil && deps.Tokens != nil && deps.DB != nil {
 		policy := platformauth.PolicyFunc[*models.User](func(ctx context.Context, u *models.User) error {
 			if err := shareduser.GuardState(u); err != nil {
 				return err
@@ -66,21 +80,30 @@ func NewService(deps Deps) *Service {
 			}
 			return nil
 		})
-		guard = platformauth.NewGuard(deps.Tokens, deps.Repo, policy)
+		provider := shareduser.NewProvider(deps.DB, deps.Hasher)
+		guard = platformauth.NewGuard(deps.Tokens, provider, policy)
 	}
 	return &Service{
-		repo:       deps.Repo,
+		db:         deps.DB,
 		guard:      guard,
 		hasher:     deps.Hasher,
 		mailer:     deps.Mailer,
+		notifier:   deps.Notifier,
+		uow:        deps.UOW,
 		translator: deps.Translator,
 		cfg:        deps.Config,
-		verifier:   newVerifier(deps.Repo, deps.Cache, deps.Config),
+		verifier:   newVerifier(deps.DB, deps.Cache, deps.Config),
+		publisher:  deps.Publisher,
 	}
 }
 
 // Guard 返回底层 Guard 实例。
 func (s *Service) Guard() *platformauth.Guard[*models.User] { return s.guard }
+
+// idb 获取上下文事务，若不存在则回退至服务默认数据库连接。
+func (s *Service) idb(ctx context.Context) bun.IDB {
+	return database.ResolveDB(ctx, s.db)
+}
 
 // SignUpEmail 注册邮箱密码账号，并按 Q15 的约定直接完成登录。
 func (s *Service) SignUpEmail(ctx context.Context, req SignUpEmailRequest) (SessionResponse, error) {
@@ -101,8 +124,21 @@ func (s *Service) SignUpEmail(ctx context.Context, req SignUpEmailRequest) (Sess
 	if err != nil {
 		return SessionResponse{}, errs.Internal(err)
 	}
-	if err := s.repo.CreateWithCredential(ctx, user, hash); err != nil {
-		return SessionResponse{}, shareduser.MapUniqueConflict(err)
+
+	evt := &events.UserRegistered{
+		UserID:       user.ID,
+		Email:        user.Email,
+		Name:         user.Name,
+		RegisteredAt: time.Now(),
+	}
+	if err := s.runInTxOrDirect(ctx, func(txCtx context.Context) error {
+		if err := models.CreateUserWithCredential(txCtx, s.idb(txCtx), user, hash); err != nil {
+			return shareduser.MapUniqueConflict(err)
+		}
+		database.RecordEvent(txCtx, evt)
+		return nil
+	}, evt); err != nil {
+		return SessionResponse{}, err
 	}
 
 	session, err := s.issueSession(ctx, user)
@@ -110,12 +146,13 @@ func (s *Service) SignUpEmail(ctx context.Context, req SignUpEmailRequest) (Sess
 		return SessionResponse{}, err
 	}
 	s.recordLogin(ctx, user.ID, models.ProviderCredential)
+
 	return session, nil
 }
 
 // SignInEmail 邮箱密码登录。
 func (s *Service) SignInEmail(ctx context.Context, req SignInEmailRequest) (SessionResponse, error) {
-	user, err := s.repo.FindByEmail(ctx, req.Email)
+	user, err := models.FindUserByEmail(ctx, s.idb(ctx), req.Email)
 	if err != nil {
 		return SessionResponse{}, s.translateLookupFailure(ctx, err, req.Email)
 	}
@@ -124,7 +161,7 @@ func (s *Service) SignInEmail(ctx context.Context, req SignInEmailRequest) (Sess
 
 // SignInUsername 用户名密码登录。
 func (s *Service) SignInUsername(ctx context.Context, req SignInUsernameRequest) (SessionResponse, error) {
-	user, err := s.repo.FindByUsername(ctx, req.Username)
+	user, err := models.FindUserByUsername(ctx, s.idb(ctx), req.Username)
 	if err != nil {
 		return SessionResponse{}, s.translateLookupFailure(ctx, err, req.Username)
 	}
@@ -154,7 +191,7 @@ func (s *Service) GetSession(ctx context.Context, userID string) (GetSessionResp
 
 // loadUser 兜底从数据库加载用户实体并进行状态校验。
 func (s *Service) loadUser(ctx context.Context, userID string) (*models.User, error) {
-	u, err := s.repo.FindByID(ctx, userID)
+	u, err := models.FindUserByID(ctx, s.idb(ctx), userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
@@ -191,7 +228,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, req ChangeP
 		return err
 	}
 
-	account, err := s.repo.FindCredentialAccount(ctx, userID)
+	account, err := models.FindCredentialAccount(ctx, s.idb(ctx), userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return noCredentialError()
@@ -214,7 +251,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, req ChangeP
 	if err != nil {
 		return errs.Internal(err)
 	}
-	if err := s.repo.UpdatePassword(ctx, userID, hash); err != nil {
+	if err := models.UpdatePassword(ctx, s.idb(ctx), userID, hash); err != nil {
 		return errs.Internal(err)
 	}
 	// 密码变更成功后作废该用户在此之前签发的所有会话令牌
@@ -247,20 +284,33 @@ func (s *Service) ResetPassword(ctx context.Context, req ResetPasswordRequest) (
 	if err != nil {
 		return StatusResponse{}, errs.Internal(err)
 	}
-	if err := s.repo.UpdatePassword(ctx, user.ID, hash); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return StatusResponse{}, noCredentialError()
-		}
-		return StatusResponse{}, errs.Internal(err)
+
+	evt := &events.PasswordChanged{
+		UserID:    user.ID,
+		ChangedAt: time.Now(),
 	}
+	if err := s.runInTxOrDirect(ctx, func(txCtx context.Context) error {
+		if err := models.UpdatePassword(txCtx, s.idb(txCtx), user.ID, hash); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return noCredentialError()
+			}
+			return errs.Internal(err)
+		}
+		database.RecordEvent(txCtx, evt)
+		return nil
+	}, evt); err != nil {
+		return StatusResponse{}, err
+	}
+
 	// 重置密码成功后作废该用户在此之前签发的所有会话令牌
 	_ = s.guard.InvalidateAll(ctx, user.ID)
+
 	return StatusResponse{Status: true}, nil
 }
 
 // SendVerificationOTP 发送邮箱验证码。
 func (s *Service) SendVerificationOTP(ctx context.Context, language string, req SendVerificationOTPRequest) (StatusResponse, error) {
-	user, err := s.repo.FindByEmail(ctx, req.Email)
+	user, err := models.FindUserByEmail(ctx, s.idb(ctx), req.Email)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// 静默成功：不向未认证调用方暴露邮箱是否已注册。
@@ -278,7 +328,13 @@ func (s *Service) SendVerificationOTP(ctx context.Context, language string, req 
 	if err != nil {
 		return StatusResponse{}, errs.Internal(err)
 	}
-	if err := s.sendMail(ctx, language, user, mailKeyVerifyEmail, code, ttl); err != nil {
+	if s.notifier != nil {
+		notif := NewSignupVerificationNotification(user.Name, code)
+		notif.ExpiresIn = ttl
+		if err := s.notifier.Send(ctx, user, notif); err != nil {
+			return StatusResponse{}, errs.Internal(err)
+		}
+	} else if err := s.sendMail(ctx, language, user, mailKeyVerifyEmail, code, ttl); err != nil {
 		return StatusResponse{}, errs.Internal(err)
 	}
 	return StatusResponse{Status: true}, nil
@@ -291,14 +347,14 @@ func (s *Service) VerifyEmail(ctx context.Context, req VerifyEmailRequest) (Stat
 		return StatusResponse{}, err
 	}
 
-	user, err := s.repo.FindByEmail(ctx, email)
+	user, err := models.FindUserByEmail(ctx, s.idb(ctx), email)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return StatusResponse{}, errs.NotFound("No account is associated with this email address")
 		}
 		return StatusResponse{}, errs.Internal(err)
 	}
-	if err := s.repo.MarkEmailVerified(ctx, user.ID); err != nil {
+	if err := user.MarkEmailVerified(ctx, s.idb(ctx)); err != nil {
 		return StatusResponse{}, errs.Internal(err)
 	}
 	return StatusResponse{Status: true}, nil
@@ -313,7 +369,7 @@ const (
 
 // signInWithCredentials 校验本地密码凭据并签发令牌。
 func (s *Service) signInWithCredentials(ctx context.Context, user *models.User, password string) (SessionResponse, error) {
-	pwdHash, err := s.repo.FindCredentialPassword(ctx, user.ID)
+	pwdHash, err := models.FindCredentialPassword(ctx, s.idb(ctx), user.ID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SessionResponse{}, errs.InvalidCredentials()
@@ -402,14 +458,14 @@ func (s *Service) equaliseLookupTiming(identifier string) {
 
 // recordLogin 记录最近登录信息；失败不影响登录本身。
 func (s *Service) recordLogin(ctx context.Context, userID, method string) {
-	if err := s.repo.RecordLogin(ctx, userID, method); err != nil {
+	if err := models.RecordLogin(ctx, s.idb(ctx), userID, method); err != nil {
 		logger.FromContext(ctx).Warn("failed to record last login", zap.Error(err), zap.String("user_id", userID))
 	}
 }
 
 // sendResetCredential 签发重置凭据并投递邮件。邮箱不存在时静默返回成功。
 func (s *Service) sendResetCredential(ctx context.Context, language, purpose, email string) (StatusResponse, error) {
-	user, err := s.repo.FindByEmail(ctx, email)
+	user, err := models.FindUserByEmail(ctx, s.idb(ctx), email)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			logger.FromContext(ctx).Info("password reset requested for non-existent email, ignored")
@@ -422,7 +478,13 @@ func (s *Service) sendResetCredential(ctx context.Context, language, purpose, em
 	if err != nil {
 		return StatusResponse{}, errs.Internal(err)
 	}
-	if err := s.sendMail(ctx, language, user, mailKey, code, ttl); err != nil {
+	if s.notifier != nil {
+		notif := NewPasswordResetNotification(user.Name, code)
+		notif.ExpiresIn = ttl
+		if err := s.notifier.Send(ctx, user, notif); err != nil {
+			return StatusResponse{}, errs.Internal(err)
+		}
+	} else if err := s.sendMail(ctx, language, user, mailKey, code, ttl); err != nil {
 		return StatusResponse{}, errs.Internal(err)
 	}
 	return StatusResponse{Status: true}, nil
@@ -465,7 +527,7 @@ func (s *Service) resolveResetTarget(ctx context.Context, req ResetPasswordReque
 		return nil, err
 	}
 
-	user, err := s.repo.FindByEmail(ctx, email)
+	user, err := models.FindUserByEmail(ctx, s.idb(ctx), email)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errs.NotFound("No account is associated with this email address")
@@ -508,4 +570,21 @@ func assignUsername(user *models.User, username *string) {
 // noCredentialError 用于本地密码凭据缺失的场景。
 func noCredentialError() error {
 	return errs.NotFound("No password credential is associated with this account")
+}
+
+// runInTxOrDirect 在配置了工作单元时于事务内执行工作，并在事务提交后派发领域事件；否则直接执行并派发降级事件。
+func (s *Service) runInTxOrDirect(ctx context.Context, fn func(context.Context) error, fallbackEvent any) error {
+	if s.uow != nil {
+		return s.uow.Run(ctx, func(txCtx context.Context, _ bun.Tx) error {
+			return fn(txCtx)
+		})
+	}
+
+	if err := fn(ctx); err != nil {
+		return err
+	}
+	if s.publisher != nil && fallbackEvent != nil {
+		_ = s.publisher.Publish(ctx, fallbackEvent)
+	}
+	return nil
 }

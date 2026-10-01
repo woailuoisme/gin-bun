@@ -10,8 +10,8 @@ import (
 
 	"bgin/internal/config"
 	"bgin/internal/database/factories"
+	"bgin/internal/database/models"
 	"bgin/internal/platform/logger"
-	"bgin/internal/shared/models"
 )
 
 func init() {

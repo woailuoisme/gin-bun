@@ -72,7 +72,7 @@ func (d *defaultCallbackHandler) OnRefundSuccess(ctx context.Context, result *pl
 // Service 负责协调支付回调的分布式幂等防重与业务事件分发。
 type Service struct {
 	gateway   platformPayment.Gateway
-	cache     *cache.Client
+	cache     cache.Store
 	cfg       *config.Config
 	publisher eventbus.Publisher
 	handler   CallbackHandler
@@ -81,7 +81,7 @@ type Service struct {
 // NewService 构造支付回调协调服务。publisher 允许为 nil，表示不向外广播领域事件。
 func NewService(
 	gateway platformPayment.Gateway,
-	cacheClient *cache.Client,
+	cacheClient cache.Store,
 	cfg *config.Config,
 	publisher eventbus.Publisher,
 ) *Service {

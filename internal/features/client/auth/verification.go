@@ -14,9 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/uptrace/bun"
 	"go.uber.org/zap"
 
 	"bgin/internal/config"
+	"bgin/internal/database/models"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/logger"
@@ -40,16 +42,16 @@ const (
 // verifier 负责一次性凭据的签发与核销。
 // 明文只出现在邮件里，库里存的是 HMAC-SHA256 摘要，因此拿到库也还原不出可用凭据。
 type verifier struct {
-	repo        *Repository
-	cache       *cache.Client
+	db          bun.IDB
+	cache       cache.Store
 	key         []byte
 	maxAttempts int
 }
 
 // newVerifier 构造 verifier，密钥由 JWT 密钥派生并做用途域分离。
-func newVerifier(repo *Repository, cacheClient *cache.Client, cfg *config.Config) *verifier {
+func newVerifier(db bun.IDB, cacheClient cache.Store, cfg *config.Config) *verifier {
 	return &verifier{
-		repo:        repo,
+		db:          db,
 		cache:       cacheClient,
 		key:         deriveKey(cfg.JWT.Secret, "verification"),
 		maxAttempts: cfg.Auth.OTPMaxAttempts,
@@ -84,7 +86,7 @@ func (v *verifier) issueToken(ctx context.Context, purpose, email string, ttl ti
 func (v *verifier) store(ctx context.Context, purpose, email, code string, ttl time.Duration) error {
 	identifier := verificationIdentifier(purpose, email)
 	expiresAt := time.Now().UTC().Add(ttl)
-	if err := v.repo.SaveVerification(ctx, identifier, v.digest(identifier, code), expiresAt); err != nil {
+	if err := models.SaveVerification(ctx, v.db, identifier, v.digest(identifier, code), expiresAt); err != nil {
 		return errs.Internal(fmt.Errorf("save verification failed: %w", err))
 	}
 	return nil
@@ -98,7 +100,7 @@ func (v *verifier) consume(ctx context.Context, purpose, email, code string) err
 		return err
 	}
 
-	record, err := v.repo.FindVerification(ctx, identifier)
+	record, err := models.FindVerification(ctx, v.db, identifier)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errs.New(errs.CodeAuthOTPExpired, "The verification code has expired")
@@ -107,7 +109,7 @@ func (v *verifier) consume(ctx context.Context, purpose, email, code string) err
 	}
 
 	if !time.Now().UTC().Before(record.ExpiresAt) {
-		if err := v.repo.DeleteVerification(ctx, record.ID); err != nil {
+		if err := models.DeleteVerification(ctx, v.db, record.ID); err != nil {
 			logger.FromContext(ctx).Warn("failed to clean up expired credential", zap.Error(err))
 		}
 		return errs.New(errs.CodeAuthOTPExpired, "The verification code has expired")
@@ -119,7 +121,7 @@ func (v *verifier) consume(ctx context.Context, purpose, email, code string) err
 
 	// 核销是原子的：WHERE 里带上刚读到的摘要，只有真正删掉那一行的调用算成功。
 	// 并发提交同一枚凭据时另一路会拿到 0 行，按"已失效"处理而不是也判成功。
-	consumed, err := v.repo.ConsumeVerification(ctx, identifier, record.Value)
+	consumed, err := models.ConsumeVerification(ctx, v.db, identifier, record.Value)
 	if err != nil {
 		return errs.Internal(err)
 	}

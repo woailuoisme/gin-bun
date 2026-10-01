@@ -8,8 +8,8 @@ import (
 	"github.com/samber/lo"
 	"github.com/uptrace/bun"
 
+	"bgin/internal/database/models"
 	"bgin/internal/platform/search"
-	"bgin/internal/shared/models"
 )
 
 // defaultBatchSize 默认批量检索导入批次大小。
@@ -38,9 +38,9 @@ func ImportUsersForSearch(ctx context.Context, db bun.IDB, batchSize int, handle
 		batchSize = defaultBatchSize
 	}
 
-	count, err := db.NewSelect().Model((*models.User)(nil)).Count(ctx)
+	count, err := CountUsersForSearch(ctx, db)
 	if err != nil || count == 0 {
-		return int64(count), err
+		return count, err
 	}
 
 	var (

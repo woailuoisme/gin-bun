@@ -71,12 +71,12 @@ func readMultipartFile(file *multipart.FileHeader) (*bytes.Buffer, error) {
 type FileInfo struct {
 	Path         string    `json:"path"`
 	URL          string    `json:"url"`
-	FileName     string    `json:"file_name"`
-	OriginalName string    `json:"original_name"`
-	MimeType     string    `json:"mime_type"`
+	FileName     string    `json:"fileName"`
+	OriginalName string    `json:"originalName"`
+	MimeType     string    `json:"mimeType"`
 	Size         int64     `json:"size"`
 	Hash         string    `json:"hash"`
-	UploadedAt   time.Time `json:"uploaded_at"`
+	UploadedAt   time.Time `json:"uploadedAt"`
 }
 
 // NamingStrategy 定义根据文件内容与原始文件名生成安全目标文件名与内容哈希的策略契约。

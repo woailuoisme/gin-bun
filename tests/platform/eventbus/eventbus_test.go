@@ -14,14 +14,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/goleak"
 	"go.uber.org/zap"
 
 	"bgin/internal/config"
 	"bgin/internal/platform/eventbus"
 )
 
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
+
 type userRegisteredEvent struct {
-	UserID string `json:"user_id"`
+	UserID string `json:"userId"`
 	Email  string `json:"email"`
 }
 

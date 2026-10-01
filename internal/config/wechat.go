@@ -19,12 +19,12 @@ type WeChatConfig struct {
 }
 
 // Declared 判断微信能力是否已配置（多应用 JSON 或单应用环境变量任一已声明即视为已配置）。
-func (c WeChatConfig) Declared() bool {
+func (c *WeChatConfig) Declared() bool {
 	return strings.TrimSpace(c.ApplicationsJSON) != "" || c.MiniProgram.Declared()
 }
 
 // Applications 解析并返回全部已声明的小程序配置映射。
-func (c WeChatConfig) Applications() (map[string]WeChatMiniProgramConfig, error) {
+func (c *WeChatConfig) Applications() (map[string]WeChatMiniProgramConfig, error) {
 	apps := make(map[string]WeChatMiniProgramConfig)
 
 	if jsonText := strings.TrimSpace(c.ApplicationsJSON); jsonText != "" {
@@ -53,7 +53,7 @@ type WeChatMiniProgramConfig struct {
 
 // Declared 判断小程序凭据是否已被声明。
 // 沿用「配置即启用」的原则：填写任一字段即视为已声明。
-func (c WeChatMiniProgramConfig) Declared() bool {
+func (c *WeChatMiniProgramConfig) Declared() bool {
 	return strings.TrimSpace(c.AppID) != "" || strings.TrimSpace(c.AppSecret) != ""
 }
 

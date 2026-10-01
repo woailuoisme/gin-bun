@@ -32,8 +32,8 @@ type QueueNameProvider interface {
 
 // ResolveQueueName 获取任务的目标队列名，未显式声明时回退为默认队列名。
 func ResolveQueueName(job Job) string {
-	if qp, ok := job.(QueueNameProvider); ok && qp.QueueName() != "" {
-		return qp.QueueName()
+	if qp, ok := job.(QueueNameProvider); ok {
+		return cmp.Or(qp.QueueName(), DefaultQueueName)
 	}
 	return DefaultQueueName
 }
@@ -154,6 +154,8 @@ type Registry interface {
 	Cron(spec string, job Job, opts ...asynq.Option)
 	// SetJobLockTTL 在注册表中配置任务名称级别的防重叠锁超时时间。
 	SetJobLockTTL(taskName string, ttl time.Duration)
+	// Get 查询指定任务名绑定的任务构造工厂。
+	Get(taskName string) (func() Job, bool)
 }
 
 // QueueStatus 表示队列当前运行状态的统计指标。
@@ -202,6 +204,15 @@ func (r *jobRegistry) Job(factory func() Job) {
 	defer r.mu.Unlock()
 
 	r.jobs[probe.TaskName()] = factory
+}
+
+// Get 查询已注册的任务构造工厂。
+func (r *jobRegistry) Get(taskName string) (func() Job, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	f, ok := r.jobs[taskName]
+	return f, ok
 }
 
 func (r *jobRegistry) Cron(spec string, job Job, opts ...asynq.Option) {

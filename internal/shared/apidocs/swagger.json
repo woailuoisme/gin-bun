@@ -590,16 +590,16 @@
         "auth.ChangePasswordBody": {
             "type": "object",
             "required": [
-                "current_password",
-                "new_password"
+                "currentPassword",
+                "newPassword"
             ],
             "properties": {
-                "current_password": {
+                "currentPassword": {
                     "description": "当前登录口令",
                     "type": "string",
                     "example": "Secret123!"
                 },
-                "new_password": {
+                "newPassword": {
                     "description": "新登录口令 (8-128位)",
                     "type": "string",
                     "maxLength": 128,
@@ -637,10 +637,10 @@
         "auth.RefreshTokenBody": {
             "type": "object",
             "required": [
-                "refresh_token"
+                "refreshToken"
             ],
             "properties": {
-                "refresh_token": {
+                "refreshToken": {
                     "description": "刷新令牌凭据",
                     "type": "string",
                     "example": "rt_01J9X4N8Y0EFGH"
@@ -664,7 +664,7 @@
             "type": "object",
             "required": [
                 "email",
-                "new_password"
+                "newPassword"
             ],
             "properties": {
                 "email": {
@@ -672,7 +672,7 @@
                     "type": "string",
                     "example": "alex@example.com"
                 },
-                "new_password": {
+                "newPassword": {
                     "description": "新登录口令 (8-128位)",
                     "type": "string",
                     "maxLength": 128,
@@ -708,12 +708,12 @@
         "auth.SessionResource": {
             "type": "object",
             "properties": {
-                "expires_in": {
+                "expiresIn": {
                     "description": "访问令牌有效期（秒）",
                     "type": "integer",
                     "example": 900
                 },
-                "refresh_token": {
+                "refreshToken": {
                     "description": "刷新令牌 (Refresh Token)",
                     "type": "string",
                     "example": "rt_01J9X4N8Y0EFGH"
@@ -776,7 +776,7 @@
         "auth.SignOutBody": {
             "type": "object",
             "properties": {
-                "refresh_token": {
+                "refreshToken": {
                     "description": "待作废的刷新令牌 (可选，同时作废可真正阻断续签)",
                     "type": "string",
                     "example": "rt_01J9X4N8Y0EFGH"
@@ -839,12 +839,12 @@
         "auth.UserResource": {
             "type": "object",
             "properties": {
-                "created_at": {
+                "createdAt": {
                     "description": "账号创建时间 (ISO 8601 UTC)",
                     "type": "string",
                     "example": "2026-09-27T10:00:00Z"
                 },
-                "display_username": {
+                "displayUsername": {
                     "description": "用户显示名称",
                     "type": "string",
                     "example": "Alex Mercer"
@@ -854,7 +854,7 @@
                     "type": "string",
                     "example": "alex@example.com"
                 },
-                "email_verified": {
+                "emailVerified": {
                     "description": "邮箱是否已完成验证",
                     "type": "boolean",
                     "example": true
@@ -874,7 +874,7 @@
                     "type": "string",
                     "example": "Alex Mercer"
                 },
-                "phone_number": {
+                "phoneNumber": {
                     "description": "E.164 格式手机号",
                     "type": "string",
                     "example": "+8613800138000"
@@ -888,7 +888,7 @@
                     ],
                     "example": "user"
                 },
-                "updated_at": {
+                "updatedAt": {
                     "description": "账号更新时间 (ISO 8601 UTC)",
                     "type": "string",
                     "example": "2026-09-27T10:00:00Z"
@@ -979,12 +979,12 @@
         "profile.ProfileResource": {
             "type": "object",
             "properties": {
-                "created_at": {
+                "createdAt": {
                     "description": "账号创建时间 (ISO 8601 UTC)",
                     "type": "string",
                     "example": "2026-09-27T10:00:00Z"
                 },
-                "display_username": {
+                "displayUsername": {
                     "description": "用户显示名称",
                     "type": "string",
                     "example": "Alex Mercer"
@@ -994,7 +994,7 @@
                     "type": "string",
                     "example": "alex@example.com"
                 },
-                "email_verified": {
+                "emailVerified": {
                     "description": "邮箱是否已验证",
                     "type": "boolean",
                     "example": true
@@ -1014,7 +1014,7 @@
                     "type": "string",
                     "example": "Alex Mercer"
                 },
-                "phone_number": {
+                "phoneNumber": {
                     "description": "E.164 格式手机号",
                     "type": "string",
                     "example": "+8613800138000"
@@ -1046,7 +1046,7 @@
                     ],
                     "example": "active"
                 },
-                "updated_at": {
+                "updatedAt": {
                     "description": "账号更新时间 (ISO 8601 UTC)",
                     "type": "string",
                     "example": "2026-09-27T10:00:00Z"
@@ -1061,7 +1061,7 @@
         "profile.UpdateProfileBody": {
             "type": "object",
             "properties": {
-                "display_username": {
+                "displayUsername": {
                     "description": "用户显示名称",
                     "type": "string",
                     "x-nullable": true,
@@ -1079,7 +1079,7 @@
                     "x-nullable": true,
                     "example": "Alex Mercer"
                 },
-                "phone_number": {
+                "phoneNumber": {
                     "description": "E.164 格式手机号",
                     "type": "string",
                     "x-nullable": true,
@@ -1124,7 +1124,7 @@
         "realtime.TokenResource": {
             "type": "object",
             "properties": {
-                "expires_at": {
+                "expiresAt": {
                     "description": "Token 过期时间戳 (RFC3339)",
                     "type": "string",
                     "example": "2026-09-27T19:30:00Z"
@@ -1134,7 +1134,7 @@
                     "type": "string",
                     "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
                 },
-                "ws_url": {
+                "wsUrl": {
                     "description": "Centrifugo WebSocket/SSE 服务端地址",
                     "type": "string",
                     "example": "ws://127.0.0.1:8000/connection/websocket"

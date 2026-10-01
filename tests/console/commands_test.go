@@ -34,6 +34,7 @@ func TestRootCommand_Registration(t *testing.T) {
 		"route:list",
 		"scout:import",
 		"scout:flush",
+		"sentry:test",
 	}
 
 	commandNames := lo.Map(cmd.Commands(), func(c *cobra.Command, _ int) string {
@@ -63,7 +64,7 @@ func TestRootCommand_Registration(t *testing.T) {
 	groupIDs := lo.Map(cmd.Groups(), func(g *cobra.Group, _ int) string {
 		return g.ID
 	})
-	assert.ElementsMatch(t, []string{"db", "geoip", "jwt", "make", "queue", "route", "scout"}, groupIDs)
+	assert.ElementsMatch(t, []string{"db", "geoip", "jwt", "make", "queue", "route", "scout", "sentry"}, groupIDs)
 
 	cmdMap := lo.KeyBy(cmd.Commands(), func(c *cobra.Command) string {
 		return c.Name()
@@ -83,6 +84,7 @@ func TestRootCommand_Registration(t *testing.T) {
 	assert.Equal(t, "route", cmdMap["route:list"].GroupID)
 	assert.Equal(t, "scout", cmdMap["scout:import"].GroupID)
 	assert.Equal(t, "scout", cmdMap["scout:flush"].GroupID)
+	assert.Equal(t, "sentry", cmdMap["sentry:test"].GroupID)
 }
 
 // TestParseQueueWeights 验证队列权重参数解析。

@@ -4,10 +4,10 @@ import (
 	"context"
 	"time"
 
+	"bgin/internal/database/models"
 	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/errs"
 	"bgin/internal/shared/enums"
-	"bgin/internal/shared/models"
 )
 
 // ErrRoleRestricted 声明非目标角色访问受限错误（403 Forbidden）。
@@ -43,7 +43,7 @@ func (p AdminPolicy) ValidateUser(_ context.Context, user *models.User) error {
 	if user == nil {
 		return errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
 	}
-	if user.Role != string(enums.RoleAdmin) {
+	if user.Role != enums.RoleAdmin {
 		return ErrRoleRestricted
 	}
 	return GuardState(user)

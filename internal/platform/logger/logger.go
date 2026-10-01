@@ -89,6 +89,7 @@ type Options struct {
 	Redact      bool
 	RedactKeys  []string
 	AddCaller   bool
+	ExtraCores  []zapcore.Core
 }
 
 // Option 定义日志器构建的函数式选项。
@@ -144,6 +145,15 @@ func WithRedaction(enabled bool, customKeys ...string) Option {
 func WithCaller(enabled bool) Option {
 	return func(o *Options) {
 		o.AddCaller = enabled
+	}
+}
+
+// WithExtraCore 附加自定义 zapcore.Core 输出目标（例如用于 Sentry/GlitchTip 事件上报）。
+func WithExtraCore(c zapcore.Core) Option {
+	return func(o *Options) {
+		if c != nil {
+			o.ExtraCores = append(o.ExtraCores, c)
+		}
 	}
 }
 
@@ -248,6 +258,10 @@ func NewWithOptions(opts ...Option) *zap.Logger {
 	core := zapcore.NewCore(encoder, ws, level)
 	if opt.Redact {
 		core = newRedactCore(core, opt.RedactKeys)
+	}
+	if len(opt.ExtraCores) > 0 {
+		cores := append([]zapcore.Core{core}, opt.ExtraCores...)
+		core = zapcore.NewTee(cores...)
 	}
 
 	zapOpts := make([]zap.Option, 0, 4)

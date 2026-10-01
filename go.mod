@@ -88,6 +88,8 @@ require (
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/fogleman/gg v1.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/getsentry/sentry-go v0.49.0 // indirect
+	github.com/getsentry/sentry-go/gin v0.49.0 // indirect
 	github.com/gin-contrib/sse v1.1.0 // indirect
 	github.com/go-pay/crypto v0.0.3 // indirect
 	github.com/go-pay/errgroup v0.0.3 // indirect
@@ -117,7 +119,7 @@ require (
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/lithammer/shortuuid/v3 v3.0.7 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mattn/go-runewidth v0.0.27 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
@@ -166,6 +168,7 @@ require (
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/otel v1.46.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
+	go.uber.org/goleak v1.3.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect

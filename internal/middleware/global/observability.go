@@ -21,17 +21,16 @@ const headerRequestID = "x-request-id"
 // requestIDPrefix 是追踪标识前缀。
 const requestIDPrefix = "req_"
 
-// probePaths 探针路径集合。
-var probePaths = map[string]struct{}{
-	"/livez":  {},
-	"/readyz": {},
-}
-
 // RequestID 【全局中间件】生成或透传全链路追踪请求标识。
 func (m *Middleware) RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := strings.TrimSpace(c.GetHeader(headerRequestID))
 		if requestID == "" {
+			// 对未显式传递追踪头的高频健康探针路由快速放行，规避高频 UUIDv7 生成与子日志器上下文分配开销
+			if isProbePath(c.Request.URL.Path) || isProbePath(c.FullPath()) {
+				c.Next()
+				return
+			}
 			requestID = newRequestID()
 		}
 
@@ -56,11 +55,19 @@ func newRequestID() string {
 // AccessLog 【全局中间件】记录每个请求的方法、路径、状态码与耗时。
 func (m *Middleware) AccessLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		isProbe := isProbePath(c.Request.URL.Path) || isProbePath(c.FullPath())
+
 		start := time.Now()
 		c.Next()
 
-		log := logger.FromContext(c.Request.Context())
 		status := c.Writer.Status()
+
+		// 健康检查探针正常状态（2xx/3xx）完全静默，避免高频心跳刷屏；异常（4xx/5xx）依然保留日志
+		if isProbe && status < 400 {
+			return
+		}
+
+		log := logger.FromContext(c.Request.Context())
 
 		fields := make([]zap.Field, 0, 8)
 		if errMsg := formatErrors(c.Errors); errMsg != "" {
@@ -83,8 +90,6 @@ func (m *Middleware) AccessLog() gin.HandlerFunc {
 			log.Error("access", fields...)
 		case status >= 400:
 			log.Warn("access", fields...)
-		case isProbePath(c.FullPath()):
-			log.Debug("access", fields...)
 		default:
 			log.Info("access", fields...)
 		}
@@ -105,10 +110,9 @@ func formatErrors(errs []*gin.Error) string {
 	return strings.Join(msgs, "; ")
 }
 
-// isProbePath 判断请求是否为探针路由。
-func isProbePath(fullPath string) bool {
-	_, ok := probePaths[fullPath]
-	return ok
+// isProbePath 判断请求是否为高频系统探针路由。
+func isProbePath(path string) bool {
+	return path == "/livez" || path == "/readyz" || path == "/healthz"
 }
 
 // Recovery 【全局中间件】捕获 panic 转为统一 500 响应，堆栈仅进入日志。
@@ -123,6 +127,9 @@ func (m *Middleware) Recovery() gin.HandlerFunc {
 			logger.FromContext(c.Request.Context()).Error("request panic recovered",
 				zap.Any("panic", recovered),
 				zap.String("stack", string(debug.Stack())))
+
+			// 标记当前请求的 panic 异常已由 Zap/Sentry Core 捕获，防止全局 ErrorHandler 二次重复上报
+			MarkSentryReported(c)
 
 			if c.Writer.Written() {
 				c.Abort()

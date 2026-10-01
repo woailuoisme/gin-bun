@@ -4,12 +4,14 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
+
+	"bgin/internal/database"
 )
 
 // Notification 表示系统通用站内消息通知模型，映射 notifications 表。
 type Notification struct {
 	bun.BaseModel `bun:"table:notifications,alias:n"`
-	Base
+	database.Base
 
 	NotifiableType string     `bun:"notifiable_type,notnull" json:"notifiableType"`
 	NotifiableID   string     `bun:"notifiable_id,notnull" json:"notifiableId"`

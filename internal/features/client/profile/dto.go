@@ -18,9 +18,9 @@ type UpdateProfileBody struct {
 	// 唯一登录用户名 (3-30位)
 	Username omitnull.Val[string] `json:"username" swaggertype:"string" extensions:"x-nullable" example:"alexmercer"`
 	// 用户显示名称
-	DisplayUsername omitnull.Val[string] `json:"display_username" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
+	DisplayUsername omitnull.Val[string] `json:"displayUsername" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
 	// E.164 格式手机号
-	PhoneNumber omitnull.Val[string] `json:"phone_number" swaggertype:"string" extensions:"x-nullable" example:"+8613800138000"`
+	PhoneNumber omitnull.Val[string] `json:"phoneNumber" swaggertype:"string" extensions:"x-nullable" example:"+8613800138000"`
 }
 
 // fieldSet 将请求转换为共享内核档案字段集。

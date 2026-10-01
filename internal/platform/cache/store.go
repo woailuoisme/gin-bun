@@ -25,6 +25,8 @@ type Store interface {
 	TTL(ctx context.Context, key string) (time.Duration, error)
 	// Delete 删除若干键，返回实际删除数量。
 	Delete(ctx context.Context, keys ...string) (int64, error)
+	// DeleteIfMatch 仅当键的值与 expected 匹配时原子删除，常用于安全释放分布式互斥锁。
+	DeleteIfMatch(ctx context.Context, key, expected string) (bool, error)
 	// Remember 防击穿回源读取或计算写入。
 	Remember(ctx context.Context, key string, ttl time.Duration, load func(context.Context) (string, error)) (string, error)
 	// Close 释放连接或清理资源。

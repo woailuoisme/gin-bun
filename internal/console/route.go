@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,7 +26,7 @@ type RouteEntry struct {
 	Method     string `json:"method"`
 	Path       string `json:"path"`
 	Handler    string `json:"handler"`
-	RawHandler string `json:"raw_handler"`
+	RawHandler string `json:"rawHandler"`
 }
 
 // RouteListOptions 封装 route:list 命令的参数与依赖容器 (SRP & DIP)。
@@ -98,20 +99,11 @@ func (o *RouteListOptions) Run(_ context.Context) error {
 		var res int
 		switch strings.ToLower(o.SortField) {
 		case "method":
-			res = strings.Compare(a.Method, b.Method)
-			if res == 0 {
-				res = strings.Compare(a.Path, b.Path)
-			}
+			res = cmp.Or(strings.Compare(a.Method, b.Method), strings.Compare(a.Path, b.Path))
 		case "handler":
-			res = strings.Compare(a.Handler, b.Handler)
-			if res == 0 {
-				res = strings.Compare(a.Path, b.Path)
-			}
+			res = cmp.Or(strings.Compare(a.Handler, b.Handler), strings.Compare(a.Path, b.Path))
 		default: // "path"
-			res = strings.Compare(a.Path, b.Path)
-			if res == 0 {
-				res = strings.Compare(a.Method, b.Method)
-			}
+			res = cmp.Or(strings.Compare(a.Path, b.Path), strings.Compare(a.Method, b.Method))
 		}
 		if o.Reverse {
 			return -res

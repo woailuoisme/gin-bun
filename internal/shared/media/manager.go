@@ -6,18 +6,21 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"mime/multipart"
+	"path/filepath"
 	"strings"
 
+	"github.com/gabriel-vasile/mimetype"
 	"github.com/samber/oops"
 	"github.com/uptrace/bun"
 	"go.uber.org/zap"
 
 	"bgin/internal/config"
+	"bgin/internal/database/models"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/logger"
 	"bgin/internal/platform/storage"
-	"bgin/internal/shared/models"
 )
 
 // ErrMediaNotFound 表示未查询到目标媒体记录的哨兵错误。
@@ -446,4 +449,67 @@ func (m *Manager) Avatar(mediaItem *models.Media, size int) string {
 		WithResize(size, size),
 		WithGravity(GravityFocusPoint),
 	)
+}
+
+const maxAvatarSize = 2 * 1024 * 1024 // 2MB
+
+// ValidateAvatarFile 校验头像文件的大小、扩展名与真实魔数。
+func ValidateAvatarFile(file *multipart.FileHeader) error {
+	if file == nil || file.Size <= 0 {
+		return errs.BadRequest("Avatar file cannot be empty")
+	}
+	if file.Size > maxAvatarSize {
+		return errs.BadRequest("Avatar file size must not exceed 2MB")
+	}
+
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(file.Filename), "."))
+	switch ext {
+	case "jpg", "jpeg", "png", "webp":
+	default:
+		return errs.BadRequest("Invalid image extension; only jpg, jpeg, png, and webp are allowed")
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		return errs.BadRequest("Failed to open uploaded file")
+	}
+	defer func() { _ = src.Close() }()
+
+	header := make([]byte, 512)
+	n, err := io.ReadFull(src, header)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return errs.BadRequest("Failed to read uploaded file")
+	}
+
+	mtype := mimetype.Detect(header[:n])
+	switch mtype.String() {
+	case "image/jpeg", "image/png", "image/webp":
+		return nil
+	default:
+		return errs.BadRequest("Invalid image format; only JPEG, PNG, and WebP are allowed")
+	}
+}
+
+// AttachAvatar 校验头像文件规格（魔数嗅探、格式白名单、尺寸限制），
+// 将其原子上传并以单文件模式绑定至用户模型，返回解析后的签名访问 URL。
+func (m *Manager) AttachAvatar(ctx context.Context, userID string, file *multipart.FileHeader) (string, error) {
+	if err := ValidateAvatarFile(file); err != nil {
+		return "", err
+	}
+	if m == nil {
+		return "", oops.Code(errs.CodeInternal).Errorf("media: manager is not configured")
+	}
+
+	mediaRecord, err := m.Attach(
+		ctx,
+		Model("user", userID),
+		"avatar",
+		file,
+		WithSingleFile(),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	return cmp.Or(m.Avatar(mediaRecord, 256), m.URL(mediaRecord), mediaRecord.FileName), nil
 }

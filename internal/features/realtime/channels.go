@@ -5,9 +5,10 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/uptrace/bun"
+
+	"bgin/internal/database/models"
 	platformRealtime "bgin/internal/platform/realtime"
-	"bgin/internal/shared/models"
-	shareduser "bgin/internal/shared/user"
 )
 
 // UserChannel 构建受订阅代理保护的个人用户私有频道名称（private:users.userID）。
@@ -27,7 +28,7 @@ func AdminNotificationChannel() string {
 }
 
 // RegisterChannels 集中向实时通信注册中心登记所有业务频道的订阅授权策略。
-func RegisterChannels(r *platformRealtime.Registry, userRepo *shareduser.Repository) {
+func RegisterChannels(r *platformRealtime.Registry, db bun.IDB) {
 	if r == nil {
 		return
 	}
@@ -46,8 +47,8 @@ func RegisterChannels(r *platformRealtime.Registry, userRepo *shareduser.Reposit
 			}
 
 			// 若当前账号拥有管理员权限，亦允许订阅
-			if userRepo != nil && u.ID != "" {
-				if user, err := userRepo.FindByID(ctx, u.ID); err == nil && user.Role == models.RoleAdmin {
+			if db != nil && u.ID != "" {
+				if user, err := models.FindUserByID(ctx, db, u.ID); err == nil && user != nil && user.Role == models.RoleAdmin {
 					return nil
 				}
 			}
@@ -62,12 +63,12 @@ func RegisterChannels(r *platformRealtime.Registry, userRepo *shareduser.Reposit
 				return errors.New("unauthorized: authentication required")
 			}
 
-			if userRepo == nil {
+			if db == nil {
 				return errors.New("unauthorized: authorization service unavailable")
 			}
 
-			user, err := userRepo.FindByID(ctx, u.ID)
-			if err != nil || user.Role != models.RoleAdmin {
+			user, err := models.FindUserByID(ctx, db, u.ID)
+			if err != nil || user == nil || user.Role != models.RoleAdmin {
 				return errors.New("unauthorized: admin privileges required")
 			}
 			return nil

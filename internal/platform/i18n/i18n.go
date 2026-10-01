@@ -131,7 +131,8 @@ func decode(fsys fs.FS, name string, dst any) error {
 // 按优先级逐个候选取值尝试，谁先命中就用谁。
 func (t *Translator) Language(acceptLanguage string) string {
 	for part := range strings.SplitSeq(acceptLanguage, ",") {
-		tag := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
+		tag, _, _ := strings.Cut(part, ";")
+		tag = strings.TrimSpace(tag)
 		if tag == "" {
 			continue
 		}

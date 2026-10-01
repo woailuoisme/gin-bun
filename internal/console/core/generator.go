@@ -179,9 +179,8 @@ func (p *CRUDPlan) featureDir() string {
 func (p *CRUDPlan) Files() ([]PlannedFile, error) {
 	featureDir := p.featureDir()
 	return []PlannedFile{
-		{RelPath: filepath.Join("internal", "shared", "models", p.data.SnakeName+".go"), Template: "model.tmpl", Data: p.data},
+		{RelPath: filepath.Join("internal", "database", "models", p.data.SnakeName+".go"), Template: "model.tmpl", Data: p.data},
 		{RelPath: filepath.Join(featureDir, "dto.go"), Template: "dto.tmpl", Data: p.data},
-		{RelPath: filepath.Join(featureDir, "repository.go"), Template: "repository.tmpl", Data: p.data},
 		{RelPath: filepath.Join(featureDir, "service.go"), Template: "service.tmpl", Data: p.data},
 		{RelPath: filepath.Join(featureDir, "handler.go"), Template: "handler.tmpl", Data: p.data},
 		{RelPath: filepath.Join(featureDir, "routes.go"), Template: "routes.tmpl", Data: p.data},

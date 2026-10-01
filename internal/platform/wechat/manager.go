@@ -1,6 +1,7 @@
 package wechat
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -27,7 +28,7 @@ type Manager struct {
 
 // NewManager 根据 WeChatConfig 构造多应用管理器。
 // 若未配置任何小程序凭据，返回 nil, nil，调用方据此判断微信能力未启用。
-func NewManager(cfg config.WeChatConfig, cacheClient *cache.Client, opts ...Option) (*Manager, error) {
+func NewManager(cfg config.WeChatConfig, cacheClient cache.Store, opts ...Option) (*Manager, error) {
 	if !cfg.Declared() {
 		return nil, nil //nolint:nilnil // returning nil manager when unconfigured is intentional
 	}
@@ -126,10 +127,7 @@ func (m *Manager) Register(name string, client MiniProgramClient) {
 		return
 	}
 
-	key := strings.TrimSpace(name)
-	if key == "" {
-		key = DefaultAppKey
-	}
+	key := cmp.Or(strings.TrimSpace(name), DefaultAppKey)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

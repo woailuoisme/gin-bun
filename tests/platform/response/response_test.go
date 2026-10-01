@@ -43,7 +43,7 @@ func TestPaginatedSerialisesEmptyAsArray(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.JSONEq(t,
-		`{"items":[],"meta":{"page":1,"page_size":20,"total":0,"total_pages":0}}`,
+		`{"items":[],"meta":{"page":1,"pageSize":20,"total":0,"totalPages":0}}`,
 		recorder.Body.String(),
 	)
 }

@@ -10,8 +10,9 @@ import (
 	"github.com/brianvoe/gofakeit/v7"
 	"github.com/uptrace/bun"
 
+	"bgin/internal/database"
+	"bgin/internal/database/models"
 	"bgin/internal/platform/hasher"
-	"bgin/internal/shared/models"
 )
 
 // UserFactory 是面向 models.User 的领域工厂，提供开箱即用的假数据定义与状态链。
@@ -31,7 +32,7 @@ func NewUserFactory(db bun.IDB) *UserFactory {
 			phone := f.Phone()
 
 			return &models.User{
-				Base: models.Base{
+				Base: database.Base{
 					ID:        id.String(),
 					CreatedAt: now,
 					UpdatedAt: now,
@@ -194,7 +195,7 @@ func (uf *UserFactory) WithAccount(password string) *UserFactory {
 		accountID := newUUID()
 		now := time.Now().UTC()
 		account := &models.Account{
-			Base: models.Base{
+			Base: database.Base{
 				ID:        accountID.String(),
 				CreatedAt: now,
 				UpdatedAt: now,

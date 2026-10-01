@@ -5,18 +5,20 @@ import (
 	"database/sql"
 	"errors"
 
+	"github.com/uptrace/bun"
+
+	"bgin/internal/database/models"
 	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
-	"bgin/internal/shared/models"
 	shareduser "bgin/internal/shared/user"
 )
 
 // Deps 声明管理员认证服务的外部依赖。
 type Deps struct {
-	Repo   Repository
+	DB     *bun.DB
 	Guard  *authentication.Guard[*models.User]
 	Tokens *authentication.TokenIssuer
 	Hasher *hasher.Hasher
@@ -24,7 +26,7 @@ type Deps struct {
 
 // Service 实现后台管理员认证的业务逻辑。
 type Service struct {
-	repo   Repository
+	db     bun.IDB
 	guard  *authentication.Guard[*models.User]
 	hasher *hasher.Hasher
 }
@@ -32,11 +34,12 @@ type Service struct {
 // NewService 构造 Service。
 func NewService(deps Deps) *Service {
 	guard := deps.Guard
-	if guard == nil && deps.Tokens != nil && deps.Repo != nil {
-		guard = authentication.NewGuard(deps.Tokens, deps.Repo, shareduser.AdminPolicy{})
+	if guard == nil && deps.Tokens != nil && deps.DB != nil {
+		provider := shareduser.NewProvider(deps.DB, deps.Hasher)
+		guard = authentication.NewGuard(deps.Tokens, provider, shareduser.AdminPolicy{})
 	}
 	return &Service{
-		repo:   deps.Repo,
+		db:     deps.DB,
 		guard:  guard,
 		hasher: deps.Hasher,
 	}
@@ -80,16 +83,25 @@ func (s *Service) GetSession(ctx context.Context, userID string) (GetSessionReso
 	return GetSessionResource{User: shareduser.ProjectProfile(user)}, nil
 }
 
-// loadAdmin 兜底从数据库加载管理员实体并进行状态校验。
+// loadAdmin 兜底加载管理员实体并进行状态校验。
 func (s *Service) loadAdmin(ctx context.Context, userID string) (*models.User, error) {
-	u, err := s.repo.FindByID(ctx, userID)
+	var u *models.User
+	var err error
+	switch {
+	case s.guard != nil && s.guard.Provider() != nil:
+		u, err = s.guard.Provider().FindByID(ctx, userID)
+	case s.db != nil:
+		u, err = models.FindUserByID(ctx, s.db, userID)
+	default:
+		return nil, errors.New("adminauth: neither guard provider nor db is configured")
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
 		}
 		return nil, errs.Internal(err)
 	}
-	if u.Role != string(enums.RoleAdmin) {
+	if u.Role != enums.RoleAdmin {
 		return nil, errs.Forbidden("Access restricted to administrators")
 	}
 	if err := shareduser.GuardState(u); err != nil {
@@ -121,6 +133,35 @@ func (s *Service) SignOut(ctx context.Context, body SignOutBody) error {
 	return s.guard.Logout(ctx)
 }
 
+type credentialManager interface {
+	FindCredentialAccount(ctx context.Context, userID string) (*models.Account, error)
+	UpdatePassword(ctx context.Context, userID, passwordHash string) error
+}
+
+func (s *Service) findCredentialAccount(ctx context.Context, userID string) (*models.Account, error) {
+	if s.guard != nil && s.guard.Provider() != nil {
+		if cm, ok := s.guard.Provider().(credentialManager); ok {
+			return cm.FindCredentialAccount(ctx, userID)
+		}
+	}
+	if s.db != nil {
+		return models.FindCredentialAccount(ctx, s.db, userID)
+	}
+	return nil, sql.ErrNoRows
+}
+
+func (s *Service) updatePassword(ctx context.Context, userID, passwordHash string) error {
+	if s.guard != nil && s.guard.Provider() != nil {
+		if cm, ok := s.guard.Provider().(credentialManager); ok {
+			return cm.UpdatePassword(ctx, userID, passwordHash)
+		}
+	}
+	if s.db != nil {
+		return models.UpdatePassword(ctx, s.db, userID, passwordHash)
+	}
+	return sql.ErrNoRows
+}
+
 // ChangePassword 修改当前管理员登录密码。
 func (s *Service) ChangePassword(ctx context.Context, userID string, body ChangePasswordBody) error {
 	if err := validator.PasswordStrength("new_password", body.NewPassword); err != nil {
@@ -131,7 +172,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, body Change
 		return err
 	}
 
-	account, err := s.repo.FindCredentialAccount(ctx, userID)
+	account, err := s.findCredentialAccount(ctx, userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errs.New(errs.CodeAuthPasswordMismatch, "The current password is incorrect")
@@ -155,7 +196,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, body Change
 		return errs.Internal(err)
 	}
 
-	if err := s.repo.UpdatePassword(ctx, userID, hash); err != nil {
+	if err := s.updatePassword(ctx, userID, hash); err != nil {
 		return errs.Internal(err)
 	}
 

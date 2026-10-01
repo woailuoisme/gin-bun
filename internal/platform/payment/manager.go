@@ -23,40 +23,48 @@ import (
 type DriverFactory func(application string, appCfg any, isProd bool, certsDir string, logger *zap.Logger) (Provider, error)
 
 var (
-	driverMu        sync.RWMutex
-	driverFactories = make(map[enums.PaymentChannel]DriverFactory)
+	driverMu              sync.RWMutex
+	customDriverFactories = make(map[enums.PaymentChannel]DriverFactory)
 )
 
-// RegisterDriver 注册指定支付渠道的驱动构造工厂，满足开闭原则 (OCP)。
+// wechatFactory 内置微信支付驱动构造函数。
+func wechatFactory(application string, rawCfg any, isProd bool, certsDir string, logger *zap.Logger) (Provider, error) {
+	cfg, ok := rawCfg.(config.WechatPaymentAppConfig)
+	if !ok {
+		return nil, oops.Code(errs.CodeInvalidPaymentConfig).Errorf("expected WechatPaymentAppConfig, got %T", rawCfg)
+	}
+	return newWechatProvider(application, cfg, isProd, certsDir, logger)
+}
+
+// alipayFactory 内置支付宝支付驱动构造函数。
+func alipayFactory(application string, rawCfg any, isProd bool, certsDir string, logger *zap.Logger) (Provider, error) {
+	cfg, ok := rawCfg.(config.AlipayPaymentAppConfig)
+	if !ok {
+		return nil, oops.Code(errs.CodeInvalidPaymentConfig).Errorf("expected AlipayPaymentAppConfig, got %T", rawCfg)
+	}
+	return newAlipayProvider(application, cfg, isProd, certsDir, logger)
+}
+
+// RegisterDriver 注册指定支付渠道的自定义驱动构造工厂（遵循开闭原则 OCP）。
 func RegisterDriver(channel enums.PaymentChannel, factory DriverFactory) {
 	driverMu.Lock()
 	defer driverMu.Unlock()
-	driverFactories[channel] = factory
+	customDriverFactories[channel] = factory
 }
 
-// GetDriverFactory 获取已注册的渠道驱动工厂。
+// GetDriverFactory 获取已注册的渠道驱动工厂（内置渠道无需 init 注册，支持静态无副作用分发）。
 func GetDriverFactory(channel enums.PaymentChannel) (DriverFactory, bool) {
-	driverMu.RLock()
-	defer driverMu.RUnlock()
-	factory, ok := driverFactories[channel]
-	return factory, ok
-}
-
-func init() {
-	RegisterDriver(enums.PaymentChannelWechat, func(application string, rawCfg any, isProd bool, certsDir string, logger *zap.Logger) (Provider, error) {
-		cfg, ok := rawCfg.(config.WechatPaymentAppConfig)
-		if !ok {
-			return nil, oops.Code(errs.CodeInvalidPaymentConfig).Errorf("expected WechatPaymentAppConfig, got %T", rawCfg)
-		}
-		return newWechatProvider(application, cfg, isProd, certsDir, logger)
-	})
-	RegisterDriver(enums.PaymentChannelAlipay, func(application string, rawCfg any, isProd bool, certsDir string, logger *zap.Logger) (Provider, error) {
-		cfg, ok := rawCfg.(config.AlipayPaymentAppConfig)
-		if !ok {
-			return nil, oops.Code(errs.CodeInvalidPaymentConfig).Errorf("expected AlipayPaymentAppConfig, got %T", rawCfg)
-		}
-		return newAlipayProvider(application, cfg, isProd, certsDir, logger)
-	})
+	switch channel {
+	case enums.PaymentChannelWechat:
+		return wechatFactory, true
+	case enums.PaymentChannelAlipay:
+		return alipayFactory, true
+	default:
+		driverMu.RLock()
+		defer driverMu.RUnlock()
+		factory, ok := customDriverFactories[channel]
+		return factory, ok
+	}
 }
 
 // FakeApplicationKey 是本地开发与端到端演练下 Fake 渠道使用的应用标识。

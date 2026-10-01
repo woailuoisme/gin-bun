@@ -18,21 +18,21 @@ type SignInEmailBody struct {
 // RefreshTokenBody 是 POST /v1/admin/auth/token/refresh 的请求体。
 type RefreshTokenBody struct {
 	// 刷新令牌凭据
-	RefreshToken string `json:"refresh_token" example:"rt_01J9X4N8Y0EFGH" validate:"required"`
+	RefreshToken string `json:"refreshToken" example:"rt_01J9X4N8Y0EFGH" validate:"required"`
 }
 
 // SignOutBody 是 POST /v1/admin/auth/sign-out 的请求体。
 type SignOutBody struct {
 	// 待作废的刷新令牌 (可选，同时作废可真正阻断续签)
-	RefreshToken *string `json:"refresh_token" example:"rt_01J9X4N8Y0EFGH" validate:"omitempty"`
+	RefreshToken *string `json:"refreshToken" example:"rt_01J9X4N8Y0EFGH" validate:"omitempty"`
 }
 
 // ChangePasswordBody 是 POST /v1/admin/auth/change-password 的请求体。
 type ChangePasswordBody struct {
 	// 当前登录口令
-	CurrentPassword string `json:"current_password" example:"Admin123!" validate:"required"`
+	CurrentPassword string `json:"currentPassword" example:"Admin123!" validate:"required"`
 	// 新登录口令 (8-128位，须含字母与数字)
-	NewPassword string `json:"new_password" example:"NewAdmin456!" validate:"required,min=8,max=128"`
+	NewPassword string `json:"newPassword" example:"NewAdmin456!" validate:"required,min=8,max=128"`
 }
 
 // SessionResource 是签发令牌类端点的统一响应体。
@@ -40,9 +40,9 @@ type SessionResource struct {
 	// 访问令牌 (JWT Access Token)
 	Token string `json:"token" example:"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."`
 	// 刷新令牌 (Refresh Token)
-	RefreshToken string `json:"refresh_token" example:"rt_01J9X4N8Y0EFGH"`
+	RefreshToken string `json:"refreshToken" example:"rt_01J9X4N8Y0EFGH"`
 	// 访问令牌有效期（秒）
-	ExpiresIn int `json:"expires_in" example:"900"`
+	ExpiresIn int `json:"expiresIn" example:"900"`
 	// 管理员身份资料投影
 	User Profile `json:"user"`
 }

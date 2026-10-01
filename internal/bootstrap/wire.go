@@ -2,11 +2,13 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	"github.com/dromara/carbon/v2"
 	"github.com/uptrace/bun"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"bgin/internal/config"
 	"bgin/internal/database"
@@ -22,6 +24,7 @@ import (
 	platformauth "bgin/internal/platform/authentication"
 	"bgin/internal/platform/authorization"
 	"bgin/internal/platform/cache"
+	"bgin/internal/platform/eventbus"
 	"bgin/internal/platform/hasher"
 	"bgin/internal/platform/i18n"
 	"bgin/internal/platform/logger"
@@ -29,8 +32,10 @@ import (
 	"bgin/internal/platform/notification"
 	"bgin/internal/platform/payment"
 	"bgin/internal/platform/pdf"
+	"bgin/internal/platform/queue"
 	"bgin/internal/platform/realtime"
 	"bgin/internal/platform/search"
+	platformsentry "bgin/internal/platform/sentry"
 	"bgin/internal/platform/storage"
 	"bgin/internal/platform/wechat"
 	"bgin/internal/shared/media"
@@ -51,10 +56,12 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	carbon.SetTimezone(cfg.App.Timezone)
 	carbon.SetLocale(cfg.I18n.DefaultLanguage)
 
-	log := logger.New(cfg)
-
 	// 登记 teardown 资源清理链，装配中途失败时逆序释放
-	td := &teardown{log: log}
+	td := &teardown{}
+	log, err := initLoggingAndSentry(cfg, td)
+	if err != nil {
+		return nil, err
+	}
 
 	// 初始化 PostgreSQL 数据库连接池
 	db, err := database.Open(ctx, cfg.Database, cfg.App.Name)
@@ -65,23 +72,21 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 
 	logDatabaseReady(ctx, log, db, cfg.Database)
 
-	cacheClient, err := cache.Open(ctx, cfg.Cache)
+	cacheClient, locker, mailerClient, err := initInfraServices(ctx, cfg, log, td)
 	if err != nil {
 		return nil, td.fail(err)
 	}
-	td.add(cacheClient.Close)
 
-	locker, err := cache.NewRedisLocker(cfg.Cache)
+	eventBusManager, queueClient, err := initEventSubsystem(cfg, log, locker, td)
 	if err != nil {
 		return nil, td.fail(err)
 	}
-	td.add(locker.Close)
 
-	mailerClient, err := mailer.New(cfg.Mail, log)
-	if err != nil {
-		return nil, td.fail(err)
-	}
-	td.add(mailerClient.Close)
+	uow := database.NewUnitOfWork(
+		db,
+		database.WithPublisher(eventBusManager),
+		database.WithUowLogger(log),
+	)
 
 	// 探测并初始化文件/对象存储驱动
 	disk, err := storage.Open(ctx, cfg.Storage)
@@ -103,13 +108,29 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	tokens := platformauth.NewTokenIssuer(cfg.JWT, cacheClient)
 	hasherClient := hasher.New()
 
-	// 初始化共享用户仓储及各业务服务
-	userRepo := user.NewRepository(db, hasherClient)
+	// 初始化用户认证提供器与用户领域服务
+	userProvider := user.NewProvider(db, hasherClient)
+
+	// 提前初始化实时网关与统一通知引擎（供认证等核心领域直接复用异步通知能力）
+	realtimeReg := realtime.NewRegistry()
+	realtimeFeature.RegisterChannels(realtimeReg, db)
+
+	realtimeGateway, err := realtime.RegisterRealtimeGateway(cfg, realtimeReg)
+	if err != nil {
+		return nil, td.fail(err)
+	}
+
+	notifier, err := notification.New(cfg.Notification, mailerClient, realtimeGateway,
+		sharedDatabase.NewChannel(db))
+	if err != nil {
+		return nil, td.fail(err)
+	}
+	notifier.WithQueue(queueClient)
+	td.add(notifier.Close)
 
 	// 初始化客户端与管理端 Guard 及多守卫注册中心 (Multiple Guards)
-	clientAuthRepo := auth.NewRepository(db, hasherClient)
-	clientGuard := platformauth.NewGuard(tokens, userRepo, user.ClientPolicy{})
-	adminGuard := platformauth.NewGuard(tokens, userRepo, user.AdminPolicy{})
+	clientGuard := platformauth.NewGuard(tokens, userProvider, user.ClientPolicy{})
+	adminGuard := platformauth.NewGuard(tokens, userProvider, user.AdminPolicy{})
 
 	authManager := platformauth.NewManager().
 		Register("client", clientGuard).
@@ -139,34 +160,33 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	})
 
 	authService := auth.NewService(auth.Deps{
-		Repo:       clientAuthRepo,
+		DB:         db,
 		Guard:      clientGuard,
 		Tokens:     tokens,
 		Hasher:     hasherClient,
 		Cache:      cacheClient,
 		Mailer:     mailerClient,
+		Notifier:   notifier,
+		UOW:        uow,
 		Translator: translator,
 		Config:     cfg,
+		Publisher:  eventBusManager,
 	})
 
-	userService := user.NewService(userRepo)
-	adminService := admin.NewService(admin.Deps{Repo: userRepo, Hasher: hasherClient})
+	userService := user.NewService(db)
+	adminService := admin.NewService(admin.Deps{
+		DB:          db,
+		UserService: userService,
+		Hasher:      hasherClient,
+	})
 	adminAuthService := adminauth.NewService(adminauth.Deps{
-		Repo:   userRepo,
+		DB:     db,
 		Guard:  adminGuard,
 		Tokens: tokens,
 		Hasher: hasherClient,
 	})
 
 	searchClient, err := search.New(cfg.Search)
-	if err != nil {
-		return nil, td.fail(err)
-	}
-
-	realtimeReg := realtime.NewRegistry()
-	realtimeFeature.RegisterChannels(realtimeReg, userRepo)
-
-	realtimeGateway, err := realtime.RegisterRealtimeGateway(cfg, realtimeReg)
 	if err != nil {
 		return nil, td.fail(err)
 	}
@@ -190,7 +210,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		Gateway: realtimeGateway,
 		Cfg:     cfg,
 		Secret:  cfg.Realtime.Secret,
-		Users:   userRepo,
+		DB:      db,
 	})
 	realtimeHandler := realtimeFeature.NewHandler(realtimeService)
 	wechatManager, err := wechat.NewManager(cfg.WeChat, cacheClient)
@@ -203,15 +223,8 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		return nil, td.fail(err)
 	}
 
-	paymentService := paymentFeature.NewService(paymentManager, cacheClient, cfg, nil)
+	paymentService := paymentFeature.NewService(paymentManager, cacheClient, cfg, eventBusManager)
 	paymentHandler := paymentFeature.NewHandler(paymentService)
-
-	notifier, err := notification.New(cfg.Notification, mailerClient, realtimeGateway,
-		sharedDatabase.NewChannel(db))
-	if err != nil {
-		return nil, td.fail(err)
-	}
-	td.add(notifier.Close)
 
 	engine, err := buildEngine(
 		cfg, globalMW, routeMW, systemHandler,
@@ -235,6 +248,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		cfg:          cfg,
 		logger:       log,
 		db:           db,
+		uow:          uow,
 		cache:        cacheClient,
 		locker:       locker,
 		mailer:       mailerClient,
@@ -246,6 +260,8 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		payment:      paymentManager,
 		realtime:     realtimeGateway,
 		search:       searchClient,
+		eventbus:     eventBusManager,
+		queue:        queueClient,
 		engine:       engine,
 	}, nil
 }
@@ -267,7 +283,8 @@ func (*databasePinger) Driver() string { return "postgres" }
 
 // logDatabaseReady 打印数据库连接池就绪日志并进行连接池配额诊断。
 func logDatabaseReady(ctx context.Context, log *zap.Logger, db *bun.DB, cfg config.DatabaseConfig) {
-	log.Info("database connection pool ready",
+	log.Info(
+		"database connection pool ready",
 		zap.Int("max_open_conns", cfg.MaxOpenConns),
 		zap.Int("max_idle_conns", cfg.MaxIdleConns),
 		zap.Duration("conn_max_lifetime", cfg.ConnMaxLifetime),
@@ -298,9 +315,78 @@ func (t *teardown) add(closer func() error) { t.closers = append(t.closers, clos
 // fail 逆序释放已登记资源并返回原始错误。
 func (t *teardown) fail(cause error) error {
 	for _, closer := range slices.Backward(t.closers) {
-		if err := closer(); err != nil {
+		if err := closer(); err != nil && t.log != nil {
 			t.log.Warn("failed to close resource during teardown", zap.Error(err))
 		}
 	}
 	return cause
+}
+
+// initLoggingAndSentry 初始化 Sentry / GlitchTip 监控客户端与挂载 Sentry 桥接的核心日志器。
+func initLoggingAndSentry(cfg *config.Config, td *teardown) (*zap.Logger, error) {
+	sentryFlush, err := platformsentry.Init(cfg.Sentry, cfg.App.Name, cfg.App.Env, "")
+	if err != nil {
+		return nil, fmt.Errorf("init sentry client failed: %w", err)
+	}
+
+	var loggerOpts []logger.Option
+	if cfg.Sentry.IsEnabled() {
+		loggerOpts = append(loggerOpts, logger.WithExtraCore(platformsentry.NewZapCore(zapcore.WarnLevel)))
+	}
+
+	log := logger.New(cfg, loggerOpts...)
+	td.log = log
+	td.add(func() error {
+		sentryFlush()
+		return nil
+	})
+
+	return log, nil
+}
+
+// initInfraServices 初始化缓存、分布式锁与邮件客户端基础设施。
+func initInfraServices(ctx context.Context, cfg *config.Config, log *zap.Logger, td *teardown) (*cache.Client, cache.Locker, mailer.Mailer, error) {
+	cacheClient, err := cache.Open(ctx, cfg.Cache)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	td.add(cacheClient.Close)
+
+	locker, err := cache.NewRedisLocker(cfg.Cache)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	td.add(locker.Close)
+
+	mailerClient, err := mailer.New(cfg.Mail, log)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	td.add(mailerClient.Close)
+
+	return cacheClient, locker, mailerClient, nil
+}
+
+// initEventSubsystem 装配异步任务队列客户端与基于 Watermill 的事件总线，并挂载领域事件监听。
+func initEventSubsystem(cfg *config.Config, log *zap.Logger, locker cache.Locker, td *teardown) (*eventbus.Manager, *queue.Client, error) {
+	queueClient, queueCleanup, err := queue.NewClient(cfg.Queue, queue.AdaptLocker(locker))
+	if err != nil {
+		return nil, nil, err
+	}
+	td.add(func() error {
+		queueCleanup()
+		return nil
+	})
+
+	eventBusManager, err := eventbus.NewManager(cfg.EventBus, log)
+	if err != nil {
+		return nil, nil, err
+	}
+	td.add(eventBusManager.Close)
+
+	if err := auth.RegisterListeners(eventBusManager, queueClient); err != nil {
+		return nil, nil, err
+	}
+
+	return eventBusManager, queueClient, nil
 }

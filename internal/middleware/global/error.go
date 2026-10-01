@@ -25,7 +25,8 @@ func (m *Middleware) ErrorHandler() gin.HandlerFunc {
 			err = errs.Validation(fields)
 		}
 
-		errs.Render(c, err)
+		errs.Render(c, err, m.translator)
+		captureHTTPError(c, err)
 	}
 }
 

@@ -452,14 +452,14 @@ func ParseQueueWeights(raw string) map[string]int {
 		if token == "" {
 			continue
 		}
-		parts := strings.SplitN(token, ":", 2)
-		name := strings.TrimSpace(parts[0])
+		name, weightStr, found := strings.Cut(token, ":")
+		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
 		weight := 1
-		if len(parts) == 2 {
-			if w, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil && w > 0 {
+		if found {
+			if w, err := strconv.Atoi(strings.TrimSpace(weightStr)); err == nil && w > 0 {
 				weight = w
 			}
 		}

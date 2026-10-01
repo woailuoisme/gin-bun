@@ -15,13 +15,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"bgin/internal/config"
+	"bgin/internal/database/models"
 	"bgin/internal/middleware"
 	"bgin/internal/middleware/global"
 	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/authorization"
 	"bgin/internal/platform/cache"
 	"bgin/internal/platform/errs"
-	"bgin/internal/shared/models"
 	"bgin/internal/shared/user"
 )
 
@@ -218,7 +218,7 @@ func TestAuth_DefaultGuardSuccess(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Equal(t, "usr_client_1", capturedID.UserID)
-		assert.Equal(t, models.RoleUser, capturedID.Role)
+		assert.Equal(t, string(models.RoleUser), capturedID.Role)
 	}
 }
 
@@ -454,7 +454,7 @@ func TestCan_RoleBasedAccess(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/users", nil)
 	ctx := authentication.With(req.Context(), authentication.Identity{
 		UserID: "usr_user_1",
-		Role:   models.RoleUser,
+		Role:   string(models.RoleUser),
 	})
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
@@ -469,7 +469,7 @@ func TestCan_RoleBasedAccess(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/users", nil)
 	ctx = authentication.With(req.Context(), authentication.Identity{
 		UserID: "usr_admin_1",
-		Role:   models.RoleAdmin,
+		Role:   string(models.RoleAdmin),
 	})
 	req = req.WithContext(ctx)
 	w = httptest.NewRecorder()
@@ -501,7 +501,7 @@ func TestAuth_MultiGuardFallback(t *testing.T) {
 			c.Status(http.StatusUnauthorized)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"user_id": id.UserID})
+		c.JSON(http.StatusOK, gin.H{"userId": id.UserID})
 	})
 
 	// 携带 client 令牌请求，admin 守卫校验失败后自动回退至 client 守卫成功认证
@@ -513,7 +513,7 @@ func TestAuth_MultiGuardFallback(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	var resp map[string]string
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "usr_user_1", resp["user_id"])
+	assert.Equal(t, "usr_user_1", resp["userId"])
 }
 
 // TestCan_Permission 验证 Laravel 风格 m.Can 简写细粒度权限校验。
@@ -529,7 +529,7 @@ func TestCan_Permission(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/users", nil)
 	ctx := authentication.With(req.Context(), authentication.Identity{
 		UserID: "usr_admin_1",
-		Role:   models.RoleAdmin,
+		Role:   string(models.RoleAdmin),
 	})
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()

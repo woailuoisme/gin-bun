@@ -11,9 +11,9 @@ import (
 	"github.com/samber/oops"
 	"github.com/uptrace/bun"
 
+	"bgin/internal/database/models"
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/notification/contract"
-	"bgin/internal/shared/models"
 )
 
 // Channel 数据库通知渠道实现。
@@ -142,23 +142,31 @@ func (c *Channel) MarkAsRead(ctx context.Context, id string) error {
 	return nil
 }
 
+// resolveRecipient 解析可通知实体的类型标识与主键 ID。
+func resolveRecipient(notifiable any) (string, string, error) {
+	target := contract.ToNotifiable(notifiable)
+	if target == nil || target.GetNotifiableID() == "" {
+		return "", "", oops.Code(errs.CodeNotificationMissingRecipientID).Errorf("database: recipient ID cannot be empty")
+	}
+	return cmp.Or(target.GetNotifiableType(), contract.DefaultNotifiableType), target.GetNotifiableID(), nil
+}
+
 // MarkAllAsRead 将指定接收者的所有未读通知标记为已读。
 func (c *Channel) MarkAllAsRead(ctx context.Context, notifiable any) error {
 	if c.db == nil {
 		return oops.Code(errs.CodeDatabaseUnavailable).Errorf("database: connection is not available")
 	}
-	target := contract.ToNotifiable(notifiable)
-	if target == nil || target.GetNotifiableID() == "" {
-		return oops.Code(errs.CodeNotificationMissingRecipientID).Errorf("database: recipient ID cannot be empty")
+	notifiableType, notifiableID, err := resolveRecipient(notifiable)
+	if err != nil {
+		return err
 	}
-	notifiableType := cmp.Or(target.GetNotifiableType(), contract.DefaultNotifiableType)
 
 	now := time.Now().UTC()
-	_, err := c.db.NewUpdate().
+	_, err = c.db.NewUpdate().
 		Model((*models.Notification)(nil)).
 		Set("read_at = ?", now).
 		Set("updated_at = ?", now).
-		Where("notifiable_type = ? AND notifiable_id = ? AND read_at IS NULL", notifiableType, target.GetNotifiableID()).
+		Where("notifiable_type = ? AND notifiable_id = ? AND read_at IS NULL", notifiableType, notifiableID).
 		Exec(ctx)
 	if err != nil {
 		return oops.Code(errs.CodeInternal).In("DatabaseChannel.MarkAllAsRead").Wrap(err)
@@ -171,15 +179,14 @@ func (c *Channel) UnreadCount(ctx context.Context, notifiable any) (int, error) 
 	if c.db == nil {
 		return 0, oops.Code(errs.CodeDatabaseUnavailable).Errorf("database: connection is not available")
 	}
-	target := contract.ToNotifiable(notifiable)
-	if target == nil || target.GetNotifiableID() == "" {
-		return 0, oops.Code(errs.CodeNotificationMissingRecipientID).Errorf("database: recipient ID cannot be empty")
+	notifiableType, notifiableID, err := resolveRecipient(notifiable)
+	if err != nil {
+		return 0, err
 	}
-	notifiableType := cmp.Or(target.GetNotifiableType(), contract.DefaultNotifiableType)
 
 	count, err := c.db.NewSelect().
 		Model((*models.Notification)(nil)).
-		Where("notifiable_type = ? AND notifiable_id = ? AND read_at IS NULL", notifiableType, target.GetNotifiableID()).
+		Where("notifiable_type = ? AND notifiable_id = ? AND read_at IS NULL", notifiableType, notifiableID).
 		Count(ctx)
 	if err != nil {
 		return 0, oops.Code(errs.CodeInternal).In("DatabaseChannel.UnreadCount").Wrap(err)
@@ -192,11 +199,10 @@ func (c *Channel) Paginate(ctx context.Context, notifiable any, page, perPage in
 	if c.db == nil {
 		return nil, 0, oops.Code(errs.CodeDatabaseUnavailable).Errorf("database: connection is not available")
 	}
-	target := contract.ToNotifiable(notifiable)
-	if target == nil || target.GetNotifiableID() == "" {
-		return nil, 0, oops.Code(errs.CodeNotificationMissingRecipientID).Errorf("database: recipient ID cannot be empty")
+	notifiableType, notifiableID, err := resolveRecipient(notifiable)
+	if err != nil {
+		return nil, 0, err
 	}
-	notifiableType := cmp.Or(target.GetNotifiableType(), contract.DefaultNotifiableType)
 
 	if page < 1 {
 		page = 1
@@ -208,7 +214,7 @@ func (c *Channel) Paginate(ctx context.Context, notifiable any, page, perPage in
 
 	q := c.db.NewSelect().
 		Model((*models.Notification)(nil)).
-		Where("notifiable_type = ? AND notifiable_id = ?", notifiableType, target.GetNotifiableID())
+		Where("notifiable_type = ? AND notifiable_id = ?", notifiableType, notifiableID)
 
 	if unreadOnly {
 		q = q.Where("read_at IS NULL")
@@ -253,15 +259,14 @@ func (c *Channel) ClearAll(ctx context.Context, notifiable any) error {
 	if c.db == nil {
 		return oops.Code(errs.CodeDatabaseUnavailable).Errorf("database: connection is not available")
 	}
-	target := contract.ToNotifiable(notifiable)
-	if target == nil || target.GetNotifiableID() == "" {
-		return oops.Code(errs.CodeNotificationMissingRecipientID).Errorf("database: recipient ID cannot be empty")
+	notifiableType, notifiableID, err := resolveRecipient(notifiable)
+	if err != nil {
+		return err
 	}
-	notifiableType := cmp.Or(target.GetNotifiableType(), contract.DefaultNotifiableType)
 
-	_, err := c.db.NewDelete().
+	_, err = c.db.NewDelete().
 		Model((*models.Notification)(nil)).
-		Where("notifiable_type = ? AND notifiable_id = ?", notifiableType, target.GetNotifiableID()).
+		Where("notifiable_type = ? AND notifiable_id = ?", notifiableType, notifiableID).
 		Exec(ctx)
 	if err != nil {
 		return oops.Code(errs.CodeInternal).In("DatabaseChannel.ClearAll").Wrap(err)

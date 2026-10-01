@@ -49,10 +49,10 @@ var sensitivePatterns = []string{
 // SanitizeMessage 对对外输出的错误描述进行脱敏与安全清洗。
 func SanitizeMessage(msg string) string {
 	lower := strings.ToLower(msg)
-	for _, p := range sensitivePatterns {
-		if strings.Contains(lower, p) {
-			return msgInternal
-		}
+	if slices.ContainsFunc(sensitivePatterns, func(p string) bool {
+		return strings.Contains(lower, p)
+	}) {
+		return msgInternal
 	}
 	return msg
 }
@@ -87,7 +87,8 @@ func ErrorCodeFromContext(c *gin.Context) string {
 // Render 映射统一错误响应并写回客户端。
 //
 // 5xx 记录错误根因与调用堆栈；4xx 由外层 AccessLog 统一输出访问日志，避免重复告警。
-func Render(c *gin.Context, err error) {
+// 可选接收 *i18n.Translator 实例以优先进行业务字段级错误翻译，未传入时兜底使用 i18n.Default()。
+func Render(c *gin.Context, err error, customTranslator ...*i18n.Translator) {
 	if err == nil {
 		return
 	}
@@ -97,9 +98,9 @@ func Render(c *gin.Context, err error) {
 	// 敏感错误信息脱敏保护
 	resp.Message = SanitizeMessage(resp.Message)
 
-	// 针对携带待翻译 fieldKeys 的业务错误，自动尝试使用全局 i18n 与请求头 Accept-Language 完成翻译
+	// 针对携带待翻译 fieldKeys 的业务错误，自动尝试使用注入的 i18n 或全局默认与请求头 Accept-Language 完成翻译
 	if len(resp.Errors) == 0 {
-		if translated := resolveTranslatedFieldKeys(c, err); translated != nil {
+		if translated := resolveTranslatedFieldKeys(c, err, customTranslator...); translated != nil {
 			resp.Errors = translated
 		}
 	}
@@ -274,14 +275,19 @@ func mapPgError(err *pgconn.PgError) (int, Response) {
 	}
 }
 
-// resolveTranslatedFieldKeys 针对携带待翻译 fieldKeys 的业务错误，自动使用全局 i18n 完成翻译。
-func resolveTranslatedFieldKeys(c *gin.Context, err error) map[string][]string {
+// resolveTranslatedFieldKeys 针对携带待翻译 fieldKeys 的业务错误，自动使用注入的 translator 或全局 i18n 完成翻译。
+func resolveTranslatedFieldKeys(c *gin.Context, err error, customTranslator ...*i18n.Translator) map[string][]string {
 	bizErr, ok := As(err)
 	if !ok || len(bizErr.fieldKeys) == 0 {
 		return nil
 	}
 
-	translator := i18n.Default()
+	var translator *i18n.Translator
+	if len(customTranslator) > 0 && customTranslator[0] != nil {
+		translator = customTranslator[0]
+	} else {
+		translator = i18n.Default()
+	}
 	if translator == nil {
 		return nil
 	}

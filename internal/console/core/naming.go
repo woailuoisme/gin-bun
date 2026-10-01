@@ -50,11 +50,9 @@ func ToCamelCase(str string) string {
 // splitWords 按分隔符或驼峰边界把字符串切成小写单词。
 func splitWords(s string) []string {
 	snake := ToSnakeCase(s)
-	raw := strings.Split(snake, "_")
 	var result []string
-	for _, part := range raw {
-		p := strings.TrimSpace(part)
-		if p != "" {
+	for part := range strings.SplitSeq(snake, "_") {
+		if p := strings.TrimSpace(part); p != "" {
 			result = append(result, p)
 		}
 	}

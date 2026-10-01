@@ -11,8 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/xuri/excelize/v2"
 
+	"bgin/internal/database"
+	"bgin/internal/database/models"
 	admin "bgin/internal/features/admin/user"
-	"bgin/internal/shared/models"
 	"bgin/internal/shared/user"
 )
 
@@ -22,7 +23,7 @@ func TestUsersExportContract(t *testing.T) {
 	now := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
 	users := []*models.User{
 		{
-			Base:   models.Base{ID: "usr_001", CreatedAt: now},
+			Base:   database.Base{ID: "usr_001", CreatedAt: now},
 			Name:   "Alice",
 			Email:  "alice@example.com",
 			Role:   models.RoleAdmin,
@@ -73,7 +74,7 @@ func TestUsersChunkedExportContract(t *testing.T) {
 	var dataset []models.User
 	for i := 1; i <= 5; i++ {
 		dataset = append(dataset, models.User{
-			Base:   models.Base{ID: fmt.Sprintf("usr_%03d", i), CreatedAt: now},
+			Base:   database.Base{ID: fmt.Sprintf("usr_%03d", i), CreatedAt: now},
 			Name:   fmt.Sprintf("User%d", i),
 			Email:  fmt.Sprintf("user%d@example.com", i),
 			Role:   models.RoleUser,

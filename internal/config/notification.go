@@ -84,12 +84,12 @@ var debugSMSDrivers = map[string]struct{}{
 
 // NormalizedDriver 返回归一化后的短信驱动名（小写、去首尾空白）。
 // 驱动名的比较、装配与落库只走这里，避免各处自行 TrimSpace/ToLower 产生分叉。
-func (s NotificationSMSConfig) NormalizedDriver() string {
+func (s *NotificationSMSConfig) NormalizedDriver() string {
 	return strings.ToLower(strings.TrimSpace(s.Driver))
 }
 
 // Validate 校验通知配置合法性。
-func (n NotificationConfig) Validate() error {
+func (n *NotificationConfig) Validate() error {
 	if n.WorkerPool <= 0 {
 		return errors.New("notification worker pool must be greater than 0")
 	}

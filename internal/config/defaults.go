@@ -41,6 +41,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("db_debug", false)
 
 	// 播种
+	v.SetDefault("seed_admin_email", "admin@bgin.local")
 	v.SetDefault("seed_admin_name", "Administrator")
 
 	// 存储
@@ -128,6 +129,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("pdf_font_family", "SourceHanSans")
 	v.SetDefault("pdf_page_size", "A4")
 	v.SetDefault("pdf_margin", 10.0)
+
+	// 异常监控与追踪 (Sentry / GlitchTip)
+	v.SetDefault("sentry_dsn", "")
+	v.SetDefault("glitchtip_dsn", "")
+	v.SetDefault("sentry_environment", "")
+	v.SetDefault("sentry_release", "")
+	v.SetDefault("sentry_traces_sample_rate", 0.01)
+	v.SetDefault("sentry_debug", false)
 }
 
 // bindEnvKeys 自动递归提取 Config 结构体中声明的所有配置键并显式绑定对应的环境变量。

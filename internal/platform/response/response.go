@@ -18,9 +18,9 @@ import (
 // Meta 是传统偏移分页列表响应的元信息。
 type Meta struct {
 	Page       int `json:"page"`
-	PageSize   int `json:"page_size"`
+	PageSize   int `json:"pageSize"`
 	Total      int `json:"total"`
-	TotalPages int `json:"total_pages"`
+	TotalPages int `json:"totalPages"`
 }
 
 // Page 是传统偏移分页列表的响应信封；Items 恒为数组，不会序列化成 null。
@@ -55,6 +55,7 @@ func NoContent(c *gin.Context) {
 
 // Paginated 返回传统偏移分页信封，空列表同样保持结构完整。
 func Paginated[T any](c *gin.Context, items []T, meta Meta) {
+	// 为保持 RESTful JSON 契约一致性，将 nil 切片强制初始化为空切片 []T{}，避免在 JSON 序列化中产出 null。
 	if items == nil {
 		items = []T{}
 	}
@@ -63,6 +64,7 @@ func Paginated[T any](c *gin.Context, items []T, meta Meta) {
 
 // Collection 返回无信封的数组集合，确保 nil 切片恒定序列化为 [] 而非 null。
 func Collection[T any](c *gin.Context, items []T) {
+	// 为保持 RESTful JSON 契约一致性，将 nil 切片强制初始化为空切片 []T{}，避免在 JSON 序列化中产出 null。
 	if items == nil {
 		items = []T{}
 	}

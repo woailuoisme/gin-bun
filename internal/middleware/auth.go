@@ -9,6 +9,7 @@ import (
 
 	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/errs"
+	platformsentry "bgin/internal/platform/sentry"
 )
 
 // Auth 【路由/路由组中间件】仿照 Laravel auth 中间件设计，校验 Bearer 访问令牌并注入认证身份载荷。
@@ -39,8 +40,29 @@ func (m *Middleware) Auth(guardNames ...string) gin.HandlerFunc {
 			reqCtx = authentication.WithGate(reqCtx, m.authz)
 		}
 		c.Request = c.Request.WithContext(reqCtx)
+
+		enrichSentryUser(c, reqCtx)
+
 		c.Next()
 	}
+}
+
+// enrichSentryUser 将已认证用户身份与角色元信息同步绑定至 Sentry / GlitchTip 请求级作用域。
+func enrichSentryUser(c *gin.Context, reqCtx context.Context) {
+	id, ok := authentication.FromContext(reqCtx)
+	if !ok {
+		return
+	}
+
+	var email string
+	if id.Claims != nil {
+		if emailVal, found := id.Claims.GetClaim("email"); found {
+			email, _ = emailVal.(string)
+		}
+	}
+
+	platformsentry.SetUser(reqCtx, id.UserID, email, id.Role, c.ClientIP())
+	platformsentry.SetTag(reqCtx, "role", id.Role)
 }
 
 // authenticateWithManager 基于注入的 AuthManager 解析守卫并验证令牌，支持多守卫顺序降级匹配。

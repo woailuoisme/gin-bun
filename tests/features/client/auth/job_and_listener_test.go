@@ -52,7 +52,23 @@ func TestWelcomeEmailJobExecution(t *testing.T) {
 	auth.RegisterJobs(reg, mailMock)
 
 	err := job.Handle(t.Context())
-	assert.NoError(t, err) // 未注入 mailer 时优雅跳过
+	require.NoError(t, err) // 未注入 mailer 时优雅跳过
+
+	// 验证从注册表工厂还原的任务具有注入的 mailer 并能成功渲染发送
+	factory, ok := reg.Get(auth.TaskSendWelcomeEmail)
+	require.True(t, ok)
+	injectedJob := factory()
+	welcomeJob, ok := injectedJob.(*auth.WelcomeEmailJob)
+	require.True(t, ok)
+	welcomeJob.Email = "alex@example.com"
+	welcomeJob.Name = "Alex"
+
+	err = welcomeJob.Handle(t.Context())
+	require.NoError(t, err)
+	require.Len(t, mailMock.sent, 1)
+	assert.Equal(t, "alex@example.com", mailMock.sent[0].To)
+	assert.Contains(t, mailMock.sent[0].Body, "Alex")
+	assert.Contains(t, mailMock.sent[0].Body, "Welcome to bgin")
 }
 
 func TestAuthEventListener(t *testing.T) {
