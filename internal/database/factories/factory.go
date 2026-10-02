@@ -9,6 +9,8 @@ import (
 
 	"github.com/brianvoe/gofakeit/v7"
 	"github.com/uptrace/bun"
+
+	"bgin/internal/database"
 )
 
 // ErrDatabaseRequired 在缺少数据库连接且调用持久化方法时返回。
@@ -200,7 +202,8 @@ func (f *Factory[T]) Create(ctx context.Context) (*T, error) {
 		return nil, err
 	}
 
-	if _, err := f.db.NewInsert().Model(item).Exec(ctx); err != nil {
+	db := database.ResolveDB(ctx, f.db)
+	if _, err := db.NewInsert().Model(item).Exec(ctx); err != nil {
 		return nil, fmt.Errorf("factory create failed to insert model: %w", err)
 	}
 
@@ -235,11 +238,12 @@ func (f *Factory[T]) CreateMany(ctx context.Context, counts ...int) ([]*T, error
 
 	// 支持从 bun.DB 或已有事务中执行
 	runInTx := func(tx bun.IDB) error {
+		txCtx := database.WithDB(ctx, tx)
 		chunkSize := f.chunkSize
 		for i := 0; i < len(items); i += chunkSize {
 			end := min(i+chunkSize, len(items))
 			chunk := items[i:end]
-			if _, err := tx.NewInsert().Model(&chunk).Exec(ctx); err != nil {
+			if _, err := tx.NewInsert().Model(&chunk).Exec(txCtx); err != nil {
 				return fmt.Errorf("factory create-many insert chunk [%d:%d] failed: %w", i, end, err)
 			}
 			if f.onProgress != nil {
@@ -249,7 +253,7 @@ func (f *Factory[T]) CreateMany(ctx context.Context, counts ...int) ([]*T, error
 
 		for idx, item := range items {
 			for _, hook := range f.afterCreating {
-				if err := hook(ctx, item); err != nil {
+				if err := hook(txCtx, item); err != nil {
 					return fmt.Errorf("factory after-creating hook failed at index %d: %w", idx, err)
 				}
 			}
@@ -260,7 +264,7 @@ func (f *Factory[T]) CreateMany(ctx context.Context, counts ...int) ([]*T, error
 	switch db := f.db.(type) {
 	case *bun.DB:
 		if err := db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-			return runInTx(tx)
+			return runInTx(&tx)
 		}); err != nil {
 			return nil, err
 		}

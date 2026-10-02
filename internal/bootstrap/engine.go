@@ -51,8 +51,9 @@ func buildEngine(
 		return nil, fmt.Errorf("set trusted proxies failed: %w", err)
 	}
 
-	// 全局中间件链：链路追踪、Sentry监控、访问日志、错误处理、恐慌恢复、超时控制、安全头、请求体缓存、幂等与跨域
+	// 全局中间件链：遥测追踪、请求标识、Sentry监控、访问日志、错误处理、恐慌恢复、超时控制、安全头、请求体缓存、幂等与跨域
 	engine.Use(
+		globalMW.Telemetry(),
 		globalMW.RequestID(),
 		globalMW.Sentry(),
 		globalMW.AccessLog(),

@@ -164,7 +164,7 @@ func (s *Service) updatePassword(ctx context.Context, userID, passwordHash strin
 
 // ChangePassword 修改当前管理员登录密码。
 func (s *Service) ChangePassword(ctx context.Context, userID string, body ChangePasswordBody) error {
-	if err := validator.PasswordStrength("new_password", body.NewPassword); err != nil {
+	if err := validator.PasswordStrength("newPassword", body.NewPassword); err != nil {
 		return err
 	}
 

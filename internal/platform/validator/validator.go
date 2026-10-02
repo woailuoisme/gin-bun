@@ -53,15 +53,19 @@ func RegisterRule(tag string, fn govalidator.Func, messageKey ...string) error {
 	return nil
 }
 
-// registerRules 统一注册 json 标签名解析与基础校验规则。
+// registerRules 统一注册 json/form/uri 标签名解析与基础校验规则。
 func registerRules(v *govalidator.Validate) error {
 	v.SetTagName("validate")
 	v.RegisterTagNameFunc(func(field reflect.StructField) string {
-		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-		if name == "" || name == "-" {
-			return field.Name
+		for _, tag := range []string{"json", "form", "uri"} {
+			if val := field.Tag.Get(tag); val != "" && val != "-" {
+				name, _, _ := strings.Cut(val, ",")
+				if name != "" && name != "-" {
+					return name
+				}
+			}
 		}
-		return name
+		return field.Name
 	})
 	rules := []struct {
 		tag string

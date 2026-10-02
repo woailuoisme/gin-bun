@@ -131,12 +131,21 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("pdf_margin", 10.0)
 
 	// 异常监控与追踪 (Sentry / GlitchTip)
+	v.SetDefault("sentry_enabled", false)
 	v.SetDefault("sentry_dsn", "")
 	v.SetDefault("glitchtip_dsn", "")
 	v.SetDefault("sentry_environment", "")
 	v.SetDefault("sentry_release", "")
 	v.SetDefault("sentry_traces_sample_rate", 0.01)
 	v.SetDefault("sentry_debug", false)
+
+	// 遥测与链路追踪 (OpenTelemetry)
+	v.SetDefault("otel_enabled", false)
+	v.SetDefault("otel_exporter_otlp_endpoint", "http://127.0.0.1:4317")
+	v.SetDefault("otel_insecure", true)
+	v.SetDefault("otel_service_name", "")
+	v.SetDefault("otel_traces_sample_ratio", 1.0)
+	v.SetDefault("otel_metric_interval", 15*time.Second)
 }
 
 // bindEnvKeys 自动递归提取 Config 结构体中声明的所有配置键并显式绑定对应的环境变量。

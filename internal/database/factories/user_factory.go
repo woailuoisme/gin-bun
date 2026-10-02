@@ -181,7 +181,7 @@ func (uf *UserFactory) WithAccount(password string) *UserFactory {
 	rawPwd := cmp.Or(password, FixturePassword)
 
 	return uf.AfterCreating(func(ctx context.Context, u *models.User) error {
-		db := uf.base.DB()
+		db := database.ResolveDB(ctx, uf.base.DB())
 		if db == nil {
 			return nil
 		}

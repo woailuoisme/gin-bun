@@ -37,6 +37,7 @@ import (
 	"bgin/internal/platform/search"
 	platformsentry "bgin/internal/platform/sentry"
 	"bgin/internal/platform/storage"
+	"bgin/internal/platform/telemetry"
 	"bgin/internal/platform/wechat"
 	"bgin/internal/shared/media"
 	sharedDatabase "bgin/internal/shared/notification/database"
@@ -58,7 +59,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 
 	// 登记 teardown 资源清理链，装配中途失败时逆序释放
 	td := &teardown{}
-	log, err := initLoggingAndSentry(cfg, td)
+	log, err := initLoggingAndSentry(ctx, cfg, td)
 	if err != nil {
 		return nil, err
 	}
@@ -322,8 +323,16 @@ func (t *teardown) fail(cause error) error {
 	return cause
 }
 
-// initLoggingAndSentry 初始化 Sentry / GlitchTip 监控客户端与挂载 Sentry 桥接的核心日志器。
-func initLoggingAndSentry(cfg *config.Config, td *teardown) (*zap.Logger, error) {
+// initLoggingAndSentry 初始化 OpenTelemetry 遥测、Sentry / GlitchTip 监控客户端与挂载 Sentry 桥接的核心日志器。
+func initLoggingAndSentry(ctx context.Context, cfg *config.Config, td *teardown) (*zap.Logger, error) {
+	telemetryShutdown, err := telemetry.Init(ctx, cfg.Telemetry, cfg.App.Name, cfg.App.Env, "")
+	if err != nil {
+		return nil, fmt.Errorf("init telemetry failed: %w", err)
+	}
+	td.add(func() error {
+		return telemetryShutdown(context.Background())
+	})
+
 	sentryFlush, err := platformsentry.Init(cfg.Sentry, cfg.App.Name, cfg.App.Env, "")
 	if err != nil {
 		return nil, fmt.Errorf("init sentry client failed: %w", err)
@@ -332,6 +341,9 @@ func initLoggingAndSentry(cfg *config.Config, td *teardown) (*zap.Logger, error)
 	var loggerOpts []logger.Option
 	if cfg.Sentry.IsEnabled() {
 		loggerOpts = append(loggerOpts, logger.WithExtraCore(platformsentry.NewZapCore(zapcore.WarnLevel)))
+	}
+	if core := telemetry.NewZapCore(cfg.Telemetry.EffectiveServiceName(cfg.App.Name), logger.ParseLevel(cfg.Log.Level)); core != nil {
+		loggerOpts = append(loggerOpts, logger.WithExtraCore(core))
 	}
 
 	log := logger.New(cfg, loggerOpts...)

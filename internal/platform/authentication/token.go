@@ -26,9 +26,24 @@ const (
 type Claims struct {
 	jwt.RegisteredClaims
 
-	Role   string         `json:"role"`
-	Type   string         `json:"tokenType"`
-	Custom map[string]any `json:"custom,omitempty"`
+	Role              string         `json:"role"`
+	Type              string         `json:"tokenType"`
+	IssuedAtUnixMilli int64          `json:"iat_ms,omitempty"`
+	Custom            map[string]any `json:"custom,omitempty"`
+}
+
+// IssuedAtTime 返回令牌签发时间，优先采用毫秒级精度 IssuedAtUnixMilli，缺省时回退至 RegisteredClaims.IssuedAt。
+func (c *Claims) IssuedAtTime() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	if c.IssuedAtUnixMilli > 0 {
+		return time.UnixMilli(c.IssuedAtUnixMilli)
+	}
+	if c.IssuedAt != nil {
+		return c.IssuedAt.Time
+	}
+	return time.Time{}
 }
 
 // GetClaim 获取指定键名的自定义声明。
@@ -138,9 +153,10 @@ func (c *JWTCodec) Sign(userID, role, tokenType string, now, expiresAt time.Time
 			NotBefore: jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 		},
-		Role:   role,
-		Type:   tokenType,
-		Custom: customClaims,
+		Role:              role,
+		Type:              tokenType,
+		IssuedAtUnixMilli: now.UnixMilli(),
+		Custom:            customClaims,
 	}
 
 	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(c.secret)

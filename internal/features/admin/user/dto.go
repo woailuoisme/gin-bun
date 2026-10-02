@@ -35,7 +35,7 @@ type Profile = user.Profile
 // UserPathParams 是用户唯一标识的路径参数。
 type UserPathParams struct {
 	// 用户唯一标识
-	ID string `uri:"id" example:"usr_01J9X4N8Y0ABCD" validate:"required"`
+	ID string `uri:"id" json:"id" example:"usr_01J9X4N8Y0ABCD" validate:"required"`
 }
 
 // GetUserPathParams 是 GET /v1/admin/users/:id 的路径参数。

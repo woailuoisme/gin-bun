@@ -39,17 +39,39 @@ func TestSentryConfig(t *testing.T) {
 		assert.True(t, cfg.IsEnabled())
 		assert.Equal(t, "http://key2@localhost:18080/2", cfg.EffectiveDSN())
 	})
+
+	t.Run("explicitly disabled overrides DSN", func(t *testing.T) {
+		disabled := false
+		cfg := config.SentryConfig{
+			Enabled: &disabled,
+			DSN:     "http://key1@localhost:18080/1",
+		}
+		assert.False(t, cfg.IsEnabled())
+		assert.Equal(t, "http://key1@localhost:18080/1", cfg.EffectiveDSN())
+	})
 }
 
-// TestSentry_InitDisabled 验证空 DSN 初始化时为纯无操作模式。
+// TestSentry_InitDisabled 验证禁用或空 DSN 初始化时为纯无操作模式。
 func TestSentry_InitDisabled(t *testing.T) {
-	cfg := config.SentryConfig{DSN: ""}
-	flush, err := platformsentry.Init(cfg, "bgin", "testing", "1.0.0")
-	require.NoError(t, err)
-	require.NotNil(t, flush)
+	t.Run("empty DSN is no-op", func(t *testing.T) {
+		cfg := config.SentryConfig{DSN: ""}
+		flush, err := platformsentry.Init(cfg, "bgin", "testing", "1.0.0")
+		require.NoError(t, err)
+		require.NotNil(t, flush)
+		flush()
+	})
 
-	// 调用 Flush 不应发生 Panic
-	flush()
+	t.Run("explicitly disabled with DSN is no-op", func(t *testing.T) {
+		disabled := false
+		cfg := config.SentryConfig{
+			Enabled: &disabled,
+			DSN:     "http://invalid@localhost:18080/1",
+		}
+		flush, err := platformsentry.Init(cfg, "bgin", "testing", "1.0.0")
+		require.NoError(t, err)
+		require.NotNil(t, flush)
+		flush()
+	})
 }
 
 // TestSentry_InitAndCapture 验证有效配置初始化及消息、异常上报。

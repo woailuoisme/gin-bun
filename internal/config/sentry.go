@@ -6,6 +6,7 @@ import (
 
 // SentryConfig 描述 Sentry / GlitchTip 异常监控与性能追踪配置。
 type SentryConfig struct {
+	Enabled          *bool   `mapstructure:"sentry_enabled"`
 	DSN              string  `mapstructure:"sentry_dsn"`
 	GlitchTipDSN     string  `mapstructure:"glitchtip_dsn"`
 	Environment      string  `mapstructure:"sentry_environment"`
@@ -27,6 +28,12 @@ func (s *SentryConfig) EffectiveDSN() string {
 
 // IsEnabled 判断是否激活 Sentry / GlitchTip 监控。
 func (s *SentryConfig) IsEnabled() bool {
+	if s == nil {
+		return false
+	}
+	if s.Enabled != nil && !*s.Enabled {
+		return false
+	}
 	return s.EffectiveDSN() != ""
 }
 

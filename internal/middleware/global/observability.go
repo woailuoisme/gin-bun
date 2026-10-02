@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/samber/lo"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"bgin/internal/platform/errs"
@@ -27,11 +28,17 @@ func (m *Middleware) RequestID() gin.HandlerFunc {
 		requestID := strings.TrimSpace(c.GetHeader(headerRequestID))
 		if requestID == "" {
 			// 对未显式传递追踪头的高频健康探针路由快速放行，规避高频 UUIDv7 生成与子日志器上下文分配开销
-			if isProbePath(c.Request.URL.Path) || isProbePath(c.FullPath()) {
+			if isProbeRequest(c) {
 				c.Next()
 				return
 			}
-			requestID = newRequestID()
+
+			// 优先使用当前活跃 OTel Span 的 TraceID（实现请求标识、后端链路与日志三位一体统一）
+			if span := trace.SpanFromContext(c.Request.Context()); span.SpanContext().IsValid() {
+				requestID = span.SpanContext().TraceID().String()
+			} else {
+				requestID = newRequestID()
+			}
 		}
 
 		c.Writer.Header().Set(headerRequestID, requestID)
@@ -55,7 +62,7 @@ func newRequestID() string {
 // AccessLog 【全局中间件】记录每个请求的方法、路径、状态码与耗时。
 func (m *Middleware) AccessLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		isProbe := isProbePath(c.Request.URL.Path) || isProbePath(c.FullPath())
+		isProbe := isProbeRequest(c)
 
 		start := time.Now()
 		c.Next()
@@ -108,6 +115,11 @@ func formatErrors(errs []*gin.Error) string {
 		return e.Err.Error()
 	})
 	return strings.Join(msgs, "; ")
+}
+
+// isProbeRequest 判断当前请求是否属于高频系统探针心跳路由。
+func isProbeRequest(c *gin.Context) bool {
+	return isProbePath(c.Request.URL.Path) || isProbePath(c.FullPath())
 }
 
 // isProbePath 判断请求是否为高频系统探针路由。

@@ -211,6 +211,24 @@ func TestLoadValidationErrors(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "APP_TIMEZONE")
 	})
+
+	t.Run("非法 OTEL_TRACES_SAMPLE_RATIO", func(t *testing.T) {
+		setBaseValidEnv(t)
+		t.Setenv("OTEL_ENABLED", "true")
+		t.Setenv("OTEL_TRACES_SAMPLE_RATIO", "1.5")
+		_, err := config.Load()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "OTEL_TRACES_SAMPLE_RATIO")
+	})
+
+	t.Run("非法 OTEL_METRIC_INTERVAL 为负", func(t *testing.T) {
+		setBaseValidEnv(t)
+		t.Setenv("OTEL_ENABLED", "true")
+		t.Setenv("OTEL_METRIC_INTERVAL", "-10s")
+		_, err := config.Load()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "OTEL_METRIC_INTERVAL")
+	})
 }
 
 // TestAppTimezone 测试 APP_TIMEZONE 时区解析与 Location 转换。

@@ -101,10 +101,10 @@ const (
 type idempotencyRecord struct {
 	Status      idempotencyStatus `json:"status"`
 	Fingerprint string            `json:"fingerprint"`
-	StatusCode  int               `json:"status_code,omitempty"`
+	StatusCode  int               `json:"statusCode,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"`
 	Body        string            `json:"body,omitempty"`
-	CreatedAt   int64             `json:"created_at"`
+	CreatedAt   int64             `json:"createdAt"`
 }
 
 type responseBufferWriter struct {

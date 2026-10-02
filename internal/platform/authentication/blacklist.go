@@ -82,11 +82,11 @@ func (b *BlacklistManager) RevokeUser(ctx context.Context, userID string) error 
 		return nil
 	}
 	now := time.Now().UTC()
-	val := strconv.FormatInt(now.Unix(), 10)
+	val := strconv.FormatInt(now.UnixMilli(), 10)
 	if err := b.store.Set(ctx, cache.Key("jwt", "revoked_user", userID), val, b.refreshTTL); err != nil {
 		return fmt.Errorf("authentication: write user revocation epoch failed: %w", err)
 	}
-	b.setL1(userID, now.Unix(), now)
+	b.setL1(userID, now.UnixMilli(), now)
 	return nil
 }
 
@@ -94,6 +94,14 @@ func (b *BlacklistManager) RevokeUser(ctx context.Context, userID string) error 
 func (b *BlacklistManager) IsUserRevoked(ctx context.Context, userID string, issuedAt time.Time) (bool, error) {
 	if b == nil || b.store == nil || userID == "" || issuedAt.IsZero() {
 		return false, nil
+	}
+
+	normalizeEpoch := func(epoch int64) int64 {
+		// 兼容历史秒级纪元（< 100 亿则视为秒级时间戳，转为毫秒）
+		if epoch > 0 && epoch < 10_000_000_000 {
+			return epoch * 1000
+		}
+		return epoch
 	}
 
 	// 1. 先检查本地 L1 微缓存（TTL 2秒），高并发下极大减免远程缓存读取
@@ -104,7 +112,8 @@ func (b *BlacklistManager) IsUserRevoked(ctx context.Context, userID string, iss
 			if entry.epochUnix == 0 {
 				return false, nil
 			}
-			return issuedAt.Unix() <= entry.epochUnix, nil
+			epochMilli := normalizeEpoch(entry.epochUnix)
+			return issuedAt.UnixMilli() <= epochMilli, nil
 		}
 	}
 
@@ -118,13 +127,14 @@ func (b *BlacklistManager) IsUserRevoked(ctx context.Context, userID string, iss
 		return false, fmt.Errorf("authentication: check user revocation epoch failed: %w", err)
 	}
 
-	epochUnix, err := strconv.ParseInt(rawEpoch, 10, 64)
+	epochVal, err := strconv.ParseInt(rawEpoch, 10, 64)
 	if err != nil {
 		return false, fmt.Errorf("authentication: parse user revocation epoch failed: %w", err)
 	}
 
-	b.setL1(userID, epochUnix, now)
-	return issuedAt.Unix() <= epochUnix, nil
+	b.setL1(userID, epochVal, now)
+	epochMilli := normalizeEpoch(epochVal)
+	return issuedAt.UnixMilli() <= epochMilli, nil
 }
 
 func (b *BlacklistManager) setL1(userID string, epochUnix int64, now time.Time) {
@@ -143,8 +153,11 @@ func (b *BlacklistManager) IsRevoked(ctx context.Context, claims *Claims) (bool,
 	if err != nil || revoked {
 		return revoked, err
 	}
-	if claims.IssuedAt != nil && claims.Subject != "" {
-		return b.IsUserRevoked(ctx, claims.Subject, claims.IssuedAt.Time)
+	if claims.Subject != "" {
+		iat := claims.IssuedAtTime()
+		if !iat.IsZero() {
+			return b.IsUserRevoked(ctx, claims.Subject, iat)
+		}
 	}
 	return false, nil
 }

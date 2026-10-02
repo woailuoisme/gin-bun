@@ -27,6 +27,12 @@ type Config struct {
 	PDF          PDFConfig          `mapstructure:",squash"`
 	EventBus     EventBusConfig     `mapstructure:",squash"`
 	Sentry       SentryConfig       `mapstructure:",squash"`
+	Telemetry    TelemetryConfig    `mapstructure:",squash"`
+}
+
+// Validate 依次执行各模块的语义与有效性校验。
+func (c *Config) Validate() error {
+	return c.validate()
 }
 
 // validate 依次执行各模块的语义与有效性校验。
@@ -54,6 +60,7 @@ func (c *Config) validate() error {
 		c.validateMedia,
 		c.validateEventBus,
 		c.validateSentry,
+		c.validateTelemetry,
 	}
 	for _, fn := range validators {
 		if err := fn(); err != nil {

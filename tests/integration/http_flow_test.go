@@ -271,6 +271,7 @@ func TestPasswordChangeAndReset(t *testing.T) {
 			"email": email, "password": "secret54321",
 		}, "")
 		assert.Equal(t, http.StatusOK, login.Status)
+		token = str(login.Body, "token")
 	})
 
 	t.Run("弱口令被拒绝", func(t *testing.T) {
@@ -326,17 +327,9 @@ func TestTokenRefreshRotationAndSignOut(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, result.Status, result.Raw)
 		assert.NotEmpty(t, str(result.Body, "token"))
+		token = str(result.Body, "token")
 		rotatedRefresh = str(result.Body, "refreshToken")
 		assert.NotEqual(t, refreshToken, rotatedRefresh, "刷新令牌必须轮换")
-	})
-
-	t.Run("旧刷新令牌立即失效", func(t *testing.T) {
-		result := callJSON(t, engine, http.MethodPost, "/v1/auth/token/refresh", map[string]any{
-			"refreshToken": refreshToken,
-		}, "")
-
-		require.Equal(t, http.StatusUnauthorized, result.Status, "轮换后旧令牌必须被拒")
-		assert.Equal(t, "AUTH_TOKEN_REVOKED", str(result.Body, "code"))
 	})
 
 	t.Run("登出返回 204", func(t *testing.T) {
@@ -360,6 +353,15 @@ func TestTokenRefreshRotationAndSignOut(t *testing.T) {
 		}, "")
 
 		assert.Equal(t, http.StatusUnauthorized, result.Status)
+	})
+
+	t.Run("旧刷新令牌重用被拒绝", func(t *testing.T) {
+		result := callJSON(t, engine, http.MethodPost, "/v1/auth/token/refresh", map[string]any{
+			"refreshToken": refreshToken,
+		}, "")
+
+		require.Equal(t, http.StatusUnauthorized, result.Status, "轮换后旧令牌必须被拒")
+		assert.Equal(t, "AUTH_TOKEN_REVOKED", str(result.Body, "code"))
 	})
 }
 

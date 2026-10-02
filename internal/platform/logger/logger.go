@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/buffer"
 	"go.uber.org/zap/zapcore"
@@ -210,6 +211,11 @@ func (c *redactCore) maskFields(fields []zapcore.Field) []zapcore.Field {
 		}
 	}
 	return masked
+}
+
+// ParseLevel 将字符串日志级别解析为 zapcore.Level。
+func ParseLevel(lvl string) zapcore.Level {
+	return parseZapLevel(lvl)
 }
 
 // parseZapLevel 将字符串日志级别解析为 zapcore.Level。
@@ -469,14 +475,19 @@ func isTerminal() bool {
 	return info.Mode()&os.ModeCharDevice != 0
 }
 
-// WithContext 将日志器与请求标识注入 context。
+// WithContext 将日志器与请求标识注入 context，若存在活跃 OpenTelemetry Span 则自动同步注入 trace_id 与 span_id。
 func WithContext(ctx context.Context, l *zap.Logger, requestID string) context.Context {
 	if l == nil {
 		l = defaultLog()
 	}
 
-	scoped := l.With(zap.String("request_id", requestID))
-	return context.WithValue(ctx, ctxKey{}, scoped)
+	fields := make([]zap.Field, 0, 3)
+	if requestID != "" {
+		fields = append(fields, zap.String("request_id", requestID))
+	}
+	fields = append(fields, traceFields(ctx)...)
+
+	return context.WithValue(ctx, ctxKey{}, l.With(fields...))
 }
 
 // FromContextOK 从 context 中提取请求作用域日志器。
@@ -489,11 +500,31 @@ func FromContextOK(ctx context.Context) (*zap.Logger, bool) {
 }
 
 // FromContext 提取请求作用域日志器，缺失时返回默认兜底日志器。
+// 若上下文中未绑定请求日志器但存在活跃 Span，自动为兜底日志器附加 trace_id 与 span_id。
 func FromContext(ctx context.Context) *zap.Logger {
 	if l, ok := FromContextOK(ctx); ok {
 		return l
 	}
-	return defaultLog()
+	l := defaultLog()
+	if tf := traceFields(ctx); len(tf) > 0 {
+		return l.With(tf...)
+	}
+	return l
+}
+
+// traceFields 尝试从上下文中解析活跃 OpenTelemetry Span 并提取 trace_id 与 span_id 结构化日志字段。
+func traceFields(ctx context.Context) []zap.Field {
+	if ctx == nil {
+		return nil
+	}
+	sc := trace.SpanFromContext(ctx).SpanContext()
+	if !sc.IsValid() {
+		return nil
+	}
+	return []zap.Field{
+		zap.String("trace_id", sc.TraceID().String()),
+		zap.String("span_id", sc.SpanID().String()),
+	}
 }
 
 // SugarFromContext 提取请求作用域的 SugaredLogger，方便需要松散键值对或格式化输出的场景。

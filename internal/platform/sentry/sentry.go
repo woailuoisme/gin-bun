@@ -19,8 +19,11 @@ var (
 )
 
 // Init 依据配置初始化 Sentry / GlitchTip 客户端并返回优雅停机 Flush 闭包。
-// 若未配置有效 DSN，则静默保持未初始化状态，返回空操作 Flush。
+// 若未激活或未配置有效 DSN，则静默保持未初始化状态，返回空操作 Flush。
 func Init(cfg config.SentryConfig, appName, appEnv, appVersion string) (func(), error) {
+	if !cfg.IsEnabled() {
+		return func() {}, nil
+	}
 	dsn := cfg.EffectiveDSN()
 	if dsn == "" {
 		return func() {}, nil

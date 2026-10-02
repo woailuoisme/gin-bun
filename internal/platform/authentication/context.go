@@ -82,11 +82,15 @@ func WithUser(ctx context.Context, user Authenticatable) context.Context {
 	}
 	cache.user = user
 	cache.identity.UserID = user.GetAuthIdentifier()
-	cache.identity.Role = user.GetAuthRole()
-	if roled, ok := user.(RoledSubject); ok {
-		cache.identity.Roles = roled.GetAuthRoles()
-	} else if cache.identity.Role != "" {
-		cache.identity.Roles = []string{cache.identity.Role}
+	if cache.identity.Role == "" {
+		cache.identity.Role = user.GetAuthRole()
+	}
+	if len(cache.identity.Roles) == 0 {
+		if roled, ok := user.(RoledSubject); ok {
+			cache.identity.Roles = roled.GetAuthRoles()
+		} else if cache.identity.Role != "" {
+			cache.identity.Roles = []string{cache.identity.Role}
+		}
 	}
 	cache.hasIdent = true
 	return ctx

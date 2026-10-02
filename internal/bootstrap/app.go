@@ -2,6 +2,7 @@
 package bootstrap
 
 import (
+	"context"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,7 @@ import (
 	"bgin/internal/platform/search"
 	platformsentry "bgin/internal/platform/sentry"
 	"bgin/internal/platform/storage"
+	"bgin/internal/platform/telemetry"
 	"bgin/internal/platform/wechat"
 	"bgin/internal/shared/media"
 )
@@ -101,6 +103,9 @@ func (a *Application) Close() {
 		if err := a.db.Close(); err != nil {
 			a.logger.Warn("failed to close database connection", zap.Error(err))
 		}
+	}
+	if err := telemetry.Shutdown(context.Background()); err != nil {
+		a.logger.Warn("failed to shutdown telemetry", zap.Error(err))
 	}
 	platformsentry.Flush(5 * time.Second)
 }

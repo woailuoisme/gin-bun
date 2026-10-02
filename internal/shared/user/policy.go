@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"bgin/internal/database/models"
@@ -39,9 +40,15 @@ func (p ClientPolicy) ValidateUser(_ context.Context, user *models.User) error {
 type AdminPolicy struct{}
 
 // ValidateUser 校验管理员账号具备系统管理员角色且处于活跃可用状态。
-func (p AdminPolicy) ValidateUser(_ context.Context, user *models.User) error {
+func (p AdminPolicy) ValidateUser(ctx context.Context, user *models.User) error {
 	if user == nil {
 		return errs.Unauthorized(errs.CodeAuthTokenInvalid, "The token is invalid")
+	}
+	if id, ok := authentication.FromContext(ctx); ok {
+		roles := id.AllRoles()
+		if len(roles) > 0 && !slices.Contains(roles, enums.RoleAdmin.String()) {
+			return ErrRoleRestricted
+		}
 	}
 	if user.Role != enums.RoleAdmin {
 		return ErrRoleRestricted

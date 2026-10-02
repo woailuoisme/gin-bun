@@ -43,7 +43,7 @@ func (h *ZapQueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 	query := cmp.Or(event.Query, event.QueryTemplate)
 
 	// 1. 查询执行失败：排除 sql.ErrNoRows 和 sql.ErrTxDone（属于正常领域/事务控制状态）
-	if event.Err != nil && !errors.Is(event.Err, sql.ErrNoRows) && !errors.Is(event.Err, sql.ErrTxDone) {
+	if isActionableDBError(event.Err) {
 		log.Error("database query failed",
 			zap.Error(event.Err),
 			zap.String("query", query),
@@ -76,7 +76,13 @@ func (h *ZapQueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 	}
 }
 
-// AddQueryHooks 为 bun.DB 挂载基于 zap 的统一结构化日志与慢查询监控钩子。
+// AddQueryHooks 为 bun.DB 挂载基于 zap 的统一结构化日志与慢查询监控钩子，以及 OpenTelemetry 链路追踪钩子。
 func AddQueryHooks(db *bun.DB, cfg config.DatabaseConfig) {
+	db.AddQueryHook(NewOTelQueryHook())
 	db.AddQueryHook(NewZapQueryHook(cfg.SlowThreshold, cfg.Debug))
+}
+
+// isActionableDBError 判断数据库错误是否为需要记录与追踪的非预期故障（排除记录未命中与正常事务控制状态）。
+func isActionableDBError(err error) bool {
+	return err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, sql.ErrTxDone)
 }
