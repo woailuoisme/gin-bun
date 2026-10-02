@@ -8,10 +8,21 @@ import (
 	"github.com/uptrace/bun"
 )
 
+// ensureBaseColumns 保证在追加计算列（如 WithCount、WithAggregate、WithExists）且此前未曾显式调用 Select(...) 时，
+// 自动保留主表的所有字段（?TableAlias.*），避免 Bun ORM 因覆盖默认列导致模型实体字段被清空。
+func (q *Query[T]) ensureBaseColumns() *Query[T] {
+	if !q.hasExplicitSelect {
+		q.sel = q.sel.ColumnExpr("?TableAlias.*")
+		q.hasExplicitSelect = true
+	}
+	return q
+}
+
 // Select 指定查询投影列（例如 "id", "email"），重置默认的模型投影列。
 func (q *Query[T]) Select(columns ...string) *Query[T] {
 	if len(columns) > 0 {
 		q.sel = q.sel.Column(columns...)
+		q.hasExplicitSelect = true
 	}
 	return q
 }
@@ -110,12 +121,13 @@ func (q *Query[T]) WhereIf(condition bool, query string, args ...any) *Query[T] 
 
 func (q *Query[T]) withSubSelect(sub *bun.SelectQuery) *Query[T] {
 	return &Query[T]{
-		db:          q.db,
-		baseDB:      q.baseDB,
-		sel:         sub,
-		withTrashed: q.withTrashed,
-		onlyTrashed: q.onlyTrashed,
-		chunkSize:   q.chunkSize,
+		db:                q.db,
+		baseDB:            q.baseDB,
+		sel:               sub,
+		withTrashed:       q.withTrashed,
+		onlyTrashed:       q.onlyTrashed,
+		chunkSize:         q.chunkSize,
+		hasExplicitSelect: q.hasExplicitSelect,
 	}
 }
 

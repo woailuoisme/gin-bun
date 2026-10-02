@@ -661,4 +661,82 @@ func TestQuery_SanitizationEdgeCases(t *testing.T) {
 		// 250 条数据按自定义 ChunkSize(100) 分块应产生 3 次执行 (100 + 100 + 50)
 		assert.Equal(t, 3, executedQueries)
 	})
+
+	t.Run("WithCountWhere, WithExists, WithExistsWhere SQL generation", func(t *testing.T) {
+		q := database.NewQuery[models.User](db).
+			WithCountWhere("accounts", "user_id", func(sq *bun.SelectQuery) *bun.SelectQuery {
+				return sq.Where("provider = ?", "google")
+			}, "google_accounts_count").
+			WithExists("accounts", "user_id").
+			WithExistsWhere("verifications", "user_id", func(sq *bun.SelectQuery) *bun.SelectQuery {
+				return sq.Where("status = ?", "pending")
+			}, "has_pending_verification").
+			WithSumWhere("orders", "user_id", "amount", func(sq *bun.SelectQuery) *bun.SelectQuery {
+				return sq.Where("status = ?", "completed")
+			}, "completed_orders_sum")
+
+		sql := q.ToSQL()
+		assert.Contains(t, sql, `SELECT "u".*`)
+		assert.Contains(t, sql, `(SELECT count(*) FROM "accounts" WHERE (accounts.user_id = "u".id) AND (provider = 'google')) AS "google_accounts_count"`)
+		assert.Contains(t, sql, `(EXISTS (SELECT 1 FROM accounts WHERE accounts.user_id = "u".id)) AS "accounts_exists"`)
+		assert.Contains(t, sql, `(EXISTS (SELECT 1 FROM "verifications" WHERE (verifications.user_id = "u".id) AND (status = 'pending'))) AS "has_pending_verification"`)
+		assert.Contains(t, sql, `(SELECT COALESCE(SUM(amount), 0) FROM "orders" WHERE (orders.user_id = "u".id) AND (status = 'completed')) AS "completed_orders_sum"`)
+	})
+
+	t.Run("Base columns preservation when explicit Select is used vs omitted", func(t *testing.T) {
+		// 未指定 Select 时自动补充 ?TableAlias.*
+		q1 := database.NewQuery[models.User](db).WithCount("accounts", "user_id")
+		assert.Contains(t, q1.ToSQL(), `SELECT "u".*`)
+
+		// 显式指定 Select 时不注入 ?TableAlias.*
+		q2 := database.NewQuery[models.User](db).Select("id", "email").WithCount("accounts", "user_id")
+		assert.NotContains(t, q2.ToSQL(), `"u".*`)
+		assert.Contains(t, q2.ToSQL(), `SELECT "u"."id", "u"."email", (SELECT count(*)`)
+	})
+
+	t.Run("CountRelations executes grouped count query", func(t *testing.T) {
+		db.SetMockQuery(func(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+			assert.Contains(t, query, `SELECT "user_id" AS key, count(*) AS count FROM "accounts" WHERE ("user_id" IN ('u1', 'u2', 'u3')) GROUP BY "user_id"`)
+			return makeMockRows(
+				[]string{"key", "count"},
+				[]driver.Value{"u1", int64(3)},
+				[]driver.Value{"u2", int64(1)},
+			), nil
+		})
+
+		q := database.NewQuery[models.User](db)
+		counts, err := q.CountRelations(ctx, "accounts", "user_id", []string{" u1 ", "u1", "u2", "  ", "u3"})
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), counts["u1"])
+		assert.Equal(t, int64(1), counts["u2"])
+		assert.Equal(t, int64(0), counts["u3"]) // u3 没有记录，自动填充 0
+	})
+
+	t.Run("LoadCount populates struct fields", func(t *testing.T) {
+		type TestModel struct {
+			bun.BaseModel `bun:"table:test_users"`
+			database.Base
+			AccountsCount int64 `bun:"accounts_count,scanonly"`
+		}
+
+		db.SetMockQuery(func(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+			return makeMockRows(
+				[]string{"key", "count"},
+				[]driver.Value{"usr-1", int64(5)},
+				[]driver.Value{"usr-2", int64(2)},
+			), nil
+		})
+
+		u1 := &TestModel{Base: database.Base{ID: "usr-1"}}
+		u2 := &TestModel{Base: database.Base{ID: "usr-2"}}
+		u3 := &TestModel{Base: database.Base{ID: "usr-3"}}
+
+		users := []*TestModel{u1, u2, u3}
+
+		err := database.LoadCount(ctx, db, users, "accounts", "user_id")
+		require.NoError(t, err)
+		assert.Equal(t, int64(5), u1.AccountsCount)
+		assert.Equal(t, int64(2), u2.AccountsCount)
+		assert.Equal(t, int64(0), u3.AccountsCount)
+	})
 }

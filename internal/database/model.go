@@ -239,12 +239,13 @@ type ScopeFunc[T any] func(*Query[T]) *Query[T]
 
 // Query 封装 bun.SelectQuery，兼具流式链式查询、作用域（Scopes）与仓储（Repository）增删改查全能力。
 type Query[T any] struct {
-	db          bun.IDB
-	baseDB      *bun.DB
-	sel         *bun.SelectQuery
-	withTrashed bool
-	onlyTrashed bool
-	chunkSize   int
+	db                bun.IDB
+	baseDB            *bun.DB
+	sel               *bun.SelectQuery
+	withTrashed       bool
+	onlyTrashed       bool
+	chunkSize         int
+	hasExplicitSelect bool
 }
 
 // UnwrapBunDB 尝试从 bun.IDB 实例中提取底层的 *bun.DB 实例（支持直接断言与 BunDB/Unwrap 接口解包）。
