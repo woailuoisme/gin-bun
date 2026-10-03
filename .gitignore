@@ -51,6 +51,9 @@ Desktop.ini
 !.env.example
 
 secrets.ini
+helm/**/secrets.*.yaml
+!helm/**/secrets.example.yaml
+!helm/**/secrets.*.enc.yaml
 *.pem
 *.key
 *.cert
@@ -121,6 +124,8 @@ coverage.xml
 *.tfstate.*
 .terraform/
 *.kubeconfig
+helm/dist/
+helm/**/charts/*.tgz
 
 # ------------------------------------------
 # Local Development

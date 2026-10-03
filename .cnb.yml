@@ -50,6 +50,18 @@ $:
               --push \
               .
 
+        - name: Package and push Helm chart (OCI)
+          image: alpine/helm:4
+          script: |
+            set -euo pipefail
+            RAW_VERSION="${CNB_BRANCH##*/}"
+            VERSION="${RAW_VERSION#v}"
+            helm registry login -u "${CNB_TOKEN_USER_NAME}" -p "${CNB_TOKEN}" "${CNB_HELM_REGISTRY}"
+            mkdir -p ./helm/dist
+            helm dependency build ./helm/bgin
+            helm package ./helm/bgin --version "${VERSION}" --app-version "${VERSION}" -d ./helm/dist
+            helm push "./helm/dist/bgin-${VERSION}.tgz" "oci://${CNB_HELM_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}"
+
   # 标签部署流水线：运行单元测试与数据库迁移
   tag_deploy:
     - services:

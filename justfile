@@ -156,3 +156,92 @@ docs:
     swag init -d "$(find cmd internal -type f -name '*.go' ! -path '*/features/client*' ! -path '*/features/realtime*' ! -path '*/features/payment*' -exec dirname {} + | sort -u | paste -sd, -)" -g admin_doc.go -o internal/shared/apidocs/admin_tmp --parseInternal --outputTypes json
     mv internal/shared/apidocs/admin_tmp/swagger.json internal/shared/apidocs/admin_swagger.json
     rm -rf internal/shared/apidocs/admin_tmp
+
+# 静态检查 Helm Chart
+helm-lint:
+    helm lint ./helm/bgin
+
+# 渲染测试 Helm Manifests（支持参数，如 just helm-template --set api.replicaCount=3）
+helm-template *ARGS:
+    helm template bgin ./helm/bgin {{ARGS}}
+
+# 更新 Helm 子 Chart 依赖
+helm-dep:
+    helm dependency update ./helm/bgin
+
+# 登录 CNB 或指定 OCI Helm 制品库 (默认取环境变量或参数)
+helm-login token="" user="" registry="":
+    @reg="{{registry}}"; \
+     reg="${reg:-${CNB_HELM_REGISTRY:-helm.cnb.cool}}"; \
+     tok="{{token}}"; \
+     tok="${tok:-${CNB_TOKEN}}"; \
+     usr="{{user}}"; \
+     usr="${usr:-${CNB_TOKEN_USER_NAME:-cnb}}"; \
+     if [ -z "$tok" ]; then \
+       echo "Error: Token required. Usage: just helm-login <token> [user] [registry] (or set CNB_TOKEN)"; exit 1; \
+     fi; \
+     helm registry login -u "$usr" -p "$tok" "$reg"
+
+# 本地打包 Helm Chart 到 dist/ 目录
+helm-package:
+    mkdir -p ./helm/dist
+    helm dependency build ./helm/bgin
+    helm package ./helm/bgin -d ./helm/dist
+
+# 本地推送 Helm Chart 至 CNB 或目标 OCI 制品库 (默认取 CNB_HELM_REGISTRY 与 CNB_REPO_SLUG_LOWERCASE)
+helm-push version="0.1.0" registry="":
+    @reg="{{registry}}"; \
+     reg="${reg:-${CNB_HELM_REGISTRY:-helm.cnb.cool}/${CNB_REPO_SLUG_LOWERCASE:-ailuoga/gin-bun}}"; \
+     mkdir -p ./helm/dist; \
+     helm dependency build ./helm/bgin; \
+     helm package ./helm/bgin --version "{{version}}" --app-version "{{version}}" -d ./helm/dist; \
+     helm push "./helm/dist/bgin-{{version}}.tgz" "oci://${reg}"
+
+# 初始化本地 age 密钥对并打印公钥（保存在 .local/age.key）
+sops-init:
+    @mkdir -p .local
+    @if [ -f .local/age.key ]; then \
+        echo "age key already exists at .local/age.key"; \
+    else \
+        age-keygen -o .local/age.key 2>/dev/null; \
+        chmod 600 .local/age.key; \
+        echo "Generated new age keypair at .local/age.key"; \
+    fi
+    @pub="$(age-keygen -y .local/age.key 2>/dev/null)"; \
+     echo "=================================================="; \
+     echo "Local age Public Key: $pub"; \
+     echo "Please ensure this public key is added to .sops.yaml"; \
+     echo "=================================================="
+
+# 原地编辑或创建环境密文：helm/bgin/secrets.<env>.enc.yaml
+sops-edit env="prod":
+    @export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-.local/age.key}"; \
+     sops "helm/bgin/secrets.{{env}}.enc.yaml"
+
+# 查看解密后的环境敏感配置内容
+sops-view env="prod":
+    @export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-.local/age.key}"; \
+     dst="helm/bgin/secrets.{{env}}.enc.yaml"; \
+     if [ ! -f "$dst" ]; then \
+       echo "Error: Encrypted file $dst not found."; exit 1; \
+     fi; \
+     sops -d "$dst"
+
+# 从未加密模板加密生成环境密文：helm/bgin/secrets.<env>.yaml -> secrets.<env>.enc.yaml
+sops-encrypt env="prod":
+    @src="helm/bgin/secrets.{{env}}.yaml"; \
+     dst="helm/bgin/secrets.{{env}}.enc.yaml"; \
+     if [ ! -f "$src" ]; then \
+       echo "Error: Source file $src not found. Copy from secrets.example.yaml first."; exit 1; \
+     fi; \
+     sops -e "$src" > "$dst" && echo "Successfully encrypted $src -> $dst"
+
+# 使用 SOPS 解密后的环境配置进行本地测试渲染 (无需落地明文)
+helm-template-env env="prod" *ARGS:
+    @export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-.local/age.key}"; \
+     src="helm/bgin/secrets.{{env}}.enc.yaml"; \
+     if [ ! -f "$src" ]; then \
+       echo "Error: $src not found. Create it with just sops-edit {{env}} first."; exit 1; \
+     fi; \
+     sops exec-file "$src" 'helm template bgin ./helm/bgin -f ./helm/bgin/values.yaml -f {} {{ARGS}}'
+
