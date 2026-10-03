@@ -82,6 +82,11 @@ func TestValidationMessageRendersLaravelStyle(t *testing.T) {
 		{"保留字", "en", "notreserved", "username", "", "The username is reserved and cannot be used."},
 		{"中文必填", "zh-CN", "required", "phoneNumber", "", "手机号为必填项。"},
 		{"中文邮箱", "zh-CN", "email", "email", "", "邮箱地址必须是有效的邮箱地址。"},
+		{"中文头像", "zh-CN", "image", "avatar", "", "头像必须是图片。"},
+		{"嵌套路径回退标签", "zh-CN", "required", "user.email", "", "邮箱地址为必填项。"},
+		{"切片嵌套回退标签", "zh-CN", "required", "items.0.avatar", "", "头像为必填项。"},
+		{"口令规则英文", "en", "password", "password", "", "The password must contain both letters and numbers."},
+		{"口令规则中文", "zh-CN", "password", "password", "", "密码必须同时包含字母和数字。"},
 	}
 
 	for _, tt := range tests {

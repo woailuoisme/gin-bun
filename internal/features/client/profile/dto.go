@@ -1,6 +1,8 @@
 package profile
 
 import (
+	"mime/multipart"
+
 	"github.com/aarondl/opt/omitnull"
 
 	"bgin/internal/shared/user"
@@ -8,6 +10,12 @@ import (
 
 // ProfileResource 为共享内核用户档案视图的类型别名（供 Swagger 注解直接引用）。
 type ProfileResource = user.Profile
+
+// UploadAvatarBody 接收 multipart/form-data 格式的用户头像上传表单载荷。
+type UploadAvatarBody struct {
+	// 头像图片文件（最大 2MB，支持 JPEG/PNG/WebP）
+	Avatar *multipart.FileHeader `form:"avatar" json:"avatar" validate:"required,file,image,mimes=jpg jpeg png webp,maxsize=2M"`
+}
 
 // UpdateProfileBody 是 PATCH /v1/users/me 的局部更新请求体。
 type UpdateProfileBody struct {

@@ -104,6 +104,8 @@ func toSelfPatch(body UpdateProfileBody) *selfPatch {
 // @Security     BearerAuth
 // @Param        avatar formData file true "头像图片文件 (最大 2MB，支持 JPEG/PNG/WebP)"
 // @Success      200 {object} ProfileResource "更新头像后的本人档案"
+// @Failure      401 {object} errs.Response "未认证"
+// @Failure      422 {object} errs.Response "文件校验失败"
 // @x-order      3
 // @Router       /users/me/avatar [post]
 func (h *Handler) UploadAvatar(c *gin.Context) {
@@ -113,16 +115,13 @@ func (h *Handler) UploadAvatar(c *gin.Context) {
 		return
 	}
 
-	file, err := c.FormFile("avatar")
-	if err != nil {
-		file, err = c.FormFile("file")
-	}
-	if err != nil {
-		_ = c.Error(errs.BadRequest("Avatar file is required in 'avatar' or 'file' field"))
+	var body UploadAvatarBody
+	if err := c.ShouldBind(&body); err != nil {
+		_ = c.Error(err)
 		return
 	}
 
-	avatarURL, err := h.mediaManager.AttachAvatar(c.Request.Context(), id.UserID, file)
+	avatarURL, err := h.mediaManager.AttachAvatar(c.Request.Context(), id.UserID, body.Avatar)
 	if err != nil {
 		_ = c.Error(err)
 		return

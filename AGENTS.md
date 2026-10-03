@@ -131,6 +131,15 @@ tests/                          # 外部测试包（测试代码与业务逻辑�
      3. **`*QueryParams`**：对应 URL Query 查询参数（必须附带 `form:"..."` 与 `json:"..."` 标签），Handler 统一使用 `c.ShouldBindQuery(&queryParams)` 绑定；
      4. **`*Resource`**：对应响应数据单体视图（如 `UserResource`）；分页列表必须显式声明 `*PageResource` 结构体（内含 `items []<Entity>Resource` 与 `meta response.Meta`），确保 Swagger/OpenAPI 无歧义精准解析。
    - **全系统 `camelCase` 契约硬性红线**：所有 DTO 的 `json:"..."`、`form:"..."` 与 `uri:"..."` 字段标签统一使用小驼峰（`camelCase`），严格与 `api.md` RESTful 契约保持一致。
+8. **数据校验分层与数据库查重/存在性校验纪律 (Validation & DB Verification Discipline)**：
+   - **严禁在 Transport/Validator 层挂载数据库 I/O 规则（绝对红线）**：严禁在 `internal/platform/validator` 中实现或注册类似 Laravel 的 `unique` / `exists` 数据库标签规则：
+     - **杜绝 TOCTOU 竞态漏洞**：校验期的 `SELECT COUNT(*)` 无法保证并发安全，两并发请求校验通过后仍会触发数据库冲突；
+     - **架构分层绝对纯粹**：保持 Validator 为无状态纯内存操作，严禁反向依赖数据库连接池或 ORM 实例；
+     - **避免连接池枯竭与无谓 I/O**：防止恶意无效请求在反序列化阶段即耗尽 DB 连接池。
+   - **唯一性与外键存在性标准实现范式**：
+     1. **唯一性冲突 (Unique)**：由 Service 层业务查重判断 + **PostgreSQL 原生唯一索引（`UNIQUE INDEX`）作为终极防线**。底层 `23505 (pgErrUniqueViolation)` 由 `internal/platform/errs/render.go` 集中自动翻译为 409 Conflict 或特定业务错误码，业务层无需手动处理底层 SQL 异常。
+     2. **外键与关联存在性 (Exists)**：遵循「查完即用 (Fetch-Once)」原则，在 Service 层使用强类型 Repository 或 Active Record 直接查询实体；若实体不存在立即返回 `errs.NotFound`，彻底杜绝在 Validator 查一次存在性、在 Service 又查一次实体的低效双重查询。
+     3. **复杂跨字段复合校验**：统一通过让 DTO 实现 `Validatable` 接口（`Validate() error`），由 Gin 校验器自动触发，保持声明式 Tag 验证基础格式与命令式 Hook 验证业务联动职责清晰。
 
 ---
 

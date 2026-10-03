@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -233,9 +234,20 @@ func (t *Translator) findAnySection(language, key string) string {
 	return ""
 }
 
-// FieldLabel 返回字段路径对应的可读标签，缺键时返回空串交由调用方兜底。
+// FieldLabel 返回字段路径对应的可读标签，缺键时支持末级字段名回退，仍缺失时返回空串交由调用方兜底。
 func (t *Translator) FieldLabel(language, field string) string {
-	return t.template(language, sectionFields, field)
+	if label := t.template(language, sectionFields, field); label != "" {
+		return label
+	}
+
+	// 支持路径解构回退（例如 items.0.email 或 user.avatar 回退查找 email 或 avatar）
+	if idx := strings.LastIndex(field, "."); idx >= 0 && idx < len(field)-1 {
+		last := field[idx+1:]
+		if _, err := strconv.Atoi(last); err != nil {
+			return t.template(language, sectionFields, last)
+		}
+	}
+	return ""
 }
 
 // template 按语言与分节取模板，缺键时用默认语言兜底。

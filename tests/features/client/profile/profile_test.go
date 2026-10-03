@@ -71,58 +71,68 @@ func TestUploadAvatarValidation(t *testing.T) {
 
 	t.Run("未登录拒绝 401", func(t *testing.T) {
 		engine := newTestEngine(false)
-		req, _ := createMultipartRequest(t, "avatar", "avatar.png", []byte("dummy"))
+		req := createMultipartRequest(t, "avatar", "avatar.png", []byte("dummy"))
 		rec := httptest.NewRecorder()
 		engine.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	})
 
-	t.Run("缺失文件返回 400", func(t *testing.T) {
+	t.Run("缺失文件返回 422", func(t *testing.T) {
 		engine := newTestEngine(true)
-		req, _ := createMultipartRequest(t, "", "", nil)
+		req := createMultipartRequest(t, "", "", nil)
 		rec := httptest.NewRecorder()
 		engine.ServeHTTP(rec, req)
 
-		assert.Equal(t, http.StatusBadRequest, rec.Code)
-		assert.Contains(t, rec.Body.String(), "Avatar file is required")
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+		assert.Contains(t, rec.Body.String(), "avatar")
 	})
 
-	t.Run("非法扩展名返回 400", func(t *testing.T) {
+	t.Run("非法扩展名返回 422", func(t *testing.T) {
 		engine := newTestEngine(true)
-		req, _ := createMultipartRequest(t, "avatar", "script.sh", []byte("#!/bin/sh\necho hack"))
+		req := createMultipartRequest(t, "avatar", "script.sh", []byte("#!/bin/sh\necho hack"))
 		rec := httptest.NewRecorder()
 		engine.ServeHTTP(rec, req)
 
-		assert.Equal(t, http.StatusBadRequest, rec.Code)
-		assert.Contains(t, rec.Body.String(), "Invalid image extension")
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+		assert.Contains(t, rec.Body.String(), "avatar")
 	})
 
-	t.Run("超限尺寸 (大于 2MB) 返回 400", func(t *testing.T) {
+	t.Run("超限尺寸 (大于 2MB) 返回 422", func(t *testing.T) {
 		engine := newTestEngine(true)
 		oversized := make([]byte, 2*1024*1024+16)
-		req, _ := createMultipartRequest(t, "avatar", "huge.png", oversized)
+		req := createMultipartRequest(t, "avatar", "huge.png", oversized)
 		rec := httptest.NewRecorder()
 		engine.ServeHTTP(rec, req)
 
-		assert.Equal(t, http.StatusBadRequest, rec.Code)
-		assert.Contains(t, rec.Body.String(), "must not exceed 2MB")
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+		assert.Contains(t, rec.Body.String(), "avatar")
 	})
 
-	t.Run("伪装图片 (文本伪装成 png) 魔数检测拦截 400", func(t *testing.T) {
+	t.Run("伪装图片 (文本伪装成 png) 魔数检测拦截 422", func(t *testing.T) {
 		engine := newTestEngine(true)
 		fakePNG := []byte("This is plain text pretending to be a png file")
-		req, _ := createMultipartRequest(t, "avatar", "fake.png", fakePNG)
+		req := createMultipartRequest(t, "avatar", "fake.png", fakePNG)
 		rec := httptest.NewRecorder()
 		engine.ServeHTTP(rec, req)
 
-		assert.Equal(t, http.StatusBadRequest, rec.Code)
-		assert.Contains(t, rec.Body.String(), "Invalid image format")
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+		assert.Contains(t, rec.Body.String(), "avatar")
+	})
+
+	t.Run("仅接受 avatar 字段，不匹配 file 字段返回 422", func(t *testing.T) {
+		engine := newTestEngine(true)
+		req := createMultipartRequest(t, "file", "fake.png", []byte("content"))
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+		assert.Contains(t, rec.Body.String(), "avatar")
 	})
 }
 
 // createMultipartRequest 构造带有指定表单字段的 multipart/form-data 测试请求。
-func createMultipartRequest(t *testing.T, fieldName, filename string, content []byte) (*http.Request, string) {
+func createMultipartRequest(t *testing.T, fieldName, filename string, content []byte) *http.Request {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -136,5 +146,5 @@ func createMultipartRequest(t *testing.T, fieldName, filename string, content []
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/users/me/avatar", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	return req, writer.FormDataContentType()
+	return req
 }

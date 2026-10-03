@@ -580,6 +580,18 @@
                         "schema": {
                             "$ref": "#/definitions/profile.ProfileResource"
                         }
+                    },
+                    "401": {
+                        "description": "未认证",
+                        "schema": {
+                            "$ref": "#/definitions/errs.Response"
+                        }
+                    },
+                    "422": {
+                        "description": "文件校验失败",
+                        "schema": {
+                            "$ref": "#/definitions/errs.Response"
+                        }
                     }
                 },
                 "x-order": 3
@@ -975,6 +987,26 @@
                 "StatusSuspended",
                 "StatusBanned"
             ]
+        },
+        "errs.Response": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "errors": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
         },
         "profile.ProfileResource": {
             "type": "object",
