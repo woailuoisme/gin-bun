@@ -23,6 +23,7 @@ import (
 	"github.com/xuri/excelize/v2"
 
 	"bgin/internal/config"
+	"bgin/internal/platform/errs"
 )
 
 // ExportConcern 标记与导出操作相关的 Concern 接口契约。
@@ -187,6 +188,30 @@ type ToChunk interface {
 	Chunk(ctx context.Context, rows [][]string) error
 }
 
+// WithUniqueCheck 声明启用基于布隆过滤器的两级去重防查库（Bloom 初筛 + 疑似重复时精准回源校验）。
+// 仅当布隆过滤器判定"可能已存在"时才会触发 ExistsDB 回源验证，打消 99.9%+ 的数据库查询 I/O，并消除假阳性误判。
+type WithUniqueCheck interface {
+	ImportConcern
+	// UniqueKey 从当前数据行提取唯一性标识键（如手机号、邮箱、订单号、联合主键）。返回空字符串则跳过该行去重。
+	UniqueKey(row []string) string
+	// ExistsDB 当布隆过滤器判定 key 可能已存在时触发二次精准回源校验（如查数据库或缓存），返回 true 表示确已存在。
+	ExistsDB(ctx context.Context, key string) (bool, error)
+}
+
+// WithUniqueConfig 声明自定义布隆过滤器的预估容量与误判率。
+// 若未实现，默认使用容量 1,000,000，误判率 0.0001 (0.01%)，仅占用约 2.3MB 内存。
+type WithUniqueConfig interface {
+	ImportConcern
+	UniqueConfig() (expectedItems uint, falsePositiveRate float64)
+}
+
+// WithPreloadKeys 允许在流式解析 Excel 行之前，从数据库批量预热已知唯一键灌入布隆过滤器。
+// 预热后未命中布隆过滤器的键 100% 不在数据库中，彻底免疫百万次无谓 SELECT 查库。
+type WithPreloadKeys interface {
+	ImportConcern
+	PreloadKeys(ctx context.Context) ([]string, error)
+}
+
 // RowFailure 记录单行数据在解析或业务校验失败时的上下文信息。
 type RowFailure struct {
 	Row    int      // Excel 文件实际行号（1-based）
@@ -225,6 +250,16 @@ type ImportResult struct {
 // HasFailures 检查导入过程中是否产生任何失败记录。
 func (r *ImportResult) HasFailures() bool {
 	return r != nil && len(r.Failures) > 0
+}
+
+func (r *ImportResult) merge(other *ImportResult) {
+	if other == nil {
+		return
+	}
+	r.TotalRows += other.TotalRows
+	r.ImportedCount += other.ImportedCount
+	r.SkippedCount += other.SkippedCount
+	r.Failures = append(r.Failures, other.Failures...)
 }
 
 // ExportOption 配置导出操作的函数式选项。
@@ -495,9 +530,9 @@ func NewService(tempPath string, db *sql.DB) *Service {
 
 // RegisterExcel 注册并配置 Excel 服务到全局。
 func RegisterExcel(cfg *config.Config, db *sql.DB) (*Service, error) {
-	tempPath := defaultTempPath
+	var tempPath string
 	if cfg != nil {
-		tempPath = cmp.Or(cfg.Excel.TempPath, defaultTempPath)
+		tempPath = cfg.Excel.TempPath
 	}
 
 	service := NewService(tempPath, db)
@@ -512,10 +547,8 @@ func SetDefaultService(service *Service) {
 	defer defaultMu.Unlock()
 
 	if service == nil {
-		defaultService = NewService(defaultTempPath, nil)
-		return
+		service = NewService(defaultTempPath, nil)
 	}
-
 	defaultService = service
 }
 
@@ -546,14 +579,14 @@ func ImportWithResult(ctx context.Context, importObj any, r io.Reader, opts ...I
 func (s *Service) Export(ctx context.Context, export any, w io.Writer, opts ...ExportOption) error {
 	if export == nil {
 		return oops.
-			Code("excel_nil_pointer").
+			Code(errs.CodeExcelNilPointer).
 			In("excel.Export").
 			Errorf("export object cannot be nil")
 	}
 
 	if w == nil {
 		return oops.
-			Code("excel_nil_pointer").
+			Code(errs.CodeExcelNilPointer).
 			In("excel.Export").
 			Errorf("writer cannot be nil")
 	}
@@ -580,14 +613,14 @@ func (s *Service) Import(ctx context.Context, importObj any, r io.Reader, opts .
 func (s *Service) ImportWithResult(ctx context.Context, importObj any, r io.Reader, opts ...ImportOption) (*ImportResult, error) {
 	if importObj == nil {
 		return nil, oops.
-			Code("excel_nil_pointer").
+			Code(errs.CodeExcelNilPointer).
 			In("excel.Import").
 			Errorf("importObj cannot be nil")
 	}
 
 	if r == nil {
 		return nil, oops.
-			Code("excel_nil_pointer").
+			Code(errs.CodeExcelNilPointer).
 			In("excel.Import").
 			Errorf("reader cannot be nil")
 	}

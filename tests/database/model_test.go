@@ -1108,8 +1108,22 @@ func TestActiveRecord_EloquentV13_QueryBuilder(t *testing.T) {
 	})
 
 	t.Run("Eager loading WithRelations and Relation Aggregates", func(t *testing.T) {
+		type dummyAccount struct {
+			bun.BaseModel `bun:"table:accounts,alias:a"`
+			ID            string `bun:"id,pk"`
+			UserID        string `bun:"user_id"`
+		}
+		type dummyUserWithRel struct {
+			bun.BaseModel `bun:"table:users,alias:u"`
+			database.Base
+			Accounts []*dummyAccount `bun:"rel:has-many,join:id=user_id"`
+		}
+
+		qRel := database.NewQuery[dummyUserWithRel](db).
+			WithRelations("Accounts", "")
+		assert.NotNil(t, qRel)
+
 		q := database.NewQuery[models.User](db).
-			WithRelations("Accounts", "", "Verifications").
 			WithCount("accounts", "user_id", "custom_accounts_count").
 			WithSum("orders", "user_id", "amount").
 			WithSum("orders", "user_id", "amount", "total_orders_sum").

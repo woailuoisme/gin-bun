@@ -61,15 +61,17 @@ func (m *Middleware) BodyLimit() gin.HandlerFunc {
 	}
 }
 
-// SecurityHeaders 【全局中间件】注入常用安全响应头（防 MIME 嗅探、点击劫持与隐私泄露）。
+// SecurityHeaders 【全局中间件】注入常用安全响应头（防 MIME 嗅探、点击劫持、硬件探测与跨域文档滥用）。
 func (m *Middleware) SecurityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.Writer.Header()
 		header.Set("X-Content-Type-Options", "nosniff")
 		header.Set("X-Frame-Options", "DENY")
 		header.Set("Referrer-Policy", "no-referrer")
+		header.Set("X-Permitted-Cross-Domain-Policies", "none")
+		header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 		if m.production {
-			header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
 		}
 		c.Next()
 	}

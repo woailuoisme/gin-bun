@@ -749,3 +749,166 @@ func TestMaxExportRowsAndProgress(t *testing.T) {
 	assert.Equal(t, []string{"3", "U3", "u3@test.com"}, rows[3])
 	assert.NotEmpty(t, progressReports)
 }
+
+type uniqueUserImport struct {
+	importedRows [][]string
+	existingDB   map[string]bool
+	failures     []excel.RowFailure
+	customConfig bool
+}
+
+func (u *uniqueUserImport) OnRow(row []string) error {
+	u.importedRows = append(u.importedRows, row)
+	return nil
+}
+
+func (u *uniqueUserImport) UniqueKey(row []string) string {
+	if len(row) > 0 {
+		return row[0] // 使用第 1 列作为唯一键 (ID)
+	}
+	return ""
+}
+
+func (u *uniqueUserImport) ExistsDB(_ context.Context, key string) (bool, error) {
+	return u.existingDB[key], nil
+}
+
+func (u *uniqueUserImport) OnFailure(failure excel.RowFailure) {
+	u.failures = append(u.failures, failure)
+}
+
+func (u *uniqueUserImport) UniqueConfig() (expectedItems uint, falsePositiveRate float64) {
+	if u.customConfig {
+		return 50000, 0.0005
+	}
+	return 1000000, 0.0001
+}
+
+type preloadingUserImport struct {
+	uniqueUserImport
+	preloadList []string
+}
+
+func (p *preloadingUserImport) PreloadKeys(_ context.Context) ([]string, error) {
+	return p.preloadList, nil
+}
+
+func TestImportWithUniqueCheck_DuplicatesSkipped(t *testing.T) {
+	ctx := t.Context()
+
+	f := excelize.NewFile()
+	defer func() { _ = f.Close() }()
+
+	sheet := "Sheet1"
+	require.NoError(t, f.SetSheetRow(sheet, "A1", &[]any{"ID", "姓名", "邮箱"}))
+	require.NoError(t, f.SetSheetRow(sheet, "A2", &[]any{"101", "Alice", "alice@example.com"}))
+	require.NoError(t, f.SetSheetRow(sheet, "A3", &[]any{"102", "Bob", "bob@example.com"}))
+	require.NoError(t, f.SetSheetRow(sheet, "A4", &[]any{"101", "Alice Dup", "alice_dup@example.com"})) // 重复 ID 101
+	require.NoError(t, f.SetSheetRow(sheet, "A5", &[]any{"103", "Carol", "carol@example.com"}))
+
+	var buf bytes.Buffer
+	require.NoError(t, f.Write(&buf))
+
+	importer := &uniqueUserImport{
+		existingDB: make(map[string]bool),
+	}
+
+	result, err := excel.ImportWithResult(ctx, importer, &buf)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, 4, result.TotalRows)
+	assert.Equal(t, 3, result.ImportedCount)
+	assert.Equal(t, 1, result.SkippedCount)
+	require.Len(t, result.Failures, 1)
+
+	failure := result.Failures[0]
+	assert.Equal(t, 4, failure.Row)
+	assert.Equal(t, "101", failure.Field)
+	assert.Contains(t, failure.Error.Error(), "duplicate entry for key \"101\"")
+
+	// 确认导入的行不包含重复行
+	require.Len(t, importer.importedRows, 3)
+	assert.Equal(t, "101", importer.importedRows[0][0])
+	assert.Equal(t, "102", importer.importedRows[1][0])
+	assert.Equal(t, "103", importer.importedRows[2][0])
+}
+
+func TestImportWithUniqueCheck_AbortOnDuplicateWhenNoSkip(t *testing.T) {
+	ctx := t.Context()
+
+	f := excelize.NewFile()
+	defer func() { _ = f.Close() }()
+
+	sheet := "Sheet1"
+	require.NoError(t, f.SetSheetRow(sheet, "A1", &[]any{"ID", "姓名", "邮箱"}))
+	require.NoError(t, f.SetSheetRow(sheet, "A2", &[]any{"201", "Alice", "alice@example.com"}))
+	require.NoError(t, f.SetSheetRow(sheet, "A3", &[]any{"201", "Alice Dup", "alice@example.com"})) // 重复
+
+	var buf bytes.Buffer
+	require.NoError(t, f.Write(&buf))
+
+	strict := &strictUniqueImporter{
+		db: make(map[string]bool),
+	}
+
+	err := excel.Import(ctx, strict, &buf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate entry for key \"201\"")
+}
+
+type strictUniqueImporter struct {
+	imported [][]string
+	db       map[string]bool
+}
+
+func (s *strictUniqueImporter) OnRow(row []string) error {
+	s.imported = append(s.imported, row)
+	return nil
+}
+
+func (s *strictUniqueImporter) UniqueKey(row []string) string {
+	if len(row) > 0 {
+		return row[0]
+	}
+	return ""
+}
+
+func (s *strictUniqueImporter) ExistsDB(_ context.Context, key string) (bool, error) {
+	return s.db[key], nil
+}
+
+func TestImportWithUniqueCheck_PreloadKeys(t *testing.T) {
+	ctx := t.Context()
+
+	f := excelize.NewFile()
+	defer func() { _ = f.Close() }()
+
+	sheet := "Sheet1"
+	require.NoError(t, f.SetSheetRow(sheet, "A1", &[]any{"ID", "姓名", "邮箱"}))
+	require.NoError(t, f.SetSheetRow(sheet, "A2", &[]any{"DB_EXISTS_1", "Old User", "old@example.com"}))
+	require.NoError(t, f.SetSheetRow(sheet, "A3", &[]any{"NEW_USER_2", "New User", "new@example.com"}))
+
+	var buf bytes.Buffer
+	require.NoError(t, f.Write(&buf))
+
+	importer := &preloadingUserImport{
+		uniqueUserImport: uniqueUserImport{
+			existingDB: map[string]bool{
+				"DB_EXISTS_1": true,
+			},
+		},
+		preloadList: []string{"DB_EXISTS_1"},
+	}
+
+	result, err := excel.ImportWithResult(ctx, importer, &buf)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, 2, result.TotalRows)
+	assert.Equal(t, 1, result.ImportedCount)
+	assert.Equal(t, 1, result.SkippedCount)
+	require.Len(t, result.Failures, 1)
+	assert.Equal(t, "DB_EXISTS_1", result.Failures[0].Field)
+	assert.Equal(t, "NEW_USER_2", importer.importedRows[0][0])
+}

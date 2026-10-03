@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/uptrace/bun"
+	"go.temporal.io/sdk/client"
 	"go.uber.org/zap"
 
 	"bgin/internal/config"
@@ -46,6 +47,7 @@ type Application struct {
 	search       search.Client
 	eventbus     *eventbus.Manager
 	queue        *queue.Client
+	temporal     client.Client
 	engine       *gin.Engine
 }
 
@@ -67,8 +69,14 @@ func (a *Application) EventBus() *eventbus.Manager { return a.eventbus }
 // Queue 暴露已装配的异步队列客户端。
 func (a *Application) Queue() *queue.Client { return a.queue }
 
+// Temporal 暴露已装配的 Temporal 分布式工作流客户端（未启用时为 nil）。
+func (a *Application) Temporal() client.Client { return a.temporal }
+
 // Close 释放全部外部资源与客户端连接。
 func (a *Application) Close() {
+	if a.temporal != nil {
+		a.temporal.Close()
+	}
 	if a.eventbus != nil {
 		if err := a.eventbus.Close(); err != nil {
 			a.logger.Warn("failed to close event bus manager", zap.Error(err))

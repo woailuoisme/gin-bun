@@ -15,6 +15,7 @@ const (
 	ComponentRealtime = ready.ComponentRealtime
 	ComponentImgproxy = ready.ComponentImgproxy
 	ComponentMailer   = ready.ComponentMailer
+	ComponentTemporal = ready.ComponentTemporal
 )
 
 // Pinger 定义组件可达性探测接口。
@@ -29,6 +30,7 @@ type Deps struct {
 	Realtime Pinger
 	Imgproxy Pinger
 	Mailer   Pinger
+	Temporal Pinger
 }
 
 // Service 协调调度底层 ready.Aggregator 评估实例能否接流量。
@@ -61,24 +63,22 @@ func NewService(deps Deps) *Service {
 		buildCheck(ComponentCache, deps.Cache, false /* critical */, "valkey"),
 	)
 
-	if deps.Storage != nil {
-		agg.Register(buildCheck(ComponentStorage, deps.Storage, false /* critical */, ""))
+	optional := []struct {
+		name          string
+		pinger        Pinger
+		defaultDriver string
+	}{
+		{ComponentStorage, deps.Storage, ""},
+		{ComponentSearch, deps.Search, ""},
+		{ComponentRealtime, deps.Realtime, ""},
+		{ComponentImgproxy, deps.Imgproxy, ""},
+		{ComponentMailer, deps.Mailer, ""},
+		{ComponentTemporal, deps.Temporal, "temporal"},
 	}
-
-	if deps.Search != nil {
-		agg.Register(buildCheck(ComponentSearch, deps.Search, false /* critical */, ""))
-	}
-
-	if deps.Realtime != nil {
-		agg.Register(buildCheck(ComponentRealtime, deps.Realtime, false /* critical */, ""))
-	}
-
-	if deps.Imgproxy != nil {
-		agg.Register(buildCheck(ComponentImgproxy, deps.Imgproxy, false /* critical */, ""))
-	}
-
-	if deps.Mailer != nil {
-		agg.Register(buildCheck(ComponentMailer, deps.Mailer, false /* critical */, ""))
+	for _, c := range optional {
+		if c.pinger != nil {
+			agg.Register(buildCheck(c.name, c.pinger, false /* critical */, c.defaultDriver))
+		}
 	}
 
 	return &Service{aggregator: agg}

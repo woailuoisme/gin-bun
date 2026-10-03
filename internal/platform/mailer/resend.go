@@ -103,6 +103,28 @@ func (m *resendMailer) Close() error {
 	return nil
 }
 
+// Ping 验证 Resend 客户端配置与上下文有效性。
+// 此处做本地凭据非空校验与上下文超时检查，避免高频就绪探测产生外部计费 API 调用或触发三方频控限制。
+func (m *resendMailer) Ping(ctx context.Context) error {
+	if m.client == nil {
+		return errors.New("resend: client is not initialized")
+	}
+	if strings.TrimSpace(m.cfg.Resend.APIKey) == "" {
+		return errors.New("resend: api key cannot be empty")
+	}
+	return ctx.Err()
+}
+
+// Driver 返回底层驱动标识。
+func (m *resendMailer) Driver() string {
+	return "resend"
+}
+
+// Enabled 报告 Resend 驱动是否启用。
+func (m *resendMailer) Enabled() bool {
+	return m.cfg.IsEnabled()
+}
+
 // buildRequest 组装 Resend 官方 SDK 发送邮件请求体。
 func (m *resendMailer) buildRequest(msg Message) (*resend.SendEmailRequest, error) {
 	from := cmp.Or(strings.TrimSpace(m.cfg.FromAddress), "onboarding@resend.dev")

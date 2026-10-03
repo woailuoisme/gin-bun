@@ -72,6 +72,8 @@ const (
 	CodeCSVReadError Code = "CSV_READ_ERROR"
 	// CodeExcelReadRowError 逐行读取时该行内容不合法。
 	CodeExcelReadRowError Code = "EXCEL_READ_ROW_ERROR"
+	// CodeExcelDuplicateRow 导入数据行存在重复键（文件内重复或数据库已存在）。
+	CodeExcelDuplicateRow Code = "EXCEL_DUPLICATE_ROW"
 
 	// 通知子系统：接收方缺失或渠道不支持（已登记）。
 	CodeNotificationMissingRecipient   Code = "NOTIFICATION_MISSING_RECIPIENT"
@@ -187,6 +189,7 @@ var statuses = map[Code]int{
 	CodeExcelMapError:     http.StatusUnprocessableEntity,
 	CodeExcelRowsError:    http.StatusUnprocessableEntity,
 	CodeExcelReadRowError: http.StatusUnprocessableEntity,
+	CodeExcelDuplicateRow: http.StatusConflict,
 	CodeEmptySheets:       http.StatusBadRequest,
 	CodeCSVReadError:      http.StatusBadRequest,
 

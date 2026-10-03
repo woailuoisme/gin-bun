@@ -38,6 +38,10 @@ func (m *mockMailer) Close() error {
 	return nil
 }
 
+func (m *mockMailer) Ping(_ context.Context) error {
+	return nil
+}
+
 func TestWelcomeEmailJobExecution(t *testing.T) {
 	t.Parallel()
 

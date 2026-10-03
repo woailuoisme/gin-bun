@@ -24,3 +24,13 @@ env "app" {
     dir = "file://migrations"
   }
 }
+
+// 测试库迁移环境：将 migrations/ 应用至独立测试数据库 (对应 just migrate-test)
+env "test" {
+  url = getenv("TEST_DATABASE_URL")
+
+  migration {
+    dir = "file://migrations"
+  }
+}
+

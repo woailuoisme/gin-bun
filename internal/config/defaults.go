@@ -56,6 +56,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("jwt_refresh_ttl", 720*time.Hour)
 
 	// 邮件
+	v.SetDefault("mail_enabled", true)
 	v.SetDefault("mail_driver", "mailpit")
 	v.SetDefault("mail_from_address", "no-reply@bgin.local")
 	v.SetDefault("mail_from_name", "bgin")
@@ -77,6 +78,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("password_reset_ttl", 30*time.Minute)
 
 	// 限流
+	v.SetDefault("ratelimit_enabled", true)
 	v.SetDefault("ratelimit_anonymous", 60)
 	v.SetDefault("ratelimit_authenticated", 300)
 	v.SetDefault("ratelimit_sensitive", 10)
@@ -146,6 +148,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("otel_service_name", "")
 	v.SetDefault("otel_traces_sample_ratio", 1.0)
 	v.SetDefault("otel_metric_interval", 15*time.Second)
+
+	// 分布式工作流 (Temporal)
+	v.SetDefault("temporal_enabled", false)
+	v.SetDefault("temporal_host_port", "127.0.0.1:7233")
+	v.SetDefault("temporal_namespace", "default")
+	v.SetDefault("temporal_task_queue", "bgin-tasks")
+	v.SetDefault("temporal_activity_concurrency", 10)
+	v.SetDefault("temporal_workflow_concurrency", 10)
 }
 
 // bindEnvKeys 自动递归提取 Config 结构体中声明的所有配置键并显式绑定对应的环境变量。

@@ -65,6 +65,8 @@ type Mailer interface {
 	SendMailable(ctx context.Context, to string, mailable Mailable) error
 	// Close 释放驱动底层网络连接
 	Close() error
+	// Ping 探测发信服务可达性状态
+	Ping(ctx context.Context) error
 }
 
 // DriverFactory 定义发信器驱动工厂函数。
@@ -87,6 +89,11 @@ func New(cfg config.MailConfig, log *zap.Logger) (Mailer, error) {
 	if log == nil {
 		log = zap.NewNop()
 	}
+	if !cfg.IsEnabled() {
+		log.Info("mail delivery is disabled (MAIL_ENABLED=false), falling back to log mailer")
+		return NewLogMailer(log), nil
+	}
+
 	driverName := cmp.Or(strings.ToLower(strings.TrimSpace(cfg.Driver)), "mailpit")
 
 	switch driverName {
@@ -94,6 +101,10 @@ func New(cfg config.MailConfig, log *zap.Logger) (Mailer, error) {
 		return newMailpitMailer(cfg, log)
 	case "resend":
 		return newResendMailer(cfg, log)
+	case "log":
+		return NewLogMailer(log), nil
+	case "null":
+		return NewNullMailer(), nil
 	case "memory":
 		return NewMemoryMailer(), nil
 	default:

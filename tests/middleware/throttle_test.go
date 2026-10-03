@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"bgin/internal/config"
 	"bgin/internal/middleware"
 	"bgin/internal/middleware/global"
 	"bgin/internal/platform/authentication"
@@ -272,8 +273,32 @@ func TestThrottle_CustomKey(t *testing.T) {
 	assert.Equal(t, int64(1), store.counts[expectedKey])
 }
 
-// TestThrottle_Expression 验证类似 Laravel 的 "max_attempts,decay_minutes" 字符串表达式。
-func TestThrottle_Expression(t *testing.T) {
+// TestThrottle_Tier 验证通过 Middleware.Throttle 挂载特定业务档位（如 TierSensitive）。
+func TestThrottle_Tier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newMockRateLimitStore()
+
+	m := middleware.New(middleware.Deps{
+		Limiter: config.LimiterConfig{
+			Sensitive: 5,
+		},
+	})
+	m.SetLimiterStore(store)
+
+	router := gin.New()
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	router.POST("/auth/login", m.Throttle(middleware.TierSensitive), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/login", nil))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NotEmpty(t, w.Header().Get("X-RateLimit-Limit"))
+}
+
+// TestThrottle_ThrottleRate 验证通过 Middleware.ThrottleRate 按自定义限制与周期限流。
+func TestThrottle_ThrottleRate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newMockRateLimitStore()
 
@@ -283,7 +308,7 @@ func TestThrottle_Expression(t *testing.T) {
 	router := gin.New()
 	router.Use(global.New(global.Deps{}).ErrorHandler())
 	// 允许每 1 分钟 2 次请求
-	router.GET("/api/fast", m.Throttle("2,1"), func(c *gin.Context) {
+	router.GET("/api/fast", m.ThrottleRate(2, time.Minute), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
@@ -306,63 +331,6 @@ func TestThrottle_Expression(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, w3.Code)
 }
 
-// TestThrottle_NamedLimiter 验证通过 RegisterLimiter 注册并在路由中使用命名限流器。
-func TestThrottle_NamedLimiter(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	store := newMockRateLimitStore()
-
-	m := middleware.New(middleware.Deps{})
-	m.SetLimiterStore(store)
-
-	// 注册名为 "uploads" 的命名限流器
-	m.RegisterLimiter("uploads", func(c *gin.Context) middleware.Limit {
-		return middleware.PerMinute(1).By("user:" + c.Query("user_id"))
-	})
-
-	router := gin.New()
-	router.Use(global.New(global.Deps{}).ErrorHandler())
-	router.POST("/uploads", m.Throttle("uploads"), func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "uploaded"})
-	})
-
-	// 用户 1 第一次上传
-	w1 := httptest.NewRecorder()
-	router.ServeHTTP(w1, httptest.NewRequest(http.MethodPost, "/uploads?user_id=101", nil))
-	assert.Equal(t, http.StatusOK, w1.Code)
-
-	// 用户 1 第二次上传 -> 429
-	w2 := httptest.NewRecorder()
-	router.ServeHTTP(w2, httptest.NewRequest(http.MethodPost, "/uploads?user_id=101", nil))
-	assert.Equal(t, http.StatusTooManyRequests, w2.Code)
-
-	// 用户 2 第一次上传不受用户 1 影响
-	w3 := httptest.NewRecorder()
-	router.ServeHTTP(w3, httptest.NewRequest(http.MethodPost, "/uploads?user_id=102", nil))
-	assert.Equal(t, http.StatusOK, w3.Code)
-}
-
-// TestThrottle_LimitBuilders 验证 Limit 链式辅助函数的周期设置。
-func TestThrottle_LimitBuilders(t *testing.T) {
-	l1 := middleware.PerMinute(60)
-	assert.Equal(t, 60, l1.MaxAttempts)
-	assert.Equal(t, time.Minute, l1.Decay)
-
-	l2 := middleware.PerMinutes(5, 100)
-	assert.Equal(t, 100, l2.MaxAttempts)
-	assert.Equal(t, 5*time.Minute, l2.Decay)
-
-	l3 := middleware.PerHour(1000)
-	assert.Equal(t, 1000, l3.MaxAttempts)
-	assert.Equal(t, time.Hour, l3.Decay)
-
-	l4 := middleware.PerDay(5000)
-	assert.Equal(t, 5000, l4.MaxAttempts)
-	assert.Equal(t, 24*time.Hour, l4.Decay)
-
-	l5 := middleware.None()
-	assert.Equal(t, 0, l5.MaxAttempts)
-}
-
 // TestThrottle_CustomResponse 验证自定义超限拦截响应回调。
 func TestThrottle_CustomResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -371,14 +339,12 @@ func TestThrottle_CustomResponse(t *testing.T) {
 	m := middleware.New(middleware.Deps{})
 	m.SetLimiterStore(store)
 
-	m.RegisterLimiter("custom_res", func(c *gin.Context) middleware.Limit {
-		return middleware.PerMinute(1).Response(func(c *gin.Context) {
-			c.JSON(http.StatusTooManyRequests, gin.H{"custom_error": "please_wait"})
-		})
+	customOpt := middleware.WithThrottleResponse(func(c *gin.Context) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"custom_error": "please_wait"})
 	})
 
 	router := gin.New()
-	router.GET("/custom", m.Throttle("custom_res"), func(c *gin.Context) {
+	router.GET("/custom", m.ThrottleRate(1, time.Minute, customOpt), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
@@ -395,25 +361,44 @@ func TestThrottle_CustomResponse(t *testing.T) {
 	assert.Equal(t, "please_wait", body["custom_error"])
 }
 
-// TestThrottle_UnknownLimiterNilLogger 验证当未配置 Logger 时请求未知限流器不会发生空指针 panic，且优雅回退至匿名档位。
-func TestThrottle_UnknownLimiterNilLogger(t *testing.T) {
+// TestThrottle_DisabledGlobally 验证当 RATELIMIT_ENABLED=false 时，所有限流中间件完全旁路放行。
+func TestThrottle_DisabledGlobally(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newMockRateLimitStore()
 
-	// 显式传入 Logger 为 nil 的 Deps
+	// 显式将限流总开关设为 false
 	m := middleware.New(middleware.Deps{
-		Logger: nil,
+		Limiter: config.LimiterConfig{
+			Enabled:       new(bool),
+			Sensitive:     1,
+			Anonymous:     1,
+			Authenticated: 1,
+		},
 	})
 	m.SetLimiterStore(store)
 
 	router := gin.New()
-	router.GET("/fallback", m.Throttle("non_existent_limiter"), func(c *gin.Context) {
+	router.Use(global.New(global.Deps{}).ErrorHandler())
+	router.POST("/auth/login", m.Throttle(middleware.TierSensitive), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	router.GET("/rate", m.ThrottleRate(1, time.Minute), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	w := httptest.NewRecorder()
-	assert.NotPanics(t, func() {
-		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fallback", nil))
-	})
-	assert.Equal(t, http.StatusOK, w.Code)
+	// 连续发起 5 次敏感登录请求，均应直接放行，且不注入限流响应头
+	for i := range 5 {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/login", nil))
+		assert.Equal(t, http.StatusOK, w.Code, "request %d should succeed", i+1)
+		assert.Empty(t, w.Header().Get("X-RateLimit-Limit"), "headers should not be set when rate limit is disabled")
+	}
+
+	// 连续发起 5 次自定义速率请求，同样全量放行
+	for i := range 5 {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/rate", nil))
+		assert.Equal(t, http.StatusOK, w.Code, "request %d should succeed", i+1)
+		assert.Empty(t, w.Header().Get("X-RateLimit-Limit"), "headers should not be set when rate limit is disabled")
+	}
 }

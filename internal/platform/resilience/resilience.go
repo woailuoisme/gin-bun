@@ -1,15 +1,21 @@
-// Package resilience 基于 failsafe-go 封装通用的弹性容错机制（重试、熔断断路、隔离舱与执行超时）。
+// Package resilience 基于 failsafe-go 封装通用的弹性容错机制（重试、熔断断路、隔离舱、限流整形、降级回退、长尾对冲、重试预算与传输层中间件）。
 // 为全系统出站调用（三方支付、短信、邮件、对象存储与实时推送）提供统一的弹性防护底座。
 package resilience
 
 import (
 	"cmp"
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/failsafe-go/failsafe-go"
+	"github.com/failsafe-go/failsafe-go/budget"
 	"github.com/failsafe-go/failsafe-go/bulkhead"
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
+	"github.com/failsafe-go/failsafe-go/failsafehttp"
+	"github.com/failsafe-go/failsafe-go/fallback"
+	"github.com/failsafe-go/failsafe-go/hedgepolicy"
+	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
 )
@@ -23,6 +29,10 @@ var (
 	ErrBulkheadFull = bulkhead.ErrFull
 	// ErrRetriesExceeded 重试策略已耗尽全部尝试次数。
 	ErrRetriesExceeded = retrypolicy.ErrExceeded
+	// ErrRateLimitExceeded 频率已超出配置配额限制。
+	ErrRateLimitExceeded = ratelimiter.ErrExceeded
+	// ErrBudgetExceeded 重试或对冲预算已耗尽。
+	ErrBudgetExceeded = budget.ErrExceeded
 )
 
 // RetryPolicyConfig 重试策略配置项。
@@ -31,6 +41,7 @@ type RetryPolicyConfig struct {
 	Delay       time.Duration
 	MaxDelay    time.Duration
 	Jitter      time.Duration
+	Budget      budget.Budget // 可选配置的重试预算配额
 }
 
 // CircuitBreakerConfig 熔断断路器配置项。
@@ -45,6 +56,27 @@ type CircuitBreakerConfig struct {
 type BulkheadConfig struct {
 	MaxConcurrency uint
 	MaxWaitTime    time.Duration
+}
+
+// RateLimiterConfig 限流策略配置项。
+type RateLimiterConfig struct {
+	MaxRate     uint          // 周期内允许的最大调用数（0 兜底为 100）
+	Period      time.Duration // 限流周期窗口（如 1 秒、1 分钟，<=0 兜底为 1 秒）
+	MaxWaitTime time.Duration // 排队等待的最长耗时，超时快速失败并返回 ErrRateLimitExceeded（0 为不等待直接超限拦截）
+	Smooth      bool          // 是否开启平滑漏桶模式（true 为 Leaky Bucket 均匀展开；false 为 Bursty 突发模式）
+}
+
+// HedgePolicyConfig 对冲请求策略配置项。
+type HedgePolicyConfig struct {
+	Delay     time.Duration // 发起对冲请求前的初始延迟等待（<=0 兜底为 50ms）
+	MaxHedges int           // 最大并发发起的对冲请求数（<=0 兜底为 1）
+	Budget    budget.Budget // 可选配置的对冲预算配额
+}
+
+// BudgetConfig 重试与对冲预算配置项。
+type BudgetConfig struct {
+	MaxRate        float64 // 允许用于重试/对冲的最大执行占比（0.0 ~ 1.0，如 0.2 表示最多 20%）
+	MinConcurrency uint    // 保底并发执行配额
 }
 
 // NewRetryPolicy 构建带指数退避与重试上限的重试策略。
@@ -65,6 +97,10 @@ func NewRetryPolicy[R any](cfg RetryPolicyConfig) retrypolicy.RetryPolicy[R] {
 
 	if cfg.Jitter > 0 {
 		builder = builder.WithJitter(cfg.Jitter)
+	}
+
+	if cfg.Budget != nil {
+		builder = builder.WithBudget(cfg.Budget)
 	}
 
 	return builder.Build()
@@ -105,6 +141,73 @@ func NewBulkhead[R any](cfg BulkheadConfig) bulkhead.Bulkhead[R] {
 // NewTimeout 构建操作级超时控制策略。
 func NewTimeout[R any](dur time.Duration) timeout.Timeout[R] {
 	return timeout.New[R](dur)
+}
+
+// NewRateLimiter 构建面向出站调用的流量整形与限速策略。
+func NewRateLimiter[R any](cfg RateLimiterConfig) ratelimiter.RateLimiter[R] {
+	period := cfg.Period
+	if period <= 0 {
+		period = time.Second
+	}
+	rate := cfg.MaxRate
+	if rate == 0 {
+		rate = 100
+	}
+
+	var builder ratelimiter.Builder[R]
+	if cfg.Smooth {
+		builder = ratelimiter.NewSmoothBuilder[R](rate, period)
+	} else {
+		builder = ratelimiter.NewBurstyBuilder[R](rate, period)
+	}
+
+	if cfg.MaxWaitTime > 0 {
+		builder = builder.WithMaxWaitTime(cfg.MaxWaitTime)
+	}
+
+	return builder.Build()
+}
+
+// NewFallbackWithResult 构建返回固定保底结果的降级策略。
+func NewFallbackWithResult[R any](result R) fallback.Fallback[R] {
+	return fallback.NewWithResult(result)
+}
+
+// NewFallbackWithFunc 构建基于动态回调函数的降级策略。
+func NewFallbackWithFunc[R any](fn func(failsafe.Execution[R]) (R, error)) fallback.Fallback[R] {
+	return fallback.NewWithFunc(fn)
+}
+
+// NewHedgePolicy 构建用于消除 P99 长尾延迟的对冲请求策略。
+func NewHedgePolicy[R any](cfg HedgePolicyConfig) hedgepolicy.HedgePolicy[R] {
+	builder := hedgepolicy.NewBuilderWithDelay[R](cmp.Or(cfg.Delay, 50*time.Millisecond))
+	if cfg.MaxHedges > 0 {
+		builder = builder.WithMaxHedges(cfg.MaxHedges)
+	}
+	if cfg.Budget != nil {
+		builder = builder.WithBudget(cfg.Budget)
+	}
+	return builder.Build()
+}
+
+// NewBudget 构建全局重试/对冲预算，防止下游服务故障时引发重试雪崩风暴。
+func NewBudget(cfg BudgetConfig) budget.Budget {
+	builder := budget.NewBuilder()
+	if cfg.MaxRate > 0 {
+		builder = builder.WithMaxRate(cfg.MaxRate)
+	}
+	if cfg.MinConcurrency > 0 {
+		builder = builder.WithMinConcurrency(cfg.MinConcurrency)
+	}
+	return builder.Build()
+}
+
+// NewHTTPRoundTripper 将弹性策略挂载至原生 http.RoundTripper 传输层，供标准 http.Client 或 resty.Client 使用。
+func NewHTTPRoundTripper(inner http.RoundTripper, policies ...failsafe.Policy[*http.Response]) http.RoundTripper {
+	if inner == nil {
+		inner = http.DefaultTransport
+	}
+	return failsafehttp.NewRoundTripper(inner, policies...)
 }
 
 // NewExecutor 根据给定的弹性策略列表构建执行器。

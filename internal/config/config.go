@@ -28,6 +28,7 @@ type Config struct {
 	EventBus     EventBusConfig     `mapstructure:",squash"`
 	Sentry       SentryConfig       `mapstructure:",squash"`
 	Telemetry    TelemetryConfig    `mapstructure:",squash"`
+	Temporal     TemporalConfig     `mapstructure:",squash"`
 }
 
 // Validate 依次执行各模块的语义与有效性校验。
@@ -61,6 +62,7 @@ func (c *Config) validate() error {
 		c.validateEventBus,
 		c.validateSentry,
 		c.validateTelemetry,
+		c.validateTemporal,
 	}
 	for _, fn := range validators {
 		if err := fn(); err != nil {

@@ -3,12 +3,21 @@ package platform_test
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/failsafe-go/failsafe-go"
+	"github.com/failsafe-go/failsafe-go/budget"
+	"github.com/failsafe-go/failsafe-go/bulkhead"
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
+	"github.com/failsafe-go/failsafe-go/failsafehttp"
+	"github.com/failsafe-go/failsafe-go/ratelimiter"
+	"github.com/failsafe-go/failsafe-go/retrypolicy"
+	"github.com/failsafe-go/failsafe-go/timeout"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -258,8 +267,203 @@ func TestResilience_BulkheadZeroDefault(t *testing.T) {
 	require.NotNil(t, bh)
 }
 
+func TestResilience_RateLimiter_Bursty(t *testing.T) {
+	t.Parallel()
+
+	rl := resilience.NewRateLimiter[any](resilience.RateLimiterConfig{
+		MaxRate: 2,
+		Period:  time.Second,
+	})
+	executor := resilience.NewExecutor(rl)
+
+	// 前 2 次调用允许
+	require.NoError(t, resilience.Run(context.Background(), executor, func() error { return nil }))
+	require.NoError(t, resilience.Run(context.Background(), executor, func() error { return nil }))
+
+	// 第 3 次调用立即超出速率限制
+	err := resilience.Run(context.Background(), executor, func() error { return nil })
+	require.Error(t, err)
+	assert.ErrorIs(t, err, resilience.ErrRateLimitExceeded)
+}
+
+func TestResilience_RateLimiter_Smooth(t *testing.T) {
+	t.Parallel()
+
+	rl := resilience.NewRateLimiter[any](resilience.RateLimiterConfig{
+		MaxRate: 10,
+		Period:  time.Second,
+		Smooth:  true,
+	})
+	executor := resilience.NewExecutor(rl)
+
+	require.NoError(t, resilience.Run(context.Background(), executor, func() error { return nil }))
+}
+
+func TestResilience_RateLimiter_ZeroDefaults(t *testing.T) {
+	t.Parallel()
+
+	rl := resilience.NewRateLimiter[any](resilience.RateLimiterConfig{
+		MaxRate: 0,
+		Period:  0,
+	})
+	require.NotNil(t, rl)
+}
+
+func TestResilience_RateLimiter_MaxWaitTime(t *testing.T) {
+	t.Parallel()
+
+	rl := resilience.NewRateLimiter[any](resilience.RateLimiterConfig{
+		MaxRate:     1,
+		Period:      50 * time.Millisecond,
+		MaxWaitTime: 200 * time.Millisecond,
+	})
+	executor := resilience.NewExecutor(rl)
+
+	require.NoError(t, resilience.Run(context.Background(), executor, func() error { return nil }))
+
+	// 第二次由于 MaxWaitTime 允许排队等待，稍后成功
+	start := time.Now()
+	require.NoError(t, resilience.Run(context.Background(), executor, func() error { return nil }))
+	assert.GreaterOrEqual(t, time.Since(start), 40*time.Millisecond)
+}
+
+func TestResilience_Fallback_WithResult(t *testing.T) {
+	t.Parallel()
+
+	fb := resilience.NewFallbackWithResult("cached-value")
+	executor := resilience.NewExecutor(fb)
+
+	val, err := resilience.Get(context.Background(), executor, func() (string, error) {
+		return "", errors.New("primary service unavailable")
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "cached-value", val)
+}
+
+func TestResilience_Fallback_WithFunc(t *testing.T) {
+	t.Parallel()
+
+	fb := resilience.NewFallbackWithFunc(func(exec failsafe.Execution[string]) (string, error) {
+		return "recovered from: " + exec.LastError().Error(), nil
+	})
+	executor := resilience.NewExecutor(fb)
+
+	val, err := resilience.Get(context.Background(), executor, func() (string, error) {
+		return "", errors.New("database timeout")
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "recovered from: database timeout", val)
+}
+
+func TestResilience_HedgePolicy(t *testing.T) {
+	t.Parallel()
+
+	hp := resilience.NewHedgePolicy[string](resilience.HedgePolicyConfig{
+		Delay:     20 * time.Millisecond,
+		MaxHedges: 2,
+	})
+	executor := resilience.NewExecutor(hp)
+
+	var attempts atomic.Int32
+	val, err := resilience.GetWithContext(context.Background(), executor, func(ctx context.Context) (string, error) {
+		att := attempts.Add(1)
+		if att == 1 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(150 * time.Millisecond):
+				return "slow-first-call", nil
+			}
+		}
+		return "fast-hedged-call", nil
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "fast-hedged-call", val)
+	assert.GreaterOrEqual(t, attempts.Load(), int32(2))
+}
+
+func TestResilience_HedgePolicy_ZeroDefaults(t *testing.T) {
+	t.Parallel()
+
+	hp := resilience.NewHedgePolicy[any](resilience.HedgePolicyConfig{})
+	require.NotNil(t, hp)
+}
+
+func TestResilience_Budget(t *testing.T) {
+	t.Parallel()
+
+	b := resilience.NewBudget(resilience.BudgetConfig{
+		MaxRate:        0.2,
+		MinConcurrency: 1,
+	})
+	require.NotNil(t, b)
+
+	rp := resilience.NewRetryPolicy[any](resilience.RetryPolicyConfig{
+		MaxAttempts: 2,
+		Delay:       5 * time.Millisecond,
+		Budget:      b,
+	})
+	executor := failsafe.With(rp)
+
+	var attempts atomic.Int32
+	err := resilience.Run(context.Background(), executor, func() error {
+		if attempts.Add(1) < 2 {
+			return errors.New("retry me")
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), attempts.Load())
+}
+
+//nolint:bodyclose // failsafehttp manages response body lifecycle on retried HTTP attempts
+func TestResilience_HTTPRoundTripper(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		val := attempts.Add(1)
+		if val == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer ts.Close()
+
+	// 构建在 500 状态码时重试的 RetryPolicy
+	retry := failsafehttp.NewRetryPolicyBuilder().
+		HandleIf(func(resp *http.Response, _ error) bool {
+			return resp != nil && resp.StatusCode >= 500
+		}).
+		WithMaxAttempts(2).
+		Build()
+
+	transport := resilience.NewHTTPRoundTripper(nil, retry)
+	client := &http.Client{Transport: transport}
+
+	resp, err := client.Get(ts.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "ok", string(body))
+	assert.Equal(t, int32(2), attempts.Load())
+}
+
 func TestResilience_SentinelErrors(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t, circuitbreaker.ErrOpen, resilience.ErrCircuitBreakerOpen)
+	assert.Equal(t, timeout.ErrExceeded, resilience.ErrTimeoutExceeded)
+	assert.Equal(t, bulkhead.ErrFull, resilience.ErrBulkheadFull)
+	assert.Equal(t, retrypolicy.ErrExceeded, resilience.ErrRetriesExceeded)
+	assert.Equal(t, ratelimiter.ErrExceeded, resilience.ErrRateLimitExceeded)
+	assert.Equal(t, budget.ErrExceeded, resilience.ErrBudgetExceeded)
 }

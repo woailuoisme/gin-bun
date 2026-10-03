@@ -191,7 +191,7 @@ func (c *Channel) UnreadCount(ctx context.Context, notifiable any) (int, error) 
 	if err != nil {
 		return 0, oops.Code(errs.CodeInternal).In("DatabaseChannel.UnreadCount").Wrap(err)
 	}
-	return count, nil
+	return int(count), nil
 }
 
 // Paginate 分页查询指定接收者的通知列表。
@@ -226,12 +226,12 @@ func (c *Channel) Paginate(ctx context.Context, notifiable any, page, perPage in
 	}
 
 	var items []models.Notification
-	err = q.Order("created_at DESC").Limit(perPage).Offset(offset).Scan(ctx, &items)
+	err = q.Order("created_at DESC").Limit(int64(perPage)).Offset(int64(offset)).Scan(ctx, &items)
 	if err != nil {
 		return nil, 0, oops.Code(errs.CodeInternal).In("DatabaseChannel.Paginate.Scan").Wrap(err)
 	}
 
-	return items, count, nil
+	return items, int(count), nil
 }
 
 // PaginateUnread 仅分页查询指定接收者的未读通知列表。

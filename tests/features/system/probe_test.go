@@ -227,6 +227,8 @@ func TestReadinessWithExtendedComponents(t *testing.T) {
 		Search:   stubComponent{driver: "meilisearch", enabled: true},
 		Realtime: stubComponent{driver: "centrifugo", enabled: false},
 		Imgproxy: stubComponent{driver: "imgproxy", enabled: false},
+		Mailer:   stubComponent{driver: "mailpit", enabled: true},
+		Temporal: stubComponent{driver: "temporal", enabled: false},
 	})
 	system.RegisterRoutes(engine, system.NewHandler(svc, l))
 
@@ -264,6 +266,20 @@ func TestReadinessWithExtendedComponents(t *testing.T) {
 	assert.Equal(t, system.CheckDisabled, imgproxyCheck.Status)
 	assert.Equal(t, "imgproxy", imgproxyCheck.Driver)
 	assert.False(t, imgproxyCheck.Critical)
+
+	// mailer (mailpit, enabled)
+	mailerCheck, ok := got.Checks[system.ComponentMailer]
+	require.True(t, ok)
+	assert.Equal(t, system.CheckHealthy, mailerCheck.Status)
+	assert.Equal(t, "mailpit", mailerCheck.Driver)
+	assert.False(t, mailerCheck.Critical)
+
+	// temporal (disabled)
+	temporalCheck, ok := got.Checks[system.ComponentTemporal]
+	require.True(t, ok)
+	assert.Equal(t, system.CheckDisabled, temporalCheck.Status)
+	assert.Equal(t, "temporal", temporalCheck.Driver)
+	assert.False(t, temporalCheck.Critical)
 }
 
 // TestReadinessDegradedWhenExtendedComponentFails 验证启用的扩展组件故障时优雅降级为 degraded。
@@ -296,4 +312,35 @@ func TestReadinessDegradedWhenExtendedComponentFails(t *testing.T) {
 	assert.Equal(t, system.CheckDegraded, imgCheck.Status)
 	assert.Equal(t, "imgproxy", imgCheck.Driver)
 	assert.Contains(t, logs.String(), "imgproxy connection refused")
+}
+
+// TestReadinessDegradedWhenTemporalFails 验证启用的 Temporal 组件故障时优雅降级为 degraded。
+func TestReadinessDegradedWhenTemporalFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logs := &bytes.Buffer{}
+	l := logger.NewWithOptions(
+		logger.WithLevel("debug"),
+		logger.WithChannel("json"),
+		logger.WithWriter(logs),
+	)
+
+	engine := gin.New()
+	svc := system.NewService(system.Deps{
+		Database: stubPinger{},
+		Cache:    stubPinger{},
+		Temporal: stubComponent{driver: "temporal", enabled: true, err: errors.New("temporal connection refused")},
+	})
+	system.RegisterRoutes(engine, system.NewHandler(svc, l))
+
+	status, body := get(t, engine, "/readyz")
+	require.Equal(t, http.StatusOK, status)
+
+	var got system.ReadinessResponse
+	require.NoError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, system.StatusDegraded, got.Status)
+
+	temporalCheck := got.Checks[system.ComponentTemporal]
+	assert.Equal(t, system.CheckDegraded, temporalCheck.Status)
+	assert.Equal(t, "temporal", temporalCheck.Driver)
+	assert.Contains(t, logs.String(), "temporal connection refused")
 }

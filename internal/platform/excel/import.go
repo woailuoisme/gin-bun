@@ -2,6 +2,7 @@ package excel
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 
+	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/samber/oops"
 	"github.com/xuri/excelize/v2"
 
@@ -20,27 +22,33 @@ type importPipeline struct {
 	importObj any
 	cfg       *importConfig
 
-	headers    []string
-	currentRow int
+	headers       []string
+	currentRow    int
+	headingRowIdx int
 
 	toSlice         ToSlice
-	isToSlice       bool
 	elementType     reflect.Type
 	sliceRows       [][]string
 	sliceRowNumbers []int
 
 	toChunk   ToChunk
-	isToChunk bool
 	chunkSize int
 	chunkRows [][]string
 
 	toModel   ToModel
-	isToModel bool
 	batchSize int
 	batch     []any
+	inserter  BatchInserter
 
-	onRow   OnRow
-	isOnRow bool
+	validator      WithValidation
+	onRow          OnRow
+	skipsOnFailure SkipsOnFailure
+	canSkip        bool
+	events         WithEvents
+
+	uniqueCheck   WithUniqueCheck
+	bloomFilter   *bloom.BloomFilter
+	unflushedKeys map[string]struct{}
 }
 
 func newImportPipeline(service *Service, importObj any, cfg *importConfig) *importPipeline {
@@ -50,12 +58,27 @@ func newImportPipeline(service *Service, importObj any, cfg *importConfig) *impo
 		cfg:       cfg,
 	}
 
-	p.toSlice, p.isToSlice = importObj.(ToSlice)
-	p.toModel, p.isToModel = importObj.(ToModel)
-	p.toChunk, p.isToChunk = importObj.(ToChunk)
-	p.onRow, p.isOnRow = importObj.(OnRow)
+	p.toSlice, _ = importObj.(ToSlice)
+	p.toModel, _ = importObj.(ToModel)
+	p.toChunk, _ = importObj.(ToChunk)
+	p.onRow, _ = importObj.(OnRow)
+	p.uniqueCheck, _ = importObj.(WithUniqueCheck)
+	p.skipsOnFailure, _ = importObj.(SkipsOnFailure)
+	p.canSkip = p.skipsOnFailure != nil || (cfg != nil && cfg.skipInvalidRows)
+	p.validator, _ = importObj.(WithValidation)
+	p.inserter, _ = importObj.(BatchInserter)
+	p.events, _ = importObj.(WithEvents)
 
-	if p.isToChunk {
+	p.headingRowIdx = cfg.headerRowIndex
+	if h, ok := importObj.(WithHeadingRow); ok {
+		p.headingRowIdx = h.HeadingRow()
+	}
+
+	if p.uniqueCheck != nil {
+		p.bloomFilter, p.unflushedKeys = initBloomFilter(importObj)
+	}
+
+	if p.toChunk != nil {
 		p.chunkSize = defaultChunkSize
 		if cr, ok := importObj.(WithChunkReading); ok && cr.ChunkSize() > 0 {
 			p.chunkSize = cr.ChunkSize()
@@ -66,7 +89,7 @@ func newImportPipeline(service *Service, importObj any, cfg *importConfig) *impo
 		p.chunkRows = make([][]string, 0, p.chunkSize)
 	}
 
-	if p.isToModel {
+	if p.toModel != nil {
 		p.batchSize = 1
 		if b, ok := importObj.(WithBatchInserts); ok && b.BatchSize() > 0 {
 			p.batchSize = b.BatchSize()
@@ -79,6 +102,18 @@ func newImportPipeline(service *Service, importObj any, cfg *importConfig) *impo
 	}
 
 	return p
+}
+
+func (p *importPipeline) recordFailure(result *ImportResult, failure RowFailure) {
+	p.recordFailureWithCount(result, failure, 1)
+}
+
+func (p *importPipeline) recordFailureWithCount(result *ImportResult, failure RowFailure, count int) {
+	result.Failures = append(result.Failures, failure)
+	result.SkippedCount += count
+	if p.skipsOnFailure != nil {
+		p.skipsOnFailure.OnFailure(failure)
+	}
 }
 
 // Run 执行导入管线，流式解析数据并按契约派发，返回汇总结果与详细失败报告。
@@ -118,15 +153,13 @@ func (p *importPipeline) runMultipleSheets(ctx context.Context, ms WithMultipleS
 		cleanup()
 	}()
 
-	sheetsMap := ms.Sheets()
 	result := &ImportResult{}
-
-	for sheetName, handlerObj := range sheetsMap {
+	for sheetName, handlerObj := range ms.Sheets() {
 		subCfg := *p.cfg
 		subCfg.sheetName = sheetName
 
 		subPipeline := newImportPipeline(p.service, handlerObj, &subCfg)
-		if subPipeline.isToSlice {
+		if subPipeline.toSlice != nil {
 			if err := subPipeline.prepareSliceTarget(); err != nil {
 				return result, err
 			}
@@ -136,19 +169,17 @@ func (p *importPipeline) runMultipleSheets(ctx context.Context, ms WithMultipleS
 		if err != nil {
 			return result, err
 		}
-
-		if subRes != nil {
-			result.TotalRows += subRes.TotalRows
-			result.ImportedCount += subRes.ImportedCount
-			result.SkippedCount += subRes.SkippedCount
-			result.Failures = append(result.Failures, subRes.Failures...)
-		}
+		result.merge(subRes)
 	}
 
 	return result, nil
 }
 
 func (p *importPipeline) runWithFile(ctx context.Context, f *excelize.File, sheetName string) (*ImportResult, error) {
+	if err := p.initPreloadKeys(ctx); err != nil {
+		return nil, err
+	}
+
 	rows, err := f.Rows(sheetName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read sheet %s: %w", sheetName, err)
@@ -180,11 +211,7 @@ func openExcelSafely(r io.Reader, cfg *importConfig, tempDir string) (*excelize.
 		UnzipSizeLimit:    cfg.unzipSizeLimit,
 		UnzipXMLSizeLimit: cfg.unzipXMLSizeLimit,
 	}
-
-	maxLimit := cfg.maxFileSize
-	if maxLimit <= 0 {
-		maxLimit = defaultMaxFileSize
-	}
+	maxLimit := cmp.Or(cfg.maxFileSize, defaultMaxFileSize)
 
 	if file, ok := r.(*os.File); ok {
 		fi, statErr := file.Stat()
@@ -200,11 +227,7 @@ func openExcelSafely(r io.Reader, cfg *importConfig, tempDir string) (*excelize.
 		return f, func() {}, nil
 	}
 
-	threshold := cfg.memorySpoolThreshold
-	if threshold <= 0 {
-		threshold = defaultMemorySpoolThreshold
-	}
-
+	threshold := cmp.Or(cfg.memorySpoolThreshold, defaultMemorySpoolThreshold)
 	limitedReader := io.LimitReader(r, maxLimit+1)
 	buf := make([]byte, threshold+1)
 	n, readErr := io.ReadFull(limitedReader, buf)
@@ -236,47 +259,46 @@ func spoolToDiskAndOpen(initialBuf []byte, remaining io.Reader, maxLimit int64, 
 	if err != nil {
 		return nil, nil, oops.Code(errs.CodeExcelTempFileError).Wrap(err)
 	}
-	cleanup := func() {
-		_ = os.Remove(tmpFile.Name())
-	}
+
+	success := false
+	cleanup := func() { _ = os.Remove(tmpFile.Name()) }
+	defer func() {
+		if !success {
+			_ = tmpFile.Close()
+			cleanup()
+		}
+	}()
 
 	if _, err = tmpFile.Write(initialBuf); err != nil {
-		_ = tmpFile.Close()
-		cleanup()
 		return nil, nil, oops.Code(errs.CodeExcelSpoolWriteError).Wrap(err)
 	}
 
 	written, copyErr := io.Copy(tmpFile, remaining)
 	if copyErr != nil {
-		_ = tmpFile.Close()
-		cleanup()
 		return nil, nil, oops.Code(errs.CodeExcelSpoolCopyError).Wrap(copyErr)
 	}
 
 	totalBytes := int64(len(initialBuf)) + written
 	if totalBytes > maxLimit {
-		_ = tmpFile.Close()
-		cleanup()
 		return nil, nil, oops.Code(errs.CodeExcelFileTooLarge).
 			Errorf("excel stream size exceeds max file size limit of %d bytes", maxLimit)
 	}
 
 	if err = tmpFile.Close(); err != nil {
-		cleanup()
 		return nil, nil, oops.Code(errs.CodeExcelSpoolCloseError).Wrap(err)
 	}
 
 	f, openErr := excelize.OpenFile(tmpFile.Name(), opts)
 	if openErr != nil {
-		cleanup()
 		return nil, nil, oops.Code(errs.CodeExcelOpenError).Wrap(openErr)
 	}
 
+	success = true
 	return f, cleanup, nil
 }
 
 func (p *importPipeline) prepareSliceTarget() error {
-	if !p.isToSlice {
+	if p.toSlice == nil {
 		return nil
 	}
 
@@ -293,44 +315,38 @@ func (p *importPipeline) prepareSliceTarget() error {
 	return nil
 }
 
-func (p *importPipeline) scanRows(ctx context.Context, rows *excelize.Rows, result *ImportResult) error {
-	headingRowIdx := p.cfg.headerRowIndex
-	if h, ok := p.importObj.(WithHeadingRow); ok {
-		headingRowIdx = h.HeadingRow()
+func (p *importPipeline) scanRowColumns(rows *excelize.Rows, result *ImportResult) ([]string, bool, error) {
+	cols, err := rows.Columns()
+	if err == nil {
+		return cols, false, nil
 	}
+	if !p.canSkip {
+		return nil, false, fmt.Errorf("failed to scan row %d: %w", p.currentRow, err)
+	}
+	p.recordFailure(result, RowFailure{
+		Row:   p.currentRow,
+		Error: fmt.Errorf("failed to scan row columns: %w", err),
+	})
+	return nil, true, nil
+}
 
-	skipsOnFailure, hasSkips := p.importObj.(SkipsOnFailure)
-	canSkip := hasSkips || p.cfg.skipInvalidRows
-
+func (p *importPipeline) scanRows(ctx context.Context, rows *excelize.Rows, result *ImportResult) error {
 	for rows.Next() {
 		p.currentRow++
 
-		cols, err := rows.Columns()
+		cols, skipped, err := p.scanRowColumns(rows, result)
 		if err != nil {
-			if canSkip {
-				failure := RowFailure{
-					Row:   p.currentRow,
-					Error: fmt.Errorf("failed to scan row columns: %w", err),
-				}
-				result.Failures = append(result.Failures, failure)
-				result.SkippedCount++
-				if hasSkips {
-					skipsOnFailure.OnFailure(failure)
-				}
-				continue
-			}
-			return fmt.Errorf("failed to scan row %d: %w", p.currentRow, err)
+			return err
 		}
-
-		if len(cols) == 0 || isRowEmpty(cols) {
+		if skipped || len(cols) == 0 || isRowEmpty(cols) {
 			continue
 		}
 
-		if headingRowIdx > 0 && p.currentRow < headingRowIdx {
+		if p.headingRowIdx > 0 && p.currentRow < p.headingRowIdx {
 			continue
 		}
 
-		if headingRowIdx > 0 && p.currentRow == headingRowIdx {
+		if p.headingRowIdx > 0 && p.currentRow == p.headingRowIdx {
 			p.headers = slices.Clone(cols)
 			continue
 		}
@@ -341,6 +357,16 @@ func (p *importPipeline) scanRows(ctx context.Context, rows *excelize.Rows, resu
 
 		result.TotalRows++
 
+		if p.uniqueCheck != nil {
+			isDup, dupErr := p.checkUnique(ctx, cols, result)
+			if dupErr != nil {
+				return dupErr
+			}
+			if isDup {
+				continue
+			}
+		}
+
 		if err = p.processRow(ctx, cols, result); err != nil {
 			return err
 		}
@@ -350,30 +376,22 @@ func (p *importPipeline) scanRows(ctx context.Context, rows *excelize.Rows, resu
 }
 
 func (p *importPipeline) processRow(ctx context.Context, cols []string, result *ImportResult) error {
-	skipsOnFailure, hasSkips := p.importObj.(SkipsOnFailure)
-	canSkip := hasSkips || p.cfg.skipInvalidRows
-
 	switch {
-	case p.isOnRow:
+	case p.onRow != nil:
 		if err := p.onRow.OnRow(cols); err != nil {
-			if canSkip {
-				failure := RowFailure{
+			if p.canSkip {
+				p.recordFailure(result, RowFailure{
 					Row:    p.currentRow,
 					Values: cols,
 					Error:  err,
-				}
-				result.Failures = append(result.Failures, failure)
-				result.SkippedCount++
-				if hasSkips {
-					skipsOnFailure.OnFailure(failure)
-				}
+				})
 				return nil
 			}
 			return fmt.Errorf("failed to process row %d in OnRow: %w", p.currentRow, err)
 		}
 		result.ImportedCount++
 
-	case p.isToChunk:
+	case p.toChunk != nil:
 		p.chunkRows = append(p.chunkRows, cols)
 		if len(p.chunkRows) >= p.chunkSize {
 			if err := p.flushChunk(ctx, result); err != nil {
@@ -381,10 +399,10 @@ func (p *importPipeline) processRow(ctx context.Context, cols []string, result *
 			}
 		}
 
-	case p.isToModel:
+	case p.toModel != nil:
 		return p.processModelRow(ctx, cols, result)
 
-	case p.isToSlice:
+	case p.toSlice != nil:
 		p.sliceRows = append(p.sliceRows, cols)
 		p.sliceRowNumbers = append(p.sliceRowNumbers, p.currentRow)
 	}
@@ -392,38 +410,34 @@ func (p *importPipeline) processRow(ctx context.Context, cols []string, result *
 	if p.cfg.onProgress != nil {
 		p.cfg.onProgress(result.ImportedCount, result.TotalRows)
 	}
-	if ev, ok := p.importObj.(WithEvents); ok {
-		ev.OnProgress(result.ImportedCount, result.TotalRows)
+	if p.events != nil {
+		p.events.OnProgress(result.ImportedCount, result.TotalRows)
 	}
 
 	return nil
 }
 
 func (p *importPipeline) flushChunk(ctx context.Context, result *ImportResult) error {
-	if !p.isToChunk || len(p.chunkRows) == 0 {
+	if p.toChunk == nil || len(p.chunkRows) == 0 {
 		return nil
 	}
 
 	chunkData := p.chunkRows
 	p.chunkRows = make([][]string, 0, p.chunkSize)
 
-	skipsOnFailure, hasSkips := p.importObj.(SkipsOnFailure)
-	canSkip := hasSkips || p.cfg.skipInvalidRows
-
 	if err := p.toChunk.Chunk(ctx, chunkData); err != nil {
-		if canSkip {
-			failure := RowFailure{
+		if p.canSkip {
+			p.recordFailureWithCount(result, RowFailure{
 				Row:   p.currentRow,
 				Error: fmt.Errorf("chunk processing failed: %w", err),
-			}
-			result.Failures = append(result.Failures, failure)
-			result.SkippedCount += len(chunkData)
-			if hasSkips {
-				skipsOnFailure.OnFailure(failure)
-			}
+			}, len(chunkData))
 			return nil
 		}
 		return fmt.Errorf("failed to process chunk at row %d: %w", p.currentRow, err)
+	}
+
+	if len(p.unflushedKeys) > 0 {
+		clear(p.unflushedKeys)
 	}
 
 	result.ImportedCount += len(chunkData)
@@ -431,62 +445,53 @@ func (p *importPipeline) flushChunk(ctx context.Context, result *ImportResult) e
 }
 
 func (p *importPipeline) processModelRow(ctx context.Context, cols []string, result *ImportResult) error {
-	skipsOnFailure, hasSkips := p.importObj.(SkipsOnFailure)
-	canSkip := hasSkips || p.cfg.skipInvalidRows
-
 	model, err := p.toModel.ToModel(cols)
 	if err != nil {
-		if canSkip {
-			failure := RowFailure{
+		if p.canSkip {
+			p.recordFailure(result, RowFailure{
 				Row:    p.currentRow,
 				Values: cols,
 				Error:  err,
-			}
-			result.Failures = append(result.Failures, failure)
-			result.SkippedCount++
-			if hasSkips {
-				skipsOnFailure.OnFailure(failure)
-			}
+			})
 			return nil
 		}
 		return fmt.Errorf("failed to convert row %d to model: %w", p.currentRow, err)
 	}
 
-	valid, valErr := p.validateTarget(model, p.currentRow, cols, result, canSkip, skipsOnFailure)
-	if valErr != nil {
+	valid, valErr := p.validateTarget(model, p.currentRow, cols, result)
+	if valErr != nil || !valid {
 		return valErr
-	}
-	if !valid {
-		return nil
 	}
 
 	p.batch = append(p.batch, model)
 	result.ImportedCount++
 
-	if inserter, ok := p.importObj.(BatchInserter); ok {
-		if len(p.batch) >= p.batchSize {
-			if err = inserter.InsertBatch(ctx, p.batch); err != nil {
-				return fmt.Errorf("failed to insert batch of models: %w", err)
-			}
-			p.batch = nil
-		}
-	}
+	return p.tryFlushBatch(ctx)
+}
 
+func (p *importPipeline) flushBatch(ctx context.Context) error {
+	if p.inserter == nil || len(p.batch) == 0 {
+		return nil
+	}
+	if err := p.inserter.InsertBatch(ctx, p.batch); err != nil {
+		return fmt.Errorf("failed to insert batch of models: %w", err)
+	}
+	p.batch = nil
+	if len(p.unflushedKeys) > 0 {
+		clear(p.unflushedKeys)
+	}
+	return nil
+}
+
+func (p *importPipeline) tryFlushBatch(ctx context.Context) error {
+	if len(p.batch) >= p.batchSize {
+		return p.flushBatch(ctx)
+	}
 	return nil
 }
 
 func (p *importPipeline) flushModels(ctx context.Context) error {
-	if !p.isToModel || len(p.batch) == 0 {
-		return nil
-	}
-
-	if inserter, ok := p.importObj.(BatchInserter); ok {
-		if err := inserter.InsertBatch(ctx, p.batch); err != nil {
-			return fmt.Errorf("failed to flush remaining batch of models: %w", err)
-		}
-	}
-
-	return nil
+	return p.flushBatch(ctx)
 }
 
 func (p *importPipeline) validateTarget(
@@ -494,26 +499,18 @@ func (p *importPipeline) validateTarget(
 	rowNum int,
 	cols []string,
 	result *ImportResult,
-	canSkip bool,
-	skipsOnFailure SkipsOnFailure,
 ) (bool, error) {
-	v, ok := p.importObj.(WithValidation)
-	if !ok {
+	if p.validator == nil {
 		return true, nil
 	}
 
-	if err := v.Validate(target); err != nil {
-		if canSkip {
-			failure := RowFailure{
+	if err := p.validator.Validate(target); err != nil {
+		if p.canSkip {
+			p.recordFailure(result, RowFailure{
 				Row:    rowNum,
 				Values: cols,
 				Error:  err,
-			}
-			result.Failures = append(result.Failures, failure)
-			result.SkippedCount++
-			if skipsOnFailure != nil {
-				skipsOnFailure.OnFailure(failure)
-			}
+			})
 			return false, nil
 		}
 		return false, fmt.Errorf("row %d validation failed: %w", rowNum, err)
@@ -523,7 +520,7 @@ func (p *importPipeline) validateTarget(
 }
 
 func (p *importPipeline) writeSliceTarget(result *ImportResult) error {
-	if !p.isToSlice || len(p.sliceRows) == 0 {
+	if p.toSlice == nil || len(p.sliceRows) == 0 {
 		return nil
 	}
 
@@ -531,32 +528,24 @@ func (p *importPipeline) writeSliceTarget(result *ImportResult) error {
 	isPtrSlice := destVal.Type().Elem().Kind() == reflect.Pointer
 	sliceElements := make([]reflect.Value, 0, len(p.sliceRows))
 
-	skipsOnFailure, hasSkips := p.importObj.(SkipsOnFailure)
-	canSkip := hasSkips || p.cfg.skipInvalidRows
-
 	for idx, row := range p.sliceRows {
 		rowNum := p.sliceRowNumbers[idx]
 		newElemPtr := reflect.New(p.elementType)
 		newElem := newElemPtr.Elem()
 
 		if err := mapRowToStruct(row, p.headers, newElem); err != nil {
-			if canSkip {
-				failure := RowFailure{
+			if p.canSkip {
+				p.recordFailure(result, RowFailure{
 					Row:    rowNum,
 					Values: row,
 					Error:  err,
-				}
-				result.Failures = append(result.Failures, failure)
-				result.SkippedCount++
-				if hasSkips {
-					skipsOnFailure.OnFailure(failure)
-				}
+				})
 				continue
 			}
 			return err
 		}
 
-		valid, valErr := p.validateTarget(newElemPtr.Interface(), rowNum, row, result, canSkip, skipsOnFailure)
+		valid, valErr := p.validateTarget(newElemPtr.Interface(), rowNum, row, result)
 		if valErr != nil {
 			return valErr
 		}
@@ -579,4 +568,97 @@ func (p *importPipeline) writeSliceTarget(result *ImportResult) error {
 
 	destVal.Set(resultSlice)
 	return nil
+}
+
+func (p *importPipeline) initPreloadKeys(ctx context.Context) error {
+	if p.uniqueCheck == nil || p.bloomFilter == nil {
+		return nil
+	}
+
+	if pk, ok := p.importObj.(WithPreloadKeys); ok {
+		keys, err := pk.PreloadKeys(ctx)
+		if err != nil {
+			return oops.Code(errs.CodeExcelReadError).In("excel.PreloadKeys").Wrap(err)
+		}
+		for _, k := range keys {
+			if k != "" {
+				p.bloomFilter.AddString(k)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (p *importPipeline) checkUnique(ctx context.Context, cols []string, result *ImportResult) (bool, error) {
+	if p.uniqueCheck == nil || p.bloomFilter == nil {
+		return false, nil
+	}
+
+	key := p.uniqueCheck.UniqueKey(cols)
+	if key == "" {
+		return false, nil
+	}
+
+	if p.bloomFilter.TestString(key) {
+		isDup, err := p.isKeyDuplicate(ctx, key)
+		if err != nil {
+			return false, err
+		}
+		if isDup {
+			return p.handleDuplicateRow(cols, key, result)
+		}
+	}
+
+	p.bloomFilter.AddString(key)
+	if p.unflushedKeys != nil {
+		p.unflushedKeys[key] = struct{}{}
+	}
+	return false, nil
+}
+
+func (p *importPipeline) isKeyDuplicate(ctx context.Context, key string) (bool, error) {
+	if _, ok := p.unflushedKeys[key]; ok {
+		return true, nil
+	}
+	exists, err := p.uniqueCheck.ExistsDB(ctx, key)
+	if err != nil {
+		return false, oops.Code(errs.CodeExcelReadRowError).
+			In("excel.isKeyDuplicate").
+			Errorf("failed to verify duplicate key %q at row %d: %w", key, p.currentRow, err)
+	}
+	return exists, nil
+}
+
+func (p *importPipeline) handleDuplicateRow(cols []string, key string, result *ImportResult) (bool, error) {
+	dupErr := oops.Code(errs.CodeExcelDuplicateRow).
+		In("excel.handleDuplicateRow").
+		Errorf("duplicate entry for key %q at row %d", key, p.currentRow)
+
+	if !p.canSkip {
+		return true, dupErr
+	}
+
+	p.recordFailure(result, RowFailure{
+		Row:    p.currentRow,
+		Values: cols,
+		Field:  key,
+		Error:  dupErr,
+	})
+	return true, nil
+}
+
+func initBloomFilter(importObj any) (*bloom.BloomFilter, map[string]struct{}) {
+	expectedItems := uint(1_000_000)
+	fpRate := 0.0001
+	if uc, ok := importObj.(WithUniqueConfig); ok {
+		items, rate := uc.UniqueConfig()
+		if items > 0 {
+			expectedItems = items
+		}
+		if rate > 0 && rate < 1 {
+			fpRate = rate
+		}
+	}
+	return bloom.NewWithEstimates(expectedItems, fpRate), make(map[string]struct{})
 }

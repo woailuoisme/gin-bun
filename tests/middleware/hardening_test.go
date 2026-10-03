@@ -34,13 +34,15 @@ func TestSecurityHeaders(t *testing.T) {
 		assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
 		assert.Equal(t, "DENY", rec.Header().Get("X-Frame-Options"))
 		assert.Equal(t, "no-referrer", rec.Header().Get("Referrer-Policy"))
+		assert.Equal(t, "none", rec.Header().Get("X-Permitted-Cross-Domain-Policies"))
+		assert.Equal(t, "camera=(), microphone=(), geolocation=(), payment=()", rec.Header().Get("Permissions-Policy"))
 	})
 
 	t.Run("HSTS 只在生产下发", func(t *testing.T) {
 		// 本地开发走 http：浏览器一旦记住 HSTS，后续 http 请求会被升级成 https 而连不上，
 		// 且这个决定无法靠改服务端撤销。
 		assert.Empty(t, serve(false).Header().Get("Strict-Transport-Security"))
-		assert.NotEmpty(t, serve(true).Header().Get("Strict-Transport-Security"))
+		assert.Equal(t, "max-age=31536000; includeSubDomains; preload", serve(true).Header().Get("Strict-Transport-Security"))
 	})
 }
 

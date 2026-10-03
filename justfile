@@ -30,6 +30,10 @@ run *ARGS:
 work *ARGS:
     go run ./cmd/api queue:work {{ARGS}}
 
+# 直接运行 Temporal 工作流 Worker（just work-temporal -q bgin-tasks）
+work-temporal *ARGS:
+    go run ./cmd/api temporal:work {{ARGS}}
+
 # 运行 CLI（just cli route:list）
 cli *ARGS:
     go run ./cmd/api {{ARGS}}
@@ -100,6 +104,10 @@ alias wrk := bench
 # 应用未执行的 Atlas 迁移
 migrate:
     atlas migrate apply --env app
+
+# 应用未执行的 Atlas 迁移至测试库（bgin_test）
+migrate-test:
+    atlas migrate apply --env test
 
 # 依 schemas/ 声明式 DDL 生成版本迁移
 migrate-diff name:

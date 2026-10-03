@@ -55,7 +55,7 @@ func Open(ctx context.Context, cfg config.DatabaseConfig, applicationName string
 	}
 
 	db := bun.NewDB(sqlDB, pgdialect.New())
-	AddQueryHooks(db, cfg)
+	db = AddQueryHooks(db, cfg)
 	return db, nil
 }
 

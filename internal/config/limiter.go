@@ -4,9 +4,19 @@ import "fmt"
 
 // LimiterConfig 描述请求速率限制配额（每分钟最大请求数，0 为不限制）。
 type LimiterConfig struct {
-	Anonymous     int `mapstructure:"ratelimit_anonymous"`
-	Authenticated int `mapstructure:"ratelimit_authenticated"`
-	Sensitive     int `mapstructure:"ratelimit_sensitive"`
+	Enabled       *bool `mapstructure:"ratelimit_enabled"`
+	Anonymous     int   `mapstructure:"ratelimit_anonymous"`
+	Authenticated int   `mapstructure:"ratelimit_authenticated"`
+	Sensitive     int   `mapstructure:"ratelimit_sensitive"`
+}
+
+// IsEnabled 报告是否全局激活请求速率限制保护。
+// 当显式配置了 *Enabled 时遵循该值；未设置（如代码零值初始化）时默认视为启用 (true)。
+func (l LimiterConfig) IsEnabled() bool {
+	if l.Enabled != nil && !*l.Enabled {
+		return false
+	}
+	return true
 }
 
 // validateLimiter 校验速率限制配额：0 表示显式关闭，负值属于非法配置。

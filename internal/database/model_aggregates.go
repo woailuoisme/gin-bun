@@ -132,7 +132,8 @@ func (q *Query[T]) Get(ctx context.Context) ([]T, error) {
 // Count 统计匹配条件的记录数。
 func (q *Query[T]) Count(ctx context.Context) (int, error) {
 	sel := q.BuildSelect()
-	return sel.Count(ctx)
+	count, err := sel.Count(ctx)
+	return int(count), err
 }
 
 // Exists 判定是否存在满足条件的记录。

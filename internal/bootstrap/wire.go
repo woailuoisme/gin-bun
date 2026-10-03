@@ -7,6 +7,7 @@ import (
 
 	"github.com/dromara/carbon/v2"
 	"github.com/uptrace/bun"
+	"go.temporal.io/sdk/client"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
@@ -38,6 +39,7 @@ import (
 	platformsentry "bgin/internal/platform/sentry"
 	"bgin/internal/platform/storage"
 	"bgin/internal/platform/telemetry"
+	"bgin/internal/platform/temporal"
 	"bgin/internal/platform/wechat"
 	"bgin/internal/shared/media"
 	sharedDatabase "bgin/internal/shared/notification/database"
@@ -194,6 +196,12 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 
 	mediaManager := media.New(cfg.Media, cfg.Storage, disk, db)
 
+	// 初始化 Temporal 工作流客户端与就绪探针适配器
+	temporalClient, temporalPinger, err := initTemporalSubsystem(cfg, log, td)
+	if err != nil {
+		return nil, td.fail(err)
+	}
+
 	// 初始化健康就绪探针 Handler
 	systemHandler := system.NewHandler(
 		system.NewService(system.Deps{
@@ -203,6 +211,8 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 			Search:   searchClient,
 			Realtime: realtimeGateway,
 			Imgproxy: mediaManager.Image(),
+			Mailer:   mailerClient,
+			Temporal: temporalPinger,
 		}),
 		log,
 	)
@@ -263,6 +273,7 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		search:       searchClient,
 		eventbus:     eventBusManager,
 		queue:        queueClient,
+		temporal:     temporalClient,
 		engine:       engine,
 	}, nil
 }
@@ -271,6 +282,8 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 var (
 	_ system.Pinger = (*databasePinger)(nil)
 	_ system.Pinger = (*cache.Client)(nil)
+	_ system.Pinger = (mailer.Mailer)(nil)
+	_ system.Pinger = (*temporal.Pinger)(nil)
 )
 
 // databasePinger 将 *bun.DB 适配为 system.Pinger。
@@ -401,4 +414,20 @@ func initEventSubsystem(cfg *config.Config, log *zap.Logger, locker cache.Locker
 	}
 
 	return eventBusManager, queueClient, nil
+}
+
+// initTemporalSubsystem 按需装配 Temporal 分布式工作流客户端与就绪探针适配器。
+func initTemporalSubsystem(cfg *config.Config, log *zap.Logger, td *teardown) (client.Client, *temporal.Pinger, error) {
+	if !cfg.Temporal.Enabled {
+		return nil, temporal.NewPinger(nil, false), nil
+	}
+	temporalClient, err := temporal.NewClient(cfg.Temporal, log, cfg.Telemetry.Enabled)
+	if err != nil {
+		return nil, nil, err
+	}
+	td.add(func() error {
+		temporalClient.Close()
+		return nil
+	})
+	return temporalClient, temporal.NewPinger(temporalClient, true), nil
 }

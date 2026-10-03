@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,6 +99,33 @@ func (m *mailpitMailer) Close() error {
 		return m.client.Close()
 	}
 	return nil
+}
+
+// Ping 检查与 Mailpit SMTP 服务的网络连通性。
+func (m *mailpitMailer) Ping(ctx context.Context) error {
+	if m.client == nil {
+		return errors.New("mailpit client is not initialized")
+	}
+	host := cmp.Or(strings.TrimSpace(m.cfg.Mailpit.Host), "127.0.0.1")
+	port := cmp.Or(m.cfg.Mailpit.Port, 1025)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("mailpit: tcp dial %s failed: %w", addr, err)
+	}
+	_ = conn.Close()
+	return nil
+}
+
+// Driver 返回底层驱动标识。
+func (m *mailpitMailer) Driver() string {
+	return "mailpit"
+}
+
+// Enabled 报告 Mailpit 驱动是否启用。
+func (m *mailpitMailer) Enabled() bool {
+	return m.cfg.IsEnabled()
 }
 
 // buildMessage 将 Message 结构转换为 gomail.Msg 实例。

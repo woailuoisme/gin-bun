@@ -340,6 +340,7 @@ Location: /{version}/tasks/<taskId>
 | `EXCEL_MAP_ERROR`           |  422   | 行数据无法映射到目标字段类型                         |
 | `EXCEL_ROWS_ERROR`          |  422   | 工作表行结构不合法（如缺少表头行）                   |
 | `EXCEL_READ_ROW_ERROR`      |  422   | 逐行读取时该行内容不合法                             |
+| `EXCEL_DUPLICATE_ROW`       |  409   | 导入数据行存在重复键（文件内重复或数据库已存在）     |
 | `EMPTY_SHEETS`              |  400   | 工作簿内没有任何可导入的工作表                       |
 | `CSV_READ_ERROR`            |  400   | CSV 输入流不合法或无法读取                           |
 | `NOTIFICATION_MISSING_RECIPIENT`    |  400   | 通知未指定接收方实体                         |

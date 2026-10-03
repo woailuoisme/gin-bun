@@ -77,9 +77,12 @@ func (h *ZapQueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 }
 
 // AddQueryHooks 为 bun.DB 挂载基于 zap 的统一结构化日志与慢查询监控钩子，以及 OpenTelemetry 链路追踪钩子。
-func AddQueryHooks(db *bun.DB, cfg config.DatabaseConfig) {
-	db.AddQueryHook(NewOTelQueryHook())
-	db.AddQueryHook(NewZapQueryHook(cfg.SlowThreshold, cfg.Debug))
+func AddQueryHooks(db *bun.DB, cfg config.DatabaseConfig) *bun.DB {
+	if db == nil {
+		return nil
+	}
+	return db.WithQueryHook(NewOTelQueryHook()).
+		WithQueryHook(NewZapQueryHook(cfg.SlowThreshold, cfg.Debug))
 }
 
 // isActionableDBError 判断数据库错误是否为需要记录与追踪的非预期故障（排除记录未命中与正常事务控制状态）。

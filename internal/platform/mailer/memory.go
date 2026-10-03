@@ -63,6 +63,26 @@ func (m *MemoryMailer) Close() error {
 	return nil
 }
 
+// Ping 检查内存发信器可用性。
+func (m *MemoryMailer) Ping(ctx context.Context) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return errors.New("mailer: memory mailer is closed")
+	}
+	return ctx.Err()
+}
+
+// Driver 返回内存发信驱动标识。
+func (m *MemoryMailer) Driver() string {
+	return "memory"
+}
+
+// Enabled 报告内存发信驱动处于启用状态。
+func (m *MemoryMailer) Enabled() bool {
+	return true
+}
+
 // SentMessages 获取已发送的所有邮件副本。
 func (m *MemoryMailer) SentMessages() []Message {
 	m.mu.RLock()

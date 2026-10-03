@@ -499,7 +499,7 @@ func (q *Query[T]) InRandomOrder() *Query[T] {
 // Offset 设置偏移量。
 func (q *Query[T]) Offset(offset int) *Query[T] {
 	if offset > 0 {
-		q.sel = q.sel.Offset(offset)
+		q.sel = q.sel.Offset(int64(offset))
 	}
 	return q
 }
@@ -507,7 +507,7 @@ func (q *Query[T]) Offset(offset int) *Query[T] {
 // Limit 设置每页数量。
 func (q *Query[T]) Limit(limit int) *Query[T] {
 	if limit > 0 {
-		q.sel = q.sel.Limit(limit)
+		q.sel = q.sel.Limit(int64(limit))
 	}
 	return q
 }

@@ -9,8 +9,6 @@
 package middleware
 
 import (
-	"sync"
-
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
@@ -41,9 +39,6 @@ type Middleware struct {
 	logger       *zap.Logger
 	limiter      config.LimiterConfig
 	signingKey   string
-
-	limitersMu sync.RWMutex
-	limiters   map[string]LimiterResolver
 }
 
 // New 构造路由中间件实例。
@@ -56,7 +51,6 @@ func New(deps Deps) *Middleware {
 		logger:      deps.Logger,
 		limiter:     deps.Limiter,
 		signingKey:  deps.SigningKey,
-		limiters:    make(map[string]LimiterResolver),
 	}
 }
 

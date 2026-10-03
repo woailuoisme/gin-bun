@@ -121,6 +121,9 @@ func TestAddQueryHooks(t *testing.T) {
 	}
 
 	assert.NotPanics(t, func() {
-		database.AddQueryHooks(db, cfg)
+		db = database.AddQueryHooks(db, cfg)
 	})
+	assert.NotNil(t, db)
+
+	assert.Nil(t, database.AddQueryHooks(nil, cfg))
 }
