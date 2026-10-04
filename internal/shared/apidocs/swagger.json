@@ -1096,18 +1096,23 @@
                 "displayUsername": {
                     "description": "用户显示名称",
                     "type": "string",
+                    "maxLength": 120,
+                    "minLength": 1,
                     "x-nullable": true,
                     "example": "Alex Mercer"
                 },
                 "image": {
                     "description": "用户头像 URL",
                     "type": "string",
+                    "maxLength": 2048,
                     "x-nullable": true,
                     "example": "https://example.com/avatar.png"
                 },
                 "name": {
                     "description": "用户展示昵称",
                     "type": "string",
+                    "maxLength": 120,
+                    "minLength": 1,
                     "x-nullable": true,
                     "example": "Alex Mercer"
                 },
@@ -1120,6 +1125,8 @@
                 "username": {
                     "description": "唯一登录用户名 (3-30位)",
                     "type": "string",
+                    "maxLength": 30,
+                    "minLength": 3,
                     "x-nullable": true,
                     "example": "alexmercer"
                 }
