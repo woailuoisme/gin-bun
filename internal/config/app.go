@@ -44,9 +44,6 @@ type HTTPServerConfig struct {
 
 // Location 返回配置的时区 *time.Location，未设置或解析失败时回退至 time.UTC。
 func (a *AppConfig) Location() *time.Location {
-	if a.Timezone == "" {
-		return time.UTC
-	}
 	if loc, err := time.LoadLocation(a.Timezone); err == nil {
 		return loc
 	}

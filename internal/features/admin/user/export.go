@@ -24,8 +24,27 @@ func (f UserFetchFunc) List(ctx context.Context, filter user.ListFilter, offset,
 	return f(ctx, filter, offset, limit)
 }
 
+// userExportMetadata 提供用户 Excel 导出的通用表头、行映射与表名。
+type userExportMetadata struct{}
+
+// Headings 定义 Excel 导出表头。
+func (userExportMetadata) Headings() []string {
+	return slices.Clone(defaultUserHeadings)
+}
+
+// Mapping 将单条 User 实体映射为单元格数据行。
+func (userExportMetadata) Mapping(row any) []any {
+	return mapUserRow(row)
+}
+
+// Title 定义 Excel 工作表名称。
+func (userExportMetadata) Title() string {
+	return "Users"
+}
+
 // UsersExport 封装用户数据列表导出为 Excel 文件的声明与格式化映射。
 type UsersExport struct {
+	userExportMetadata
 	users []*models.User
 }
 
@@ -41,30 +60,20 @@ func (e *UsersExport) FromSlice() any {
 	return slices.Clone(e.users)
 }
 
-// Headings 定义 Excel 导出表头。
-func (e *UsersExport) Headings() []string {
-	return slices.Clone(defaultUserHeadings)
-}
-
-// Mapping 将单条 User 实体映射为单元格数据行。
-func (e *UsersExport) Mapping(row any) []any {
-	return mapUserRow(row)
-}
-
-// Title 定义 Excel 工作表名称。
-func (e *UsersExport) Title() string {
-	return "Users"
-}
-
 // defaultUserHeadings 用户导出默认表头定义。
 var defaultUserHeadings = []string{"ID", "Name", "Email", "Role", "Status", "Created At"}
 
+func userExportOptions(opts []excel.ExportOption) []excel.ExportOption {
+	return append([]excel.ExportOption{excel.WithSheetName("Users")}, opts...)
+}
+
+func mapUserModel(u *models.User) []any {
+	return mapUserRow(u)
+}
+
 // ExportStream 辅助函数：将用户切片直接流式序列化并写入指定的 io.Writer。
 func ExportStream(ctx context.Context, w io.Writer, users []*models.User, opts ...excel.ExportOption) error {
-	exportOpts := append([]excel.ExportOption{excel.WithSheetName("Users")}, opts...)
-	return excel.ExportSlice(ctx, w, users, defaultUserHeadings, func(u *models.User) []any {
-		return mapUserRow(u)
-	}, exportOpts...)
+	return excel.ExportSlice(ctx, w, users, defaultUserHeadings, mapUserModel, userExportOptions(opts)...)
 }
 
 const defaultUserChunkSize = 500
@@ -72,6 +81,7 @@ const defaultUserChunkSize = 500
 // UsersChunkedExport 封装基于物理分页查询的用户批量流式导出器，严格实现 excel.FromChunkedQuery。
 // 借助 StreamWriter 与分批数据库拉取，保证在海量用户导出场景下内存维持常数阶 O(1)，杜绝 OOM。
 type UsersChunkedExport struct {
+	userExportMetadata
 	fetcher   UserFetcher
 	filter    user.ListFilter
 	chunkSize int
@@ -101,11 +111,8 @@ func (e *UsersChunkedExport) FetchChunk(ctx context.Context, offset int, limit i
 		return nil, nil
 	}
 	users, err := e.fetcher.List(ctx, e.filter, offset, limit)
-	if err != nil {
+	if err != nil || len(users) == 0 {
 		return nil, err
-	}
-	if len(users) == 0 {
-		return nil, nil
 	}
 
 	rows := make([]any, len(users))
@@ -113,21 +120,6 @@ func (e *UsersChunkedExport) FetchChunk(ctx context.Context, offset int, limit i
 		rows[i] = &users[i]
 	}
 	return rows, nil
-}
-
-// Headings 定义 Excel 导出表头。
-func (e *UsersChunkedExport) Headings() []string {
-	return slices.Clone(defaultUserHeadings)
-}
-
-// Mapping 将单条 User 实体映射为单元格数据行。
-func (e *UsersChunkedExport) Mapping(row any) []any {
-	return mapUserRow(row)
-}
-
-// Title 定义 Excel 工作表名称。
-func (e *UsersChunkedExport) Title() string {
-	return "Users"
 }
 
 // ExportChunkedStream 辅助函数：将查询条件分块物理拉取并直接流式序列化写入指定的 io.Writer。
@@ -139,12 +131,9 @@ func ExportChunkedStream(
 	opts ...excel.ExportOption,
 ) error {
 	size := defaultUserChunkSize
-	exportOpts := append([]excel.ExportOption{excel.WithSheetName("Users")}, opts...)
 	return excel.NewExportBuilder[*models.User]().
 		WithHeadings(defaultUserHeadings...).
-		WithMapping(func(u *models.User) []any {
-			return mapUserRow(u)
-		}).
+		WithMapping(mapUserModel).
 		FromGenerator(func(yield func(item *models.User) bool) error {
 			if fetcher == nil {
 				return nil
@@ -170,7 +159,7 @@ func ExportChunkedStream(
 			}
 			return nil
 		}).
-		WithOptions(exportOpts...).
+		WithOptions(userExportOptions(opts)...).
 		Write(ctx, w)
 }
 

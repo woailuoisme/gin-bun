@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/samber/lo"
 	"github.com/samber/oops"
 	"github.com/xuri/excelize/v2"
 
@@ -639,11 +640,9 @@ func (p *exportPipeline) writeCSVFromSlice(
 }
 
 func (p *exportPipeline) formatCSVRecord(cols []any) []string {
-	record := make([]string, len(cols))
-	for idx, col := range cols {
-		record[idx] = fmt.Sprintf("%v", formatValueWithOptions(col, p.cfg.sanitizeFormulas))
-	}
-	return record
+	return lo.Map(cols, func(col any, _ int) string {
+		return fmt.Sprintf("%v", formatValueWithOptions(col, p.cfg.sanitizeFormulas))
+	})
 }
 
 var errDBUnavailable = errors.New("database connection is not available in excel service")

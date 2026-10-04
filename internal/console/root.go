@@ -65,15 +65,9 @@ func NewRootCommandWithFactory(f Factory) *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if streams := f.IOStreams(); streams != nil {
-				if out := cmd.OutOrStdout(); out != nil {
-					streams.Out = out
-				}
-				if errOut := cmd.ErrOrStderr(); errOut != nil {
-					streams.ErrOut = errOut
-				}
-				if in := cmd.InOrStdin(); in != nil {
-					streams.In = in
-				}
+				streams.Out = cmd.OutOrStdout()
+				streams.ErrOut = cmd.ErrOrStderr()
+				streams.In = cmd.InOrStdin()
 			}
 
 			cfg, err := config.Load()

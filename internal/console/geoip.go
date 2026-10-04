@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"bgin/internal/console/core"
+	"bgin/internal/platform/resilience"
 )
 
 // 预设官方源与国内高可用加速镜像源列表。
@@ -45,13 +46,14 @@ func NewGeoIPUpdateOptions(f Factory) *GeoIPUpdateOptions {
 
 // Complete 从配置与默认值解析并补全路径。
 func (o *GeoIPUpdateOptions) Complete(_ *cobra.Command, _ []string) error {
-	if o.Path == "" {
-		if cfg, err := o.Factory.Config(); err == nil && cfg != nil && cfg.GeoIP.DBPath != "" {
-			o.Path = cfg.GeoIP.DBPath
-		} else {
-			o.Path = defaultGeoIPDBPath
-		}
+	if o.Path != "" {
+		return nil
 	}
+	if cfg, err := o.Factory.Config(); err == nil && cfg != nil && cfg.GeoIP.DBPath != "" {
+		o.Path = cfg.GeoIP.DBPath
+		return nil
+	}
+	o.Path = defaultGeoIPDBPath
 	return nil
 }
 
@@ -100,7 +102,7 @@ func (o *GeoIPUpdateOptions) Run(ctx context.Context) error {
 
 	client := o.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 90 * time.Second}
+		client = resilience.NewResilientHTTPClient(resilience.ResilientTransportConfig{Timeout: 90 * time.Second})
 	}
 
 	var downloadErr error

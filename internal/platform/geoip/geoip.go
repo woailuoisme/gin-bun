@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/lionsoul2014/ip2region/binding/golang/xdb"
+	"github.com/samber/lo"
 	"go.uber.org/zap"
 
 	"bgin/internal/config"
@@ -96,10 +97,7 @@ func classifyAddr(addr netip.Addr) (addrKind, error) {
 }
 
 func resolveDBPath(defaultPath string, overrides ...string) string {
-	if len(overrides) > 0 {
-		return cmp.Or(strings.TrimSpace(overrides[0]), defaultPath)
-	}
-	return defaultPath
+	return cmp.Or(strings.TrimSpace(lo.FirstOrEmpty(overrides)), defaultPath)
 }
 
 // FormatOption 配置归属地文本输出格式的函数式选项。
@@ -181,10 +179,7 @@ func ParseRaw(raw string) Location {
 
 func sanitizePart(s string) string {
 	s = strings.TrimSpace(s)
-	if s == "0" {
-		return ""
-	}
-	return s
+	return lo.Ternary(s == "0", "", s)
 }
 
 // Provider 定义 IP 物理地理归属地检索驱动规范，遵循依赖倒置与开闭原则。
@@ -222,9 +217,7 @@ type xdbEngine struct {
 }
 
 func newEngine(dbPath string, cBuff []byte, log *zap.Logger) (*xdbEngine, error) {
-	if log == nil {
-		log = zap.NewNop()
-	}
+	log = cmp.Or(log, zap.NewNop())
 
 	header, err := xdb.LoadHeaderFromBuff(cBuff)
 	if err != nil {
@@ -334,10 +327,7 @@ type defaultService struct {
 var _ Service = (*defaultService)(nil)
 
 func (s *defaultService) getLogger() *zap.Logger {
-	if s.log != nil {
-		return s.log
-	}
-	return zap.NewNop()
+	return cmp.Or(s.log, zap.NewNop())
 }
 
 // LookupCtx 解析指定 IP 字符串并返回结构化归属地数据（带 Context 传播与超时控制）。
@@ -422,10 +412,7 @@ func (s *defaultService) Close() {
 
 // NewNoop 创建安全的降级空实现。
 func NewNoop() Service {
-	var p Provider = &noopProvider{}
-	svc := &defaultService{log: zap.NewNop()}
-	svc.provider.Store(&p)
-	return svc
+	return NewWithProvider(&noopProvider{})
 }
 
 // NewWithProvider 允许外部显式注入自定义 Provider 构建服务。
@@ -437,12 +424,7 @@ func NewWithProvider(p Provider) Service {
 
 // NewService 根据配置构建 GeoIP 服务实例。若数据库文件缺失则自动启用安全降级。
 func NewService(cfg config.GeoIPConfig, log ...*zap.Logger) (Service, error) {
-	var l *zap.Logger
-	if len(log) > 0 && log[0] != nil {
-		l = log[0]
-	} else {
-		l = zap.NewNop()
-	}
+	l := cmp.Or(lo.FirstOrEmpty(log), zap.NewNop())
 
 	if !cfg.Enabled {
 		return NewNoop(), nil

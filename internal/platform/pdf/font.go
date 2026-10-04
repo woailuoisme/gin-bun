@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"bytes"
+	"cmp"
 	"os"
 	"path/filepath"
 
@@ -52,9 +53,7 @@ func NewCustomFontFromBytes(family string, style fontstyle.Type, data []byte) en
 
 // ResolveFontConfig 解析并加载字体配置，支持本地文件、内存字节与自动回退。
 func ResolveFontConfig(fontPath, fontFamily string, log *zap.Logger) ([]entity.CustomFont, string) {
-	if fontFamily == "" {
-		fontFamily = "SourceHanSans"
-	}
+	fontFamily = cmp.Or(fontFamily, "SourceHanSans")
 
 	if fontPath == "" {
 		return nil, fontfamily.Helvetica

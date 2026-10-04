@@ -1,10 +1,13 @@
 package authentication
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/samber/lo"
 )
 
 // ErrGuardNotFound 表示未找到请求的 Guard。
@@ -50,10 +53,7 @@ func (m *Manager) Register(name string, guard StatefulGuard) *Manager {
 	if guard == nil {
 		return m
 	}
-	key := strings.TrimSpace(name)
-	if key == "" {
-		key = "default"
-	}
+	key := cmp.Or(strings.TrimSpace(name), "default")
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -69,10 +69,7 @@ func (m *Manager) Extend(name string, creator GuardCreator) *Manager {
 	if creator == nil {
 		return m
 	}
-	key := strings.TrimSpace(name)
-	if key == "" {
-		key = "default"
-	}
+	key := cmp.Or(strings.TrimSpace(name), "default")
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -159,25 +156,13 @@ func (m *Manager) Names() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	set := make(map[string]struct{}, len(m.guards)+len(m.creators))
-	for k := range m.guards {
-		set[k] = struct{}{}
-	}
-	for k := range m.creators {
-		set[k] = struct{}{}
-	}
-
-	names := make([]string, 0, len(set))
-	for k := range set {
-		names = append(names, k)
-	}
-	return names
+	return lo.Union(lo.Keys(m.guards), lo.Keys(m.creators))
 }
 
 // resolveTarget 计算实际检索目标 Guard 的名称。
 func (m *Manager) resolveTarget(name ...string) string {
-	if len(name) > 0 && strings.TrimSpace(name[0]) != "" {
-		return strings.TrimSpace(name[0])
+	if target := strings.TrimSpace(lo.FirstOrEmpty(name)); target != "" {
+		return target
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()

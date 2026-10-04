@@ -1,6 +1,7 @@
 package mailer
 
 import (
+	"cmp"
 	"context"
 
 	"go.uber.org/zap"
@@ -15,10 +16,7 @@ var _ Mailer = (*LogMailer)(nil)
 
 // NewLogMailer 创建结构化日志邮件器实例。
 func NewLogMailer(log *zap.Logger) *LogMailer {
-	if log == nil {
-		log = zap.NewNop()
-	}
-	return &LogMailer{log: log}
+	return &LogMailer{log: cmp.Or(log, zap.NewNop())}
 }
 
 // Send 将邮件元数据与正文以结构化日志格式输出。

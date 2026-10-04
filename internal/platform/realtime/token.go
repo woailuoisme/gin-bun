@@ -76,19 +76,10 @@ func ValidateConnectionToken(secret, tokenStr string) (*ConnectionTokenClaims, e
 		return nil, errors.New("invalid connection token")
 	}
 
-	var exp time.Time
-	if claims.ExpiresAt != nil {
-		exp = claims.ExpiresAt.Time
-	}
-	var iat time.Time
-	if claims.IssuedAt != nil {
-		iat = claims.IssuedAt.Time
-	}
-
 	return &ConnectionTokenClaims{
 		Subject:   claims.Subject,
-		ExpiresAt: exp,
-		IssuedAt:  iat,
+		ExpiresAt: numericDateToTime(claims.ExpiresAt),
+		IssuedAt:  numericDateToTime(claims.IssuedAt),
 		Info:      claims.Info,
 		Meta:      claims.Meta,
 		Channels:  claims.Channels,
@@ -194,24 +185,22 @@ func ValidateSubscriptionToken(secret, tokenStr string) (*SubscriptionTokenClaim
 		return nil, errors.New("invalid subscription token")
 	}
 
-	var exp time.Time
-	if claims.ExpiresAt != nil {
-		exp = claims.ExpiresAt.Time
-	}
-	var iat time.Time
-	if claims.IssuedAt != nil {
-		iat = claims.IssuedAt.Time
-	}
-
 	return &SubscriptionTokenClaims{
 		Subject:   claims.Subject,
 		Channel:   claims.Channel,
 		Client:    claims.Client,
-		ExpiresAt: exp,
-		IssuedAt:  iat,
+		ExpiresAt: numericDateToTime(claims.ExpiresAt),
+		IssuedAt:  numericDateToTime(claims.IssuedAt),
 		Info:      claims.Info,
 		Meta:      claims.Meta,
 	}, nil
+}
+
+func numericDateToTime(nd *jwt.NumericDate) time.Time {
+	if nd != nil {
+		return nd.Time
+	}
+	return time.Time{}
 }
 
 func hmacKeyFunc(secret string) jwt.Keyfunc {

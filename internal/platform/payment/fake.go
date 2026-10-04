@@ -162,11 +162,8 @@ func (f *FakeProvider) Created() []CreateRequest {
 func (f *FakeProvider) LastCreated() (CreateRequest, bool) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	if len(f.createdRequests) == 0 {
-		return CreateRequest{}, false
-	}
 
-	return f.createdRequests[len(f.createdRequests)-1], true
+	return lo.Last(f.createdRequests)
 }
 
 // Closed 返回全部关单请求的副本。

@@ -88,10 +88,7 @@ func NewRedisLocker(cfg config.CacheConfig, opts ...func(*rueidislock.LockerOpti
 func (r *RedisLocker) Lock(ctx context.Context, name string) (context.Context, context.CancelFunc, error) {
 	lockedCtx, cancel, err := r.inner.WithContext(ctx, name)
 	if err != nil {
-		if errors.Is(err, rueidislock.ErrLockerClosed) {
-			return nil, nil, ErrLockerClosed
-		}
-		return nil, nil, err
+		return nil, nil, mapLockerError(err)
 	}
 	return lockedCtx, cancel, nil
 }
@@ -100,15 +97,20 @@ func (r *RedisLocker) Lock(ctx context.Context, name string) (context.Context, c
 func (r *RedisLocker) TryLock(ctx context.Context, name string) (context.Context, context.CancelFunc, error) {
 	lockedCtx, cancel, err := r.inner.TryWithContext(ctx, name)
 	if err != nil {
-		if errors.Is(err, rueidislock.ErrNotLocked) {
-			return nil, nil, ErrNotLocked
-		}
-		if errors.Is(err, rueidislock.ErrLockerClosed) {
-			return nil, nil, ErrLockerClosed
-		}
-		return nil, nil, err
+		return nil, nil, mapLockerError(err)
 	}
 	return lockedCtx, cancel, nil
+}
+
+func mapLockerError(err error) error {
+	switch {
+	case errors.Is(err, rueidislock.ErrNotLocked):
+		return ErrNotLocked
+	case errors.Is(err, rueidislock.ErrLockerClosed):
+		return ErrLockerClosed
+	default:
+		return err
+	}
 }
 
 // Close 关闭底层 rueidis 客户端。
@@ -131,12 +133,11 @@ func NewMemoryLocker() *MemoryLocker {
 	}
 }
 
-// Lock 阻塞等待并获取指定名称的内存锁。
-func (m *MemoryLocker) Lock(ctx context.Context, name string) (context.Context, context.CancelFunc, error) {
+func (m *MemoryLocker) getLockChan(name string) (chan struct{}, error) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.closed {
-		m.mu.Unlock()
-		return nil, nil, ErrLockerClosed
+		return nil, ErrLockerClosed
 	}
 	ch, ok := m.locks[name]
 	if !ok {
@@ -144,51 +145,49 @@ func (m *MemoryLocker) Lock(ctx context.Context, name string) (context.Context, 
 		ch <- struct{}{}
 		m.locks[name] = ch
 	}
-	m.mu.Unlock()
+	return ch, nil
+}
+
+func makeLockerRelease(ctx context.Context, ch chan struct{}) (context.Context, context.CancelFunc) {
+	lockedCtx, cancel := context.WithCancel(ctx)
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			cancel()
+			ch <- struct{}{}
+		})
+	}
+	return lockedCtx, release
+}
+
+// Lock 阻塞等待并获取指定名称的内存锁。
+func (m *MemoryLocker) Lock(ctx context.Context, name string) (context.Context, context.CancelFunc, error) {
+	ch, err := m.getLockChan(name)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	select {
 	case <-ctx.Done():
 		return nil, nil, ctx.Err()
 	case <-ch:
-		lockedCtx, cancel := context.WithCancel(ctx)
-		var once sync.Once
-		release := func() {
-			once.Do(func() {
-				cancel()
-				ch <- struct{}{}
-			})
-		}
+		lockedCtx, release := makeLockerRelease(ctx, ch)
 		return lockedCtx, release, nil
 	}
 }
 
 // TryLock 尝试非阻塞获取内存锁。
 func (m *MemoryLocker) TryLock(ctx context.Context, name string) (context.Context, context.CancelFunc, error) {
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return nil, nil, ErrLockerClosed
+	ch, err := m.getLockChan(name)
+	if err != nil {
+		return nil, nil, err
 	}
-	ch, ok := m.locks[name]
-	if !ok {
-		ch = make(chan struct{}, 1)
-		ch <- struct{}{}
-		m.locks[name] = ch
-	}
-	m.mu.Unlock()
 
 	select {
 	case <-ctx.Done():
 		return nil, nil, ctx.Err()
 	case <-ch:
-		lockedCtx, cancel := context.WithCancel(ctx)
-		var once sync.Once
-		release := func() {
-			once.Do(func() {
-				cancel()
-				ch <- struct{}{}
-			})
-		}
+		lockedCtx, release := makeLockerRelease(ctx, ch)
 		return lockedCtx, release, nil
 	default:
 		return nil, nil, ErrNotLocked

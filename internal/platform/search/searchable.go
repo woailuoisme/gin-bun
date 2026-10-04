@@ -48,16 +48,11 @@ func RegisterModel(name, indexName string, importer BatchImporter, counter ...Re
 	registryMu.Lock()
 	defer registryMu.Unlock()
 
-	var cnt RecordCounter
-	if len(counter) > 0 {
-		cnt = counter[0]
-	}
-
 	desc := ModelDescriptor{
 		Name:      strings.ToLower(strings.TrimSpace(name)),
 		IndexName: strings.ToLower(strings.TrimSpace(indexName)),
 		Importer:  importer,
-		Counter:   cnt,
+		Counter:   lo.FirstOrEmpty(counter),
 	}
 
 	descriptors[desc.Name] = desc

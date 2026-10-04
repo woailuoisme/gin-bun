@@ -1,6 +1,8 @@
 package temporal
 
 import (
+	"cmp"
+
 	temporalLog "go.temporal.io/sdk/log"
 	"go.uber.org/zap"
 )
@@ -12,11 +14,8 @@ type zapAdapter struct {
 
 // NewZapAdapter 构造适配 Temporal SDK 的 Zap 日志记录器。
 func NewZapAdapter(logger *zap.Logger) temporalLog.Logger {
-	if logger == nil {
-		logger = zap.NewNop()
-	}
 	return &zapAdapter{
-		logger: logger.Named("temporal").Sugar(),
+		logger: cmp.Or(logger, zap.NewNop()).Named("temporal").Sugar(),
 	}
 }
 

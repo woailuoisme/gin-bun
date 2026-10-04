@@ -2,6 +2,7 @@
 package logger
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samber/lo"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/buffer"
@@ -253,12 +255,7 @@ func NewWithOptions(opts ...Option) *zap.Logger {
 
 	level := parseZapLevel(opt.Level)
 
-	var ws zapcore.WriteSyncer
-	if opt.Writer != nil {
-		ws = zapcore.AddSync(opt.Writer)
-	} else {
-		ws = zapcore.AddSync(os.Stdout)
-	}
+	ws := zapcore.AddSync(cmp.Or[io.Writer](opt.Writer, os.Stdout))
 
 	encoder := buildEncoder(opt)
 	core := zapcore.NewCore(encoder, ws, level)
@@ -341,11 +338,7 @@ func buildConsoleEncoder(opt Options) zapcore.Encoder {
 		shouldColor = !*opt.NoColor
 	}
 
-	if shouldColor {
-		encCfg.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	} else {
-		encCfg.EncodeLevel = zapcore.CapitalLevelEncoder
-	}
+	encCfg.EncodeLevel = lo.Ternary(shouldColor, zapcore.CapitalColorLevelEncoder, zapcore.CapitalLevelEncoder)
 	return newPrettyConsoleEncoder(encCfg, shouldColor)
 }
 
@@ -477,9 +470,7 @@ func isTerminal() bool {
 
 // WithContext 将日志器与请求标识注入 context，若存在活跃 OpenTelemetry Span 则自动同步注入 trace_id 与 span_id。
 func WithContext(ctx context.Context, l *zap.Logger, requestID string) context.Context {
-	if l == nil {
-		l = defaultLog()
-	}
+	l = cmp.Or(l, defaultLog())
 
 	fields := make([]zap.Field, 0, 3)
 	if requestID != "" {

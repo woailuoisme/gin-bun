@@ -347,13 +347,13 @@ func parseOptionalTimeHM(at ...string) (hour, min int, ok bool) {
 // parseTimeHM 解析 "HH:MM" 格式的时间字符串。
 // ok=false 表示格式非法或越界——调用方必须据此拒绝该调度，而不是退化成 00:00。
 func parseTimeHM(timeStr string) (hour, min int, ok bool) {
-	parts := strings.Split(strings.TrimSpace(timeStr), ":")
-	if len(parts) != 2 {
+	hStr, mStr, found := strings.Cut(strings.TrimSpace(timeStr), ":")
+	if !found {
 		return 0, 0, false
 	}
 
-	parsedHour, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
-	parsedMin, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+	parsedHour, err1 := strconv.Atoi(strings.TrimSpace(hStr))
+	parsedMin, err2 := strconv.Atoi(strings.TrimSpace(mStr))
 	if err1 != nil || err2 != nil || parsedHour < 0 || parsedHour > 23 || parsedMin < 0 || parsedMin > 59 {
 		return 0, 0, false
 	}

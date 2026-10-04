@@ -48,9 +48,13 @@ func NewService(deps Deps) *Service {
 	}
 }
 
+func (s *Service) isEnabled() bool {
+	return s != nil && s.gateway != nil && s.cfg != nil && s.cfg.Realtime.Enabled
+}
+
 // IssueToken 为指定用户签发直连 Centrifugo (WSS/SSE) 所需的 JWT 凭据。
 func (s *Service) IssueToken(ctx context.Context, userID, role string) (*TokenResource, error) {
-	if s.gateway == nil || s.cfg == nil || !s.cfg.Realtime.Enabled {
+	if !s.isEnabled() {
 		return nil, errs.BadRequest("Realtime service is disabled")
 	}
 
@@ -96,30 +100,26 @@ func (s *Service) AuthorizeSubscribe(
 		return nil, errs.BadRequest("Invalid JSON payload")
 	}
 
-	if s.gateway == nil || s.cfg == nil || !s.cfg.Realtime.Enabled {
-		return &platformRealtime.SubscribeResponse{
-			Error: &platformRealtime.ProxyError{
-				Code:    platformRealtime.ProxyErrorCodeInternalError,
-				Message: "Realtime service is disabled",
-			},
-		}, nil
+	if !s.isEnabled() {
+		return proxyError(platformRealtime.ProxyErrorCodeInternalError, "Realtime service is disabled"), nil
 	}
 
-	user := platformRealtime.User{
-		ID: req.User,
-	}
-
+	user := platformRealtime.User{ID: req.User}
 	if err := s.gateway.Registry().Authorize(ctx, user, req.Channel); err != nil {
 		// 订阅被拒按 Centrifugo 协议是 200 响应内的 error 字段，Go 层不构成错误
-		return &platformRealtime.SubscribeResponse{ //nolint:nilerr // 协议要求以 200 + error 字段表达拒绝
-			Error: &platformRealtime.ProxyError{
-				Code:    platformRealtime.ProxyErrorCodePermissionDenied,
-				Message: "Permission denied",
-			},
-		}, nil
+		return proxyError(platformRealtime.ProxyErrorCodePermissionDenied, "Permission denied"), nil //nolint:nilerr // 协议要求以 200 + error 字段表达拒绝
 	}
 
 	return &platformRealtime.SubscribeResponse{
 		Result: &platformRealtime.SubscribeResult{},
 	}, nil
+}
+
+func proxyError(code uint32, message string) *platformRealtime.SubscribeResponse {
+	return &platformRealtime.SubscribeResponse{
+		Error: &platformRealtime.ProxyError{
+			Code:    code,
+			Message: message,
+		},
+	}
 }

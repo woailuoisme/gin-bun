@@ -9,18 +9,19 @@ import (
 
 // 面向调用方的固定描述文案。
 const (
-	msgValidationFailed = "Validation failed"
-	msgInternal         = "An unexpected error occurred"
-	msgBadRequest       = "The request could not be understood"
-	msgNotFound         = "The requested resource was not found"
-	msgMethodNotAllowed = "The requested HTTP method is not allowed"
-	msgForbidden        = "You are not allowed to perform this action"
-	msgConflict         = "The request conflicts with the current state of the resource"
-	msgRateLimited      = "Too many requests"
-	msgRequestTooLarge  = "The request body is too large"
-	msgGatewayTimeout   = "The request timed out while waiting for a response"
-	msgInvalidLogin     = "Invalid email or password"
-	msgUnauthorized     = "Authentication is required"
+	msgValidationFailed    = "Validation failed"
+	msgInternal            = "An unexpected error occurred"
+	msgBadRequest          = "The request could not be understood"
+	msgNotFound            = "The requested resource was not found"
+	msgMethodNotAllowed    = "The requested HTTP method is not allowed"
+	msgForbidden           = "You are not allowed to perform this action"
+	msgConflict            = "The request conflicts with the current state of the resource"
+	msgRateLimited         = "Too many requests"
+	msgRequestTooLarge     = "The request body is too large"
+	msgGatewayTimeout      = "The request timed out while waiting for a response"
+	msgClientClosedRequest = "Client closed request"
+	msgInvalidLogin        = "Invalid email or password"
+	msgUnauthorized        = "Authentication is required"
 )
 
 // Error 是携带结构化错误码与可选字段级校验明细的业务错误。
@@ -130,6 +131,11 @@ func RequestTooLarge(cause error) *Error {
 // GatewayTimeout 构造 504，用于请求在等待外部依赖或完成处理时超时。
 func GatewayTimeout(cause error) *Error {
 	return Wrap(CodeGatewayTimeout, msgGatewayTimeout, cause)
+}
+
+// ClientClosedRequest 构造 499，用于客户端在响应完成前主动终止连接。
+func ClientClosedRequest(cause error) *Error {
+	return Wrap(CodeClientClosedRequest, msgClientClosedRequest, cause)
 }
 
 // ServiceUnavailable 构造 503，用于外部依赖或本服务暂不可用。

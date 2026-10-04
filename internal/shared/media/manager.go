@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/gabriel-vasile/mimetype"
+	"github.com/samber/lo"
 	"github.com/samber/oops"
 	"github.com/uptrace/bun"
 	"go.uber.org/zap"
@@ -54,13 +55,8 @@ func Model(modelType, modelID string) Attachable {
 
 // ToAttachable 智能解析输入对象为 Attachable 接口实例。
 func ToAttachable(v any) Attachable {
-	if v == nil {
-		return nil
-	}
-	if a, ok := v.(Attachable); ok {
-		return a
-	}
-	return nil
+	a, _ := v.(Attachable)
+	return a
 }
 
 // AttachConfig 保存媒体附加的选项参数。
@@ -157,18 +153,12 @@ func (m *Manager) Ping(ctx context.Context) error {
 
 // Driver 返回图像处理驱动标识。
 func (m *Manager) Driver() string {
-	if m.image == nil {
-		return "imgproxy"
-	}
-	return m.image.Driver()
+	return lo.Ternary(m.image != nil, m.image.Driver(), "imgproxy")
 }
 
 // Enabled 报告多态媒体管理器中的 imgproxy 是否已启用。
 func (m *Manager) Enabled() bool {
-	if m.image == nil {
-		return false
-	}
-	return m.image.Enabled()
+	return m.image != nil && m.image.Enabled()
 }
 
 // Disk 返回底层的存储磁盘驱动句柄。

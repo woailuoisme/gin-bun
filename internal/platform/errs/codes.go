@@ -10,6 +10,9 @@ import (
 // Code 是写入响应体 code 字段的机器可读错误码。
 type Code string
 
+// StatusClientClosedRequest 是客户端主动断开连接的状态码（499）。
+const StatusClientClosedRequest = 499
+
 // 通用错误码。这些值必须与 api.md 5.2 的描述保持一致。
 const (
 	CodeBadRequest       Code = "BAD_REQUEST"
@@ -26,9 +29,11 @@ const (
 	// CodeRequestTooLarge 请求体超过服务端上限。
 	CodeRequestTooLarge Code = "REQUEST_TOO_LARGE"
 	// CodeGatewayTimeout 上游依赖或数据库未在时限内响应。
-	CodeGatewayTimeout     Code = "GATEWAY_TIMEOUT"
-	CodeServiceUnavailable Code = "SERVICE_UNAVAILABLE"
-	CodeInternal           Code = "INTERNAL_SERVER_ERROR"
+	CodeGatewayTimeout Code = "GATEWAY_TIMEOUT"
+	// CodeClientClosedRequest 客户端在服务端响应完成前主动终止了连接。
+	CodeClientClosedRequest Code = "CLIENT_CLOSED_REQUEST"
+	CodeServiceUnavailable  Code = "SERVICE_UNAVAILABLE"
+	CodeInternal            Code = "INTERNAL_SERVER_ERROR"
 )
 
 // 认证域错误码。前缀 AUTH_ 用于把认证失败与业务失败区分开。
@@ -164,6 +169,7 @@ var statuses = map[Code]int{
 	CodeIdempotencyRequired: http.StatusBadRequest,
 	CodeRequestTooLarge:     http.StatusRequestEntityTooLarge,
 	CodeGatewayTimeout:      http.StatusGatewayTimeout,
+	CodeClientClosedRequest: StatusClientClosedRequest,
 	CodeServiceUnavailable:  http.StatusServiceUnavailable,
 	CodeInternal:            http.StatusInternalServerError,
 
@@ -235,6 +241,7 @@ var statusMessages = map[int]string{
 	http.StatusRequestEntityTooLarge: msgRequestTooLarge,
 	http.StatusUnprocessableEntity:   msgValidationFailed,
 	http.StatusTooManyRequests:       msgRateLimited,
+	StatusClientClosedRequest:        msgClientClosedRequest,
 	http.StatusGatewayTimeout:        msgGatewayTimeout,
 	http.StatusServiceUnavailable:    "Service is temporarily unavailable",
 	http.StatusInternalServerError:   msgInternal,

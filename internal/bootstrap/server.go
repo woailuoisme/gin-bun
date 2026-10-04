@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -64,10 +65,7 @@ func (a *Application) Serve(ctx context.Context) error {
 		a.logger.Info("shutdown signal received, initiating graceful shutdown")
 	}
 
-	shutdownTimeout := srvCfg.ShutdownTimeout
-	if shutdownTimeout <= 0 {
-		shutdownTimeout = 3 * time.Second
-	}
+	shutdownTimeout := cmp.Or(srvCfg.ShutdownTimeout, 3*time.Second)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 
 	"bgin/internal/config"
 	"bgin/internal/platform/errs"
+	"bgin/internal/platform/resilience"
 )
 
 // resendMailer 基于 Resend 官方 SDK 实现的现代化邮件发送器。
@@ -29,17 +29,15 @@ var _ Mailer = (*resendMailer)(nil)
 
 // newResendMailer 创建基于 Resend 官方 Go SDK 的邮件发送器实例。
 func newResendMailer(cfg config.MailConfig, log *zap.Logger) (*resendMailer, error) {
-	if log == nil {
-		log = zap.NewNop()
-	}
+	log = cmp.Or(log, zap.NewNop())
 	apiKey := strings.TrimSpace(cfg.Resend.APIKey)
 	if apiKey == "" {
 		return nil, oops.Code(string(errs.CodeInternal)).Wrap(errors.New("resend: api key cannot be empty"))
 	}
 
-	httpClient := &http.Client{
+	httpClient := resilience.NewResilientHTTPClient(resilience.ResilientTransportConfig{
 		Timeout: 15 * time.Second,
-	}
+	})
 
 	client := resend.NewCustomClient(httpClient, apiKey)
 	client.UserAgent = "bgin-mailer/1.0"

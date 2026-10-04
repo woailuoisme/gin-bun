@@ -13,10 +13,7 @@ type LimiterConfig struct {
 // IsEnabled 报告是否全局激活请求速率限制保护。
 // 当显式配置了 *Enabled 时遵循该值；未设置（如代码零值初始化）时默认视为启用 (true)。
 func (l LimiterConfig) IsEnabled() bool {
-	if l.Enabled != nil && !*l.Enabled {
-		return false
-	}
-	return true
+	return l.Enabled == nil || *l.Enabled
 }
 
 // validateLimiter 校验速率限制配额：0 表示显式关闭，负值属于非法配置。

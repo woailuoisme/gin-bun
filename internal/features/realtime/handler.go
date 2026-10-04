@@ -1,6 +1,7 @@
 package realtime
 
 import (
+	"cmp"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -68,10 +69,10 @@ func (h *Handler) ProxySubscribe(c *gin.Context) {
 	}
 
 	// 签名头优先读取 X-Centrifugo-Signature 或 X-Signature
-	sig := c.GetHeader(platformRealtime.CentrifugoSignatureHeader)
-	if sig == "" {
-		sig = c.GetHeader(platformRealtime.CentrifugoSignatureLegacyHeader)
-	}
+	sig := cmp.Or(
+		c.GetHeader(platformRealtime.CentrifugoSignatureHeader),
+		c.GetHeader(platformRealtime.CentrifugoSignatureLegacyHeader),
+	)
 
 	resp, err := h.service.AuthorizeSubscribe(c.Request.Context(), body, sig)
 	if err != nil {

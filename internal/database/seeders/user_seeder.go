@@ -1,6 +1,7 @@
 package seeders
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"time"
@@ -49,10 +50,7 @@ func (s *UserSeeder) Seed(ctx context.Context, db *bun.DB) error {
 		return nil
 	}
 
-	total := s.Count
-	if total <= 0 {
-		total = 20
-	}
+	total := cmp.Or(s.Count, 20)
 
 	log.Info("batch generating test users via UserFactory...", zap.Int("count", total))
 

@@ -1,6 +1,7 @@
 package user
 
 import (
+	"cmp"
 	"strings"
 
 	govalidator "github.com/go-playground/validator/v10"
@@ -50,10 +51,7 @@ const defaultSort = "-createdAt"
 // NormaliseSort 把 api.md 6.2 的排序表达式翻译成白名单内的列与方向。
 // 缺省或全部非法时退回默认排序，保证分页顺序稳定。
 func NormaliseSort(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		raw = defaultSort
-	}
+	raw = cmp.Or(strings.TrimSpace(raw), defaultSort)
 
 	orders := make([]string, 0, 4)
 	for part := range strings.SplitSeq(raw, ",") {

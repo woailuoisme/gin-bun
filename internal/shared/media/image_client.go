@@ -238,7 +238,7 @@ func NewWithStorage(imgCfg config.ImgproxyConfig, storageCfg config.StorageConfi
 		baseURL:    trimmedURL,
 		key:        keyBytes,
 		salt:       saltBytes,
-		insecure:   mergedCfg.Insecure || (len(keyBytes) == 0 || len(saltBytes) == 0),
+		insecure:   mergedCfg.Insecure || len(keyBytes) == 0 || len(saltBytes) == 0,
 		config:     mergedCfg,
 		storageCfg: storageCfg,
 		httpClient: restyClient,
@@ -331,10 +331,7 @@ func (s *client) ResolveSourceURI(sourcePath string) string {
 	driver := strings.ToLower(strings.TrimSpace(s.storageCfg.Driver))
 
 	if driver == config.StorageDriverS3 {
-		if s.storageCfg.S3.Bucket != "" {
-			return fmt.Sprintf("s3://%s/%s", s.storageCfg.S3.Bucket, trimmed)
-		}
-		return "s3://" + trimmed
+		return lo.Ternary(s.storageCfg.S3.Bucket != "", fmt.Sprintf("s3://%s/%s", s.storageCfg.S3.Bucket, trimmed), "s3://"+trimmed)
 	}
 
 	return "local://" + trimmed
@@ -398,10 +395,7 @@ func (s *client) generateURL(sourceURI string, cfg *ProcessConfig) (string, erro
 	options := buildOptions(cfg)
 	encodedSource := base64.RawURLEncoding.EncodeToString([]byte(sourceURI))
 
-	ext := ""
-	if cfg.Format != "" {
-		ext = "." + string(cfg.Format)
-	}
+	ext := lo.Ternary(cfg.Format != "", "."+string(cfg.Format), "")
 
 	options = append(options, encodedSource+ext)
 	pathWithoutSignature := "/" + path.Join(options...)

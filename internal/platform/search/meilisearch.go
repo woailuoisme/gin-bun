@@ -1,6 +1,7 @@
 package search
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"net/http"
@@ -8,9 +9,11 @@ import (
 	"time"
 
 	"github.com/meilisearch/meilisearch-go"
+	"github.com/samber/lo"
 	"github.com/samber/oops"
 
 	"bgin/internal/platform/errs"
+	"bgin/internal/platform/resilience"
 )
 
 var (
@@ -34,13 +37,9 @@ var _ Client = (*meilisearchClient)(nil)
 
 // NewMeilisearchClient 从已有的 Meilisearch ServiceManager 创建客户端门面。
 func NewMeilisearchClient(manager meilisearch.ServiceManager, prefix ...string) Client {
-	p := ""
-	if len(prefix) > 0 {
-		p = prefix[0]
-	}
 	return &meilisearchClient{
 		manager: manager,
-		prefix:  p,
+		prefix:  lo.FirstOrEmpty(prefix),
 	}
 }
 
@@ -55,10 +54,10 @@ func NewClientFromConfig(cfg Config) (Client, error) {
 	client := meilisearch.New(
 		host,
 		meilisearch.WithAPIKey(apiKey),
-		meilisearch.WithCustomClient(&http.Client{
-			Timeout:   5 * time.Second,
-			Transport: meiliHTTPTransport,
-		}),
+		meilisearch.WithCustomClient(resilience.NewResilientHTTPClient(resilience.ResilientTransportConfig{
+			BaseTransport: meiliHTTPTransport,
+			Timeout:       5 * time.Second,
+		})),
 	)
 
 	return NewMeilisearchClient(client, cfg.Prefix), nil
@@ -137,8 +136,7 @@ func (i *meilisearchIndex) wrapError(op string, err error) error {
 
 func (i *meilisearchIndex) AddDocuments(ctx context.Context, documents any, primaryKey ...string) error {
 	var opts *meilisearch.DocumentOptions
-	if len(primaryKey) > 0 && primaryKey[0] != "" {
-		pk := primaryKey[0]
+	if pk := lo.FirstOrEmpty(primaryKey); pk != "" {
 		opts = &meilisearch.DocumentOptions{PrimaryKey: &pk}
 	}
 
@@ -206,10 +204,7 @@ func (i *meilisearchIndex) SearchDirect(ctx context.Context, query string, targe
 		}
 	}
 
-	total := resp.EstimatedTotalHits
-	if total == 0 && resp.TotalHits > 0 {
-		total = resp.TotalHits
-	}
+	total := cmp.Or(resp.EstimatedTotalHits, resp.TotalHits)
 
 	return &SearchResult{
 		EstimatedTotalHits: total,

@@ -2,6 +2,7 @@
 package realtime
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,9 +55,7 @@ func NewManager(cfg *Config, opts ...Option) *ManagerImpl {
 		}
 	}
 
-	if m.registry == nil {
-		m.registry = NewRegistry()
-	}
+	m.registry = cmp.Or(m.registry, NewRegistry())
 
 	if cfg != nil && cfg.Enabled && cfg.URL != "" {
 		m.client = gocent.New(gocent.Config{
@@ -80,9 +79,7 @@ func (m *ManagerImpl) Client() *Client {
 
 // Registry 返回频道策略注册表。
 func (m *ManagerImpl) Registry() *Registry {
-	if m.registry == nil {
-		m.registry = NewRegistry()
-	}
+	m.registry = cmp.Or(m.registry, NewRegistry())
 	return m.registry
 }
 

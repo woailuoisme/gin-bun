@@ -9,6 +9,7 @@ import (
 
 	"github.com/aarondl/opt/omitnull"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/samber/lo"
 	"github.com/uptrace/bun"
 
 	"bgin/internal/database/models"
@@ -36,16 +37,6 @@ func NormaliseUsername(username string) string {
 	return strings.ToLower(strings.TrimSpace(username))
 }
 
-// ProfilePatch 是档案字段局部更新的校验投影。
-// 前端自助与后台管理对这组基础档案字段使用完全一致的校验规则。
-type ProfilePatch struct {
-	Name            *string `json:"name" validate:"omitempty,min=1,max=120"`
-	Image           *string `json:"image" validate:"omitempty,max=2048"`
-	Username        *string `json:"username" validate:"omitempty,min=3,max=30,usernameslug,notreserved"`
-	DisplayUsername *string `json:"displayUsername" validate:"omitempty,min=1,max=120"`
-	PhoneNumber     *string `json:"phoneNumber" validate:"omitempty,e164"`
-}
-
 // FieldSet 是客户端与后台管理共用的可更新档案字段集合。
 type FieldSet struct {
 	Name            omitnull.Val[string]
@@ -64,17 +55,6 @@ type AdminFieldSet struct {
 	Banned        omitnull.Val[bool]
 	BanReason     omitnull.Val[string]
 	BanExpires    omitnull.Val[time.Time]
-}
-
-// Patch 将字段集转换为用于校验的指针投影结构体。
-func (f FieldSet) Patch() ProfilePatch {
-	return ProfilePatch{
-		Name:            ToPtr(f.Name),
-		Image:           ToPtr(f.Image),
-		Username:        ToPtr(f.Username),
-		DisplayUsername: ToPtr(f.DisplayUsername),
-		PhoneNumber:     ToPtr(f.PhoneNumber),
-	}
 }
 
 // ToPtr 将三态值在拥有具体值时转换为指针，缺省或置空时返回 nil。
@@ -156,10 +136,10 @@ func SetRequiredString[T ~string](fields map[string]any, column string, value om
 
 // NullableTime 把三态时间字段转换为可写入列的值，并统一归一到 UTC。
 func NullableTime(value omitnull.Val[time.Time]) any {
-	if value.IsNull() {
-		return nil
+	if t, ok := value.Get(); ok {
+		return t.UTC()
 	}
-	return value.MustGet().UTC()
+	return nil
 }
 
 // ReconcileBanState 保证 banned 布尔值与 status 状态相互协同一致。
@@ -198,11 +178,7 @@ func SetNullable(fields map[string]any, column string, value omitnull.Val[string
 	}
 
 	trimmed := strings.TrimSpace(value.MustGet())
-	if trimmed == "" {
-		fields[column] = nil
-		return
-	}
-	fields[column] = trimmed
+	fields[column] = lo.Ternary[any](trimmed == "", nil, trimmed)
 }
 
 // FieldCannotBeNull 用于库层 NOT NULL、因而不能接受显式 null 的字段。

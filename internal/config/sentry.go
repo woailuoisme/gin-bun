@@ -28,10 +28,7 @@ func (s *SentryConfig) EffectiveDSN() string {
 
 // IsEnabled 判断是否激活 Sentry / GlitchTip 监控。
 func (s *SentryConfig) IsEnabled() bool {
-	if s == nil {
-		return false
-	}
-	if s.Enabled != nil && !*s.Enabled {
+	if s == nil || (s.Enabled != nil && !*s.Enabled) {
 		return false
 	}
 	return s.EffectiveDSN() != ""

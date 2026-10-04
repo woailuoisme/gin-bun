@@ -182,7 +182,7 @@ func NewIdempotency(store IdempotencyStore, opts ...IdempotencyOption) gin.Handl
 			return
 		}
 
-		fingerprint := computeRequestFingerprint(c.Request.Method, c.Request.URL.RequestURI(), bodyBytes)
+		fingerprint := computeRequestFingerprint(c.Request.Method, c.Request.URL.RequestURI(), c.ContentType(), bodyBytes)
 		scope := resolveIdempotencyScope(c)
 		cacheKey := cache.Key("idempotency", scope, rawKey)
 
@@ -239,9 +239,18 @@ func extractIdempotencyKey(c *gin.Context, cfg *IdempotencyConfig) (string, bool
 }
 
 // readAndRewindRequestBody 读取并重置 Request Body，便于指纹计算与后续绑定。
+// 优先复用 CacheBody 已经读入的内存字节；对 multipart 上传请求避免全量缓存，直接返回 nil。
 func readAndRewindRequestBody(c *gin.Context) ([]byte, error) {
 	if c.Request.Body == nil {
 		return nil, nil
+	}
+	if strings.HasPrefix(c.ContentType(), "multipart/") {
+		return nil, nil
+	}
+	if cached, ok := c.Get(gin.BodyBytesKey); ok {
+		if bodyBytes, isBytes := cached.([]byte); isBytes {
+			return bodyBytes, nil
+		}
 	}
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -376,22 +385,20 @@ func finishIdempotentRequest(ctx context.Context, store IdempotencyStore, cacheK
 	}
 }
 
-// computeRequestFingerprint 对 Method、URI 与 Body 计算 SHA-256 哈希指纹。
-func computeRequestFingerprint(method, uri string, body []byte) string {
+// computeRequestFingerprint 对 Method、URI、Content-Type 与 Body 计算 SHA-256 哈希指纹。
+func computeRequestFingerprint(method, uri, contentType string, body []byte) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(method))
 	_, _ = h.Write([]byte("\n"))
 	_, _ = h.Write([]byte(uri))
 	_, _ = h.Write([]byte("\n"))
+	_, _ = h.Write([]byte(contentType))
+	_, _ = h.Write([]byte("\n"))
 	_, _ = h.Write(body)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// resolveIdempotencyScope 解析幂等缓存作用域（优先已认证 UserID，其次凭据指纹，兜底按客户端 IP 分片）。
-//
-// 本中间件挂在全局链上，早于路由级鉴权，因此 identity 通常尚未注入；
-// 此时只能依据请求自带的凭据分片，且必须是凭据整体的指纹——绝不能解码 JWT 载荷取 sub，
-// 未校验的 payload 可被任意伪造，等于把缓存命名空间的选择权交给调用方。
+// resolveIdempotencyScope 解析幂等缓存作用域（优先已认证 UserID，其次凭据指纹，再次客户端会话，兜底按客户端 IP 与 UA 复合散列分片）。
 func resolveIdempotencyScope(c *gin.Context) string {
 	if id, ok := authentication.FromContext(c.Request.Context()); ok && id.UserID != "" {
 		return "user:" + id.UserID
@@ -399,7 +406,22 @@ func resolveIdempotencyScope(c *gin.Context) string {
 	if fingerprint := credentialFingerprint(c.GetHeader("Authorization")); fingerprint != "" {
 		return "credential:" + fingerprint
 	}
-	return "ip:" + c.ClientIP()
+	if sessionID := strings.TrimSpace(c.GetHeader("X-Session-ID")); sessionID != "" {
+		sum := sha256.Sum256([]byte(sessionID))
+		return "session:" + hex.EncodeToString(sum[:16])
+	}
+	if clientID := strings.TrimSpace(c.GetHeader("X-Client-ID")); clientID != "" {
+		sum := sha256.Sum256([]byte(clientID))
+		return "client:" + hex.EncodeToString(sum[:16])
+	}
+
+	// 纯匿名无会话请求：结合 ClientIP 与 UserAgent 计算复合散列，最大程度避免纯 NAT IP 碰撞踩踏
+	h := sha256.New()
+	_, _ = h.Write([]byte(c.ClientIP()))
+	_, _ = h.Write([]byte("\n"))
+	_, _ = h.Write([]byte(c.Request.UserAgent()))
+	sum := h.Sum(nil)
+	return "anon:" + hex.EncodeToString(sum[:16])
 }
 
 // credentialFingerprint 对完整 Authorization 凭据（含签名段）取 SHA-256 短指纹。

@@ -140,14 +140,32 @@ func (h *Handler) SignOut(c *gin.Context) {
 // @Success      200 {object} GetSessionResource "当前登录用户"
 // @x-order      4
 // @Router       /auth/get-session [get]
-func (h *Handler) GetSession(c *gin.Context) {
+func (h *Handler) currentUserID(c *gin.Context) (string, bool) {
 	id, ok := authentication.FromContext(c.Request.Context())
 	if !ok {
 		_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
+		return "", false
+	}
+	return id.UserID, true
+}
+
+// GetSession 处理 GET /v1/auth/get-session。
+//
+// @Summary      读取当前身份
+// @Description  纯只读、不续签：访问令牌过期即 401，客户端自行用 /auth/token/refresh 换新令牌（Q13）。
+// @Tags         认证中心
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200 {object} GetSessionResource "当前登录用户"
+// @x-order      4
+// @Router       /auth/get-session [get]
+func (h *Handler) GetSession(c *gin.Context) {
+	userID, ok := h.currentUserID(c)
+	if !ok {
 		return
 	}
 
-	session, err := h.service.GetSession(c.Request.Context(), id.UserID)
+	session, err := h.service.GetSession(c.Request.Context(), userID)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -196,9 +214,8 @@ func (h *Handler) Refresh(c *gin.Context) {
 // @x-order      9
 // @Router       /auth/change-password [post]
 func (h *Handler) ChangePassword(c *gin.Context) {
-	id, ok := authentication.FromContext(c.Request.Context())
+	userID, ok := h.currentUserID(c)
 	if !ok {
-		_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
 		return
 	}
 
@@ -208,7 +225,7 @@ func (h *Handler) ChangePassword(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.ChangePassword(c.Request.Context(), id.UserID, body); err != nil {
+	if err := h.service.ChangePassword(c.Request.Context(), userID, body); err != nil {
 		_ = c.Error(err)
 		return
 	}

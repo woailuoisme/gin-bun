@@ -85,12 +85,6 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		return nil, td.fail(err)
 	}
 
-	uow := database.NewUnitOfWork(
-		db,
-		database.WithPublisher(eventBusManager),
-		database.WithUowLogger(log),
-	)
-
 	// 探测并初始化文件/对象存储驱动
 	disk, err := storage.Open(ctx, cfg.Storage)
 	if err != nil {
@@ -114,22 +108,10 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 	// 初始化用户认证提供器与用户领域服务
 	userProvider := user.NewProvider(db, hasherClient)
 
-	// 提前初始化实时网关与统一通知引擎（供认证等核心领域直接复用异步通知能力）
-	realtimeReg := realtime.NewRegistry()
-	realtimeFeature.RegisterChannels(realtimeReg, db)
-
-	realtimeGateway, err := realtime.RegisterRealtimeGateway(cfg, realtimeReg)
+	realtimeGateway, notifier, err := initNotificationSubsystem(cfg, db, mailerClient, queueClient, td)
 	if err != nil {
 		return nil, td.fail(err)
 	}
-
-	notifier, err := notification.New(cfg.Notification, mailerClient, realtimeGateway,
-		sharedDatabase.NewChannel(db))
-	if err != nil {
-		return nil, td.fail(err)
-	}
-	notifier.WithQueue(queueClient)
-	td.add(notifier.Close)
 
 	// 初始化客户端与管理端 Guard 及多守卫注册中心 (Multiple Guards)
 	clientGuard := platformauth.NewGuard(tokens, userProvider, user.ClientPolicy{})
@@ -170,7 +152,6 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		Cache:      cacheClient,
 		Mailer:     mailerClient,
 		Notifier:   notifier,
-		UOW:        uow,
 		Translator: translator,
 		Config:     cfg,
 		Publisher:  eventBusManager,
@@ -259,7 +240,6 @@ func NewApplication(ctx context.Context, portOverride int) (*Application, error)
 		cfg:          cfg,
 		logger:       log,
 		db:           db,
-		uow:          uow,
 		cache:        cacheClient,
 		locker:       locker,
 		mailer:       mailerClient,
@@ -430,4 +410,31 @@ func initTemporalSubsystem(cfg *config.Config, log *zap.Logger, td *teardown) (c
 		return nil
 	})
 	return temporalClient, temporal.NewPinger(temporalClient, true), nil
+}
+
+// initNotificationSubsystem 装配实时通知网关与统一通知引擎。
+func initNotificationSubsystem(
+	cfg *config.Config,
+	db *bun.DB,
+	mailerClient mailer.Mailer,
+	queueClient *queue.Client,
+	td *teardown,
+) (realtime.Gateway, *notification.Notifier, error) {
+	realtimeReg := realtime.NewRegistry()
+	realtimeFeature.RegisterChannels(realtimeReg, db)
+
+	realtimeGateway, err := realtime.RegisterRealtimeGateway(cfg, realtimeReg)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	notifier, err := notification.New(cfg.Notification, mailerClient, realtimeGateway,
+		sharedDatabase.NewChannel(db))
+	if err != nil {
+		return nil, nil, err
+	}
+	notifier.WithQueue(queueClient)
+	td.add(notifier.Close)
+
+	return realtimeGateway, notifier, nil
 }

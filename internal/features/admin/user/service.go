@@ -52,14 +52,7 @@ func NewService(deps Deps) *Service {
 // ListUsers 返回分页用户列表，排序与过滤都走白名单。
 func (s *Service) ListUsers(ctx context.Context, query ListUsersQueryParams) ([]UserResource, response.Meta, error) {
 	page, pageSize := NormalisePagination(query.Page, query.PageSize)
-	filter := user.ListFilter{
-		Search: strings.TrimSpace(query.Search),
-		Status: enums.Status(strings.TrimSpace(string(query.Status))),
-		Role:   enums.Role(strings.TrimSpace(string(query.Role))),
-		Sort:   user.NormaliseSort(query.Sort),
-	}
-
-	users, total, err := s.userService.List(ctx, filter, (page-1)*pageSize, pageSize)
+	users, total, err := s.userService.List(ctx, query.ToFilter(), page, pageSize)
 	if err != nil {
 		return nil, response.Meta{}, err
 	}
@@ -72,16 +65,7 @@ func (s *Service) ListUsers(ctx context.Context, query ListUsersQueryParams) ([]
 
 // ExportUsers 流式导出匹配条件的所有用户数据至目标 io.Writer，采用物理分块拉取杜绝 OOM。
 func (s *Service) ExportUsers(ctx context.Context, query ListUsersQueryParams, w io.Writer, opts ...excel.ExportOption) error {
-	filter := user.ListFilter{
-		Search: strings.TrimSpace(query.Search),
-		Status: enums.Status(strings.TrimSpace(string(query.Status))),
-		Role:   enums.Role(strings.TrimSpace(string(query.Role))),
-		Sort:   user.NormaliseSort(query.Sort),
-	}
-	fetcher := UserFetchFunc(func(ctx context.Context, f user.ListFilter, offset, limit int) ([]models.User, error) {
-		return s.userService.ListChunk(ctx, f, offset, limit)
-	})
-	return ExportChunkedStream(ctx, w, fetcher, filter, opts...)
+	return ExportChunkedStream(ctx, w, UserFetchFunc(s.userService.ListChunk), query.ToFilter(), opts...)
 }
 
 // GetUser 返回管理视角的单个用户。

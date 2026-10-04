@@ -61,12 +61,7 @@ func (s *Service) SignInEmail(ctx context.Context, body SignInEmailBody) (Sessio
 		return SessionResource{}, err
 	}
 
-	return SessionResource{
-		Token:        sess.Token,
-		RefreshToken: sess.RefreshToken,
-		ExpiresIn:    sess.ExpiresIn,
-		User:         shareduser.ProjectProfile(user),
-	}, nil
+	return toSessionResource(sess, user), nil
 }
 
 // GetSession 获取当前有效会话的管理员资料。
@@ -117,12 +112,7 @@ func (s *Service) Refresh(ctx context.Context, body RefreshTokenBody) (SessionRe
 		return SessionResource{}, err
 	}
 
-	return SessionResource{
-		Token:        sess.Token,
-		RefreshToken: sess.RefreshToken,
-		ExpiresIn:    sess.ExpiresIn,
-		User:         shareduser.ProjectProfile(user),
-	}, nil
+	return toSessionResource(sess, user), nil
 }
 
 // SignOut 登出并作废当前管理员访问令牌与可选的刷新令牌。
@@ -133,16 +123,32 @@ func (s *Service) SignOut(ctx context.Context, body SignOutBody) error {
 	return s.guard.Logout(ctx)
 }
 
+func toSessionResource(sess authentication.Session, user *models.User) SessionResource {
+	return SessionResource{
+		Token:        sess.Token,
+		RefreshToken: sess.RefreshToken,
+		ExpiresIn:    sess.ExpiresIn,
+		User:         shareduser.ProjectProfile(user),
+	}
+}
+
 type credentialManager interface {
 	FindCredentialAccount(ctx context.Context, userID string) (*models.Account, error)
 	UpdatePassword(ctx context.Context, userID, passwordHash string) error
 }
 
-func (s *Service) findCredentialAccount(ctx context.Context, userID string) (*models.Account, error) {
+func (s *Service) credentialManager() credentialManager {
 	if s.guard != nil && s.guard.Provider() != nil {
 		if cm, ok := s.guard.Provider().(credentialManager); ok {
-			return cm.FindCredentialAccount(ctx, userID)
+			return cm
 		}
+	}
+	return nil
+}
+
+func (s *Service) findCredentialAccount(ctx context.Context, userID string) (*models.Account, error) {
+	if cm := s.credentialManager(); cm != nil {
+		return cm.FindCredentialAccount(ctx, userID)
 	}
 	if s.db != nil {
 		return models.FindCredentialAccount(ctx, s.db, userID)
@@ -151,16 +157,16 @@ func (s *Service) findCredentialAccount(ctx context.Context, userID string) (*mo
 }
 
 func (s *Service) updatePassword(ctx context.Context, userID, passwordHash string) error {
-	if s.guard != nil && s.guard.Provider() != nil {
-		if cm, ok := s.guard.Provider().(credentialManager); ok {
-			return cm.UpdatePassword(ctx, userID, passwordHash)
-		}
+	if cm := s.credentialManager(); cm != nil {
+		return cm.UpdatePassword(ctx, userID, passwordHash)
 	}
 	if s.db != nil {
 		return models.UpdatePassword(ctx, s.db, userID, passwordHash)
 	}
 	return sql.ErrNoRows
 }
+
+var errPasswordMismatch = errs.New(errs.CodeAuthPasswordMismatch, "The current password is incorrect")
 
 // ChangePassword 修改当前管理员登录密码。
 func (s *Service) ChangePassword(ctx context.Context, userID string, body ChangePasswordBody) error {
@@ -175,12 +181,12 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, body Change
 	account, err := s.findCredentialAccount(ctx, userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return errs.New(errs.CodeAuthPasswordMismatch, "The current password is incorrect")
+			return errPasswordMismatch
 		}
 		return errs.Internal(err)
 	}
 	if account.Password == nil {
-		return errs.New(errs.CodeAuthPasswordMismatch, "The current password is incorrect")
+		return errPasswordMismatch
 	}
 
 	matched, err := s.hasher.Check(*account.Password, body.CurrentPassword)
@@ -188,7 +194,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, body Change
 		return errs.Internal(err)
 	}
 	if !matched {
-		return errs.New(errs.CodeAuthPasswordMismatch, "The current password is incorrect")
+		return errPasswordMismatch
 	}
 
 	hash, err := s.hasher.Make(body.NewPassword)

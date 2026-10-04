@@ -38,7 +38,7 @@ func Load() (*Config, error) {
 	}
 
 	cfg.Database.Debug = cfg.ResolveDBDebug()
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil

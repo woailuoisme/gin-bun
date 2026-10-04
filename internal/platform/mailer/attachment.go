@@ -28,7 +28,7 @@ func NewAttachmentFromBytes(filename string, content []byte, contentType ...stri
 	return Attachment{
 		Filename:    filename,
 		Content:     slices.Clone(content),
-		ContentType: lo.FirstOr(contentType, ""),
+		ContentType: lo.FirstOrEmpty(contentType),
 	}
 }
 

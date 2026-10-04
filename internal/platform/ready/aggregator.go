@@ -1,6 +1,7 @@
 package ready
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alexliesenfeld/health"
+	"github.com/samber/lo"
 )
 
 // DefaultCheckTimeout 是单个组件探针的默认超时上限。
@@ -74,18 +76,11 @@ func (a *Aggregator) rebuildCheckerLocked() {
 		opts = append(opts, health.WithTimeout(a.defaultTimeout))
 	}
 
-	if a.cacheDuration > 0 {
-		opts = append(opts, health.WithCacheDuration(a.cacheDuration))
-	} else {
-		opts = append(opts, health.WithDisabledCache())
-	}
+	opts = append(opts, lo.Ternary(a.cacheDuration > 0, health.WithCacheDuration(a.cacheDuration), health.WithDisabledCache()))
 
 	for _, c := range a.checks {
 		check := c
-		timeout := check.Timeout
-		if timeout <= 0 {
-			timeout = a.defaultTimeout
-		}
+		timeout := cmp.Or(check.Timeout, a.defaultTimeout)
 
 		opts = append(opts, health.WithCheck(health.Check{
 			Name:    check.Name,
@@ -119,9 +114,7 @@ func (a *Aggregator) rebuildCheckerLocked() {
 
 // Check 并发探测所有已注册组件，返回聚合评估结果及失败错误字典（供日志记录）。
 func (a *Aggregator) Check(ctx context.Context) (Result, map[string]error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = cmp.Or(ctx, context.Background())
 
 	a.mu.Lock()
 	if a.checker == nil || a.dirty {

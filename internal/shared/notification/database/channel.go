@@ -204,9 +204,7 @@ func (c *Channel) Paginate(ctx context.Context, notifiable any, page, perPage in
 		return nil, 0, err
 	}
 
-	if page < 1 {
-		page = 1
-	}
+	page = max(page, 1)
 	if perPage < 1 || perPage > 100 {
 		perPage = 20
 	}

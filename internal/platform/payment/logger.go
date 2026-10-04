@@ -25,9 +25,7 @@ type xlogAdapter struct {
 // newXLogAdapter 创建 gopay 日志适配器。
 // debugEnabled /* 是否保留 SDK Debug 明细（生产传 false，直接丢弃报文级输出） */ 为假时丢弃全部 Debug 级输出。
 func newXLogAdapter(logger *zap.Logger, debugEnabled bool) xlogAdapter {
-	if logger == nil {
-		logger = zap.NewNop()
-	}
+	logger = cmp.Or(logger, zap.NewNop())
 	return xlogAdapter{
 		sugar:        logger.With(zap.String("component", "payment_sdk")).Sugar(),
 		debugEnabled: debugEnabled,

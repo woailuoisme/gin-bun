@@ -51,31 +51,31 @@ func buildEngine(
 		return nil, fmt.Errorf("set trusted proxies failed: %w", err)
 	}
 
-	// 全局中间件链：遥测追踪、请求标识、Sentry监控、访问日志、错误处理、恐慌恢复、超时控制、安全头、请求体缓存、幂等与跨域
+	// 全局中间件链：按洋葱模型分层编排（链路观测 -> 协议安全 -> 异常治理 -> 载荷控制）
 	engine.Use(
-		globalMW.Telemetry(),
-		globalMW.RequestID(),
-		globalMW.Sentry(),
-		globalMW.AccessLog(),
-		globalMW.ErrorHandler(),
-		globalMW.Recovery(),
-		globalMW.Timeout(),
-		globalMW.SecurityHeaders(),
-		globalMW.BodyLimit(),
-		globalMW.CacheBody(),
-		globalMW.Idempotency(),
-		globalMW.CORS(),
+		globalMW.Telemetry(),       // 1. 链路追踪与指标：OpenTelemetry 根 Span 创建与服务度量采集
+		globalMW.RequestID(),       // 2. 请求唯一标识：提取或生成 X-Request-ID 并注入上下文日志器
+		globalMW.AccessLog(),       // 3. 访问日志：记录请求方法、路径、状态码、IP 与端到端耗时
+		globalMW.CORS(),            // 4. 跨域策略：注入跨域标头并对 OPTIONS 预检请求快速短路
+		globalMW.SecurityHeaders(), // 5. 浏览器安全头：注入 nosniff、DENY、no-referrer 与 HSTS 等标头
+		globalMW.ErrorHandler(),    // 6. 错误处理信封：集中捕获 c.Errors 并翻译渲染统一 JSON 响应
+		globalMW.Recovery(),        // 7. 恐慌兜底恢复：捕获未处理 panic 记录堆栈并转为 500 错误
+		globalMW.Sentry(),          // 8. 异常监控上报：挂载 Sentry 请求 Hub 并捕获 panic 与 5xx 异常
+		globalMW.Timeout(),         // 9. 超时控制：请求生命周期截止期控制，超时抛出 504（长连接豁免）
+		globalMW.BodyLimit(),       // 10. 请求体限额：限制请求体大小（普通 1MiB / 上传 32MiB），防大包攻击
+		globalMW.CacheBody(),       // 11. 请求体缓存：预读普通请求体至 BodyBytesKey，避免下游读取 EOF
+		globalMW.Idempotency(),     // 12. 接口幂等控制：基于 Idempotency-Key 进行并发锁定与成功响应回放
 	)
 
 	// 统一 404 与 405 错误响应，交由统一错误处理中间件渲染
-	engine.NoRoute(func(c *gin.Context) {
-		_ = c.Error(errs.NotFound(""))
-		c.Abort()
-	})
-	engine.NoMethod(func(c *gin.Context) {
-		_ = c.Error(errs.MethodNotAllowed(""))
-		c.Abort()
-	})
+	abortWithError := func(err error) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			_ = c.Error(err)
+			c.Abort()
+		}
+	}
+	engine.NoRoute(abortWithError(errs.NotFound("")))
+	engine.NoMethod(abortWithError(errs.MethodNotAllowed("")))
 
 	// 注册根路径与系统探针路由（/、/livez、/readyz）
 	system.RegisterRoutes(engine, systemHandler)

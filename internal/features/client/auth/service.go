@@ -47,7 +47,6 @@ type Deps struct {
 	Cache      cache.Store
 	Mailer     mailer.Mailer
 	Notifier   NotificationSender
-	UOW        *database.UnitOfWork
 	Translator *i18n.Translator
 	Config     *config.Config
 	Publisher  eventbus.Publisher
@@ -60,7 +59,6 @@ type Service struct {
 	hasher     *hasher.Hasher
 	mailer     mailer.Mailer
 	notifier   NotificationSender
-	uow        *database.UnitOfWork
 	translator *i18n.Translator
 	cfg        *config.Config
 	verifier   *verifier
@@ -89,7 +87,6 @@ func NewService(deps Deps) *Service {
 		hasher:     deps.Hasher,
 		mailer:     deps.Mailer,
 		notifier:   deps.Notifier,
-		uow:        deps.UOW,
 		translator: deps.Translator,
 		cfg:        deps.Config,
 		verifier:   newVerifier(deps.DB, deps.Cache, deps.Config),
@@ -131,14 +128,16 @@ func (s *Service) SignUpEmail(ctx context.Context, req SignUpEmailRequest) (Sess
 		Name:         user.Name,
 		RegisteredAt: time.Now(),
 	}
-	if err := s.runInTxOrDirect(ctx, func(txCtx context.Context) error {
-		if err := models.CreateUserWithCredential(txCtx, s.idb(txCtx), user, hash); err != nil {
+	if err := s.db.RunInTx(ctx, nil, func(txCtx context.Context, tx bun.Tx) error {
+		if err := models.CreateUserWithCredential(txCtx, &tx, user, hash); err != nil {
 			return shareduser.MapUniqueConflict(err)
 		}
-		database.RecordEvent(txCtx, evt)
 		return nil
-	}, evt); err != nil {
+	}); err != nil {
 		return SessionResponse{}, err
+	}
+	if s.publisher != nil {
+		_ = s.publisher.Publish(ctx, evt)
 	}
 
 	session, err := s.issueSession(ctx, user)
@@ -214,12 +213,7 @@ func (s *Service) Refresh(ctx context.Context, req RefreshTokenRequest) (Session
 		return SessionResponse{}, err
 	}
 
-	return SessionResponse{
-		Token:        sess.Token,
-		RefreshToken: sess.RefreshToken,
-		ExpiresIn:    sess.ExpiresIn,
-		User:         projectUser(user),
-	}, nil
+	return toSessionResponse(sess, user), nil
 }
 
 // ChangePassword 校验当前口令后写入新口令。
@@ -289,17 +283,19 @@ func (s *Service) ResetPassword(ctx context.Context, req ResetPasswordRequest) (
 		UserID:    user.ID,
 		ChangedAt: time.Now(),
 	}
-	if err := s.runInTxOrDirect(ctx, func(txCtx context.Context) error {
-		if err := models.UpdatePassword(txCtx, s.idb(txCtx), user.ID, hash); err != nil {
+	if err := s.db.RunInTx(ctx, nil, func(txCtx context.Context, tx bun.Tx) error {
+		if err := models.UpdatePassword(txCtx, &tx, user.ID, hash); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return noCredentialError()
 			}
 			return errs.Internal(err)
 		}
-		database.RecordEvent(txCtx, evt)
 		return nil
-	}, evt); err != nil {
+	}); err != nil {
 		return StatusResponse{}, err
+	}
+	if s.publisher != nil {
+		_ = s.publisher.Publish(ctx, evt)
 	}
 
 	// 重置密码成功后作废该用户在此之前签发的所有会话令牌
@@ -328,13 +324,9 @@ func (s *Service) SendVerificationOTP(ctx context.Context, language string, req 
 	if err != nil {
 		return StatusResponse{}, errs.Internal(err)
 	}
-	if s.notifier != nil {
-		notif := NewSignupVerificationNotification(user.Name, code)
-		notif.ExpiresIn = ttl
-		if err := s.notifier.Send(ctx, user, notif); err != nil {
-			return StatusResponse{}, errs.Internal(err)
-		}
-	} else if err := s.sendMail(ctx, language, user, mailKeyVerifyEmail, code, ttl); err != nil {
+	notif := NewSignupVerificationNotification(user.Name, code)
+	notif.ExpiresIn = ttl
+	if err := s.notifyUser(ctx, language, user, notif, mailKeyVerifyEmail, code, ttl); err != nil {
 		return StatusResponse{}, errs.Internal(err)
 	}
 	return StatusResponse{Status: true}, nil
@@ -407,12 +399,16 @@ func (s *Service) issueSession(ctx context.Context, user *models.User) (SessionR
 		return SessionResponse{}, err
 	}
 
+	return toSessionResponse(sess, user), nil
+}
+
+func toSessionResponse(sess platformauth.Session, user *models.User) SessionResponse {
 	return SessionResponse{
 		Token:        sess.Token,
 		RefreshToken: sess.RefreshToken,
 		ExpiresIn:    sess.ExpiresIn,
 		User:         projectUser(user),
-	}, nil
+	}
 }
 
 // guardAccountState 拒绝封禁、未激活与（开启开关时）未验证邮箱的账号。
@@ -478,13 +474,9 @@ func (s *Service) sendResetCredential(ctx context.Context, language, purpose, em
 	if err != nil {
 		return StatusResponse{}, errs.Internal(err)
 	}
-	if s.notifier != nil {
-		notif := NewPasswordResetNotification(user.Name, code)
-		notif.ExpiresIn = ttl
-		if err := s.notifier.Send(ctx, user, notif); err != nil {
-			return StatusResponse{}, errs.Internal(err)
-		}
-	} else if err := s.sendMail(ctx, language, user, mailKey, code, ttl); err != nil {
+	notif := NewPasswordResetNotification(user.Name, code)
+	notif.ExpiresIn = ttl
+	if err := s.notifyUser(ctx, language, user, notif, mailKey, code, ttl); err != nil {
 		return StatusResponse{}, errs.Internal(err)
 	}
 	return StatusResponse{Status: true}, nil
@@ -572,19 +564,9 @@ func noCredentialError() error {
 	return errs.NotFound("No password credential is associated with this account")
 }
 
-// runInTxOrDirect 在配置了工作单元时于事务内执行工作，并在事务提交后派发领域事件；否则直接执行并派发降级事件。
-func (s *Service) runInTxOrDirect(ctx context.Context, fn func(context.Context) error, fallbackEvent any) error {
-	if s.uow != nil {
-		return s.uow.Run(ctx, func(txCtx context.Context, _ bun.Tx) error {
-			return fn(txCtx)
-		})
+func (s *Service) notifyUser(ctx context.Context, language string, user *models.User, notif contract.Notification, mailKey, code string, ttl time.Duration) error {
+	if s.notifier != nil {
+		return s.notifier.Send(ctx, user, notif)
 	}
-
-	if err := fn(ctx); err != nil {
-		return err
-	}
-	if s.publisher != nil && fallbackEvent != nil {
-		_ = s.publisher.Publish(ctx, fallbackEvent)
-	}
-	return nil
+	return s.sendMail(ctx, language, user, mailKey, code, ttl)
 }

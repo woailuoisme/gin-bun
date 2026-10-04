@@ -145,8 +145,7 @@ func sanitizeExtension(name string) string {
 func resolveExtension(originalName string, content []byte) string {
 	ext := sanitizeExtension(originalName)
 	if ext == "" && len(content) > 0 {
-		mtype := mimetype.Detect(content)
-		if mtype != nil && mtype.Extension() != "" {
+		if mtype := mimetype.Detect(content); mtype != nil && mtype.Extension() != "" {
 			return mtype.Extension()
 		}
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/johnfercher/maroto/v2/pkg/core"
 	"github.com/johnfercher/maroto/v2/pkg/core/entity"
 	"github.com/johnfercher/maroto/v2/pkg/props"
+	"github.com/samber/lo"
 	"github.com/samber/oops"
 	"go.uber.org/zap"
 
@@ -53,14 +54,11 @@ func NewService(cfg config.PDFConfig, disk storage.Disk, log *zap.Logger) *Servi
 
 // RegisterPDF 注册并初始化 PDF 服务实例。
 func RegisterPDF(cfg *config.Config, disk storage.Disk, log *zap.Logger) (*Service, error) {
-	pdfCfg := config.PDFConfig{
+	pdfCfg := lo.Ternary(cfg != nil, lo.FromPtr(cfg).PDF, config.PDFConfig{
 		FontFamily: "SourceHanSans",
 		PageSize:   "A4",
 		Margin:     DefaultMargin,
-	}
-	if cfg != nil {
-		pdfCfg = cfg.PDF
-	}
+	})
 
 	return NewService(pdfCfg, disk, log), nil
 }
@@ -200,14 +198,8 @@ func applyLayout(cfgBuilder marotoconfig.Builder, doc Document) {
 		return
 	}
 
-	pageSize := layout.PageSize()
-	if pageSize == "" {
-		pageSize = DefaultPageSize
-	}
-	pageOrientation := layout.Orientation()
-	if pageOrientation == "" {
-		pageOrientation = orientation.Vertical
-	}
+	pageSize := cmp.Or(layout.PageSize(), DefaultPageSize)
+	pageOrientation := cmp.Or(layout.Orientation(), orientation.Vertical)
 
 	t, r, b, l := layout.Margins()
 	cfgBuilder.WithPageSize(pageSize)
@@ -219,10 +211,7 @@ func applyLayout(cfgBuilder marotoconfig.Builder, doc Document) {
 }
 
 func resolveMargin(m float64) float64 {
-	if m > 0 {
-		return m
-	}
-	return DefaultMargin
+	return lo.Ternary(m > 0, m, DefaultMargin)
 }
 
 func applyMetadata(cfgBuilder marotoconfig.Builder, doc Document) {

@@ -2,6 +2,7 @@
 package eventbus
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/components/cqrs"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
+	"github.com/samber/lo"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
@@ -100,9 +102,7 @@ func WithChannelBuffer(size int) Option {
 
 // NewManager 初始化并构建基于 Watermill CQRS 的事件总线管理器。
 func NewManager(cfg config.EventBusConfig, zlog *zap.Logger, opts ...Option) (*Manager, error) {
-	if zlog == nil {
-		zlog = zap.NewNop()
-	}
+	zlog = cmp.Or(zlog, zap.NewNop())
 
 	// 事件总线子系统支持独立日志级别，默认降级为 warn 以减少启动期内部流水输出。
 	if cfg.LogLevel != "" {
@@ -270,13 +270,9 @@ func (m *Manager) RegisterHandler(handlers ...EventHandler) error {
 		return nil
 	}
 
-	cqrsHandlers := make([]cqrs.EventHandler, 0, len(handlers))
-	for _, h := range handlers {
-		if h == nil {
-			continue
-		}
-		cqrsHandlers = append(cqrsHandlers, h)
-	}
+	cqrsHandlers := lo.FilterMap(handlers, func(h EventHandler, _ int) (cqrs.EventHandler, bool) {
+		return h, h != nil
+	})
 	if len(cqrsHandlers) == 0 {
 		return nil
 	}

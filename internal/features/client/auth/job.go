@@ -73,10 +73,7 @@ func (j *WelcomeEmailJob) Handle(ctx context.Context) error {
 		},
 	})
 	if err != nil {
-		return oops.Code(string(errs.CodeInternal)).
-			With("task", TaskSendWelcomeEmail).
-			With("email", j.Email).
-			Wrap(err)
+		return j.fail(err)
 	}
 
 	msg := mailer.Message{
@@ -87,14 +84,18 @@ func (j *WelcomeEmailJob) Handle(ctx context.Context) error {
 	}
 
 	if err := j.mailer.Send(ctx, msg); err != nil {
-		return oops.Code(string(errs.CodeInternal)).
-			With("task", TaskSendWelcomeEmail).
-			With("email", j.Email).
-			Wrap(err)
+		return j.fail(err)
 	}
 
 	log.Info("welcome email sent successfully",
 		zap.String("email", j.Email),
 	)
 	return nil
+}
+
+func (j *WelcomeEmailJob) fail(err error) error {
+	return oops.Code(string(errs.CodeInternal)).
+		With("task", TaskSendWelcomeEmail).
+		With("email", j.Email).
+		Wrap(err)
 }

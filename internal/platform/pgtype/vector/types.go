@@ -106,14 +106,11 @@ func (v *Vector) Scan(src any) error {
 	}
 	switch s := src.(type) {
 	case string:
-		cleaned := strings.ReplaceAll(strings.TrimSpace(s), " ", "")
-		return v.inner.Scan(cleaned)
+		src = strings.ReplaceAll(strings.TrimSpace(s), " ", "")
 	case []byte:
-		cleaned := strings.ReplaceAll(strings.TrimSpace(string(s)), " ", "")
-		return v.inner.Scan(cleaned)
-	default:
-		return v.inner.Scan(src)
+		src = strings.ReplaceAll(strings.TrimSpace(string(s)), " ", "")
 	}
+	return v.inner.Scan(src)
 }
 
 // MarshalJSON 实现 json.Marshaler 接口，序列化为标准 JSON 浮点数组。

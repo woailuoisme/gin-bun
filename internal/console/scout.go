@@ -44,10 +44,10 @@ const fieldModel = "model"
 
 // Validate 校验导入参数合法性。
 func (o *ScoutImportOptions) Validate() error {
-	if !o.All && o.Model == "" {
-		return &ValidationError{Field: fieldModel, Message: "please specify a model name or use --all"}
-	}
-	if !o.All && o.Model != "" {
+	if !o.All {
+		if o.Model == "" {
+			return &ValidationError{Field: fieldModel, Message: "please specify a model name or use --all"}
+		}
 		if _, ok := search.GetModel(o.Model); !ok {
 			return &ValidationError{Field: fieldModel, Message: fmt.Sprintf("model [%s] is not registered as searchable", o.Model)}
 		}

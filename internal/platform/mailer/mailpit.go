@@ -31,9 +31,7 @@ var _ Mailer = (*mailpitMailer)(nil)
 
 // newMailpitMailer 创建 Mailpit 发信器实例。
 func newMailpitMailer(cfg config.MailConfig, log *zap.Logger) (*mailpitMailer, error) {
-	if log == nil {
-		log = zap.NewNop()
-	}
+	log = cmp.Or(log, zap.NewNop())
 	host := cmp.Or(strings.TrimSpace(cfg.Mailpit.Host), "127.0.0.1")
 	port := cmp.Or(cfg.Mailpit.Port, 1025)
 

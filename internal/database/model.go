@@ -2,6 +2,7 @@
 package database
 
 import (
+	"cmp"
 	"context"
 	"time"
 
@@ -321,10 +322,7 @@ func (q *Query[T]) resolveDB(ctx context.Context) bun.IDB {
 
 // defaultString 若首个参数非空则优先使用，否则返回默认值。
 func defaultString(fallback string, values []string) string {
-	if len(values) > 0 && values[0] != "" {
-		return values[0]
-	}
-	return fallback
+	return cmp.Or(lo.FirstOrEmpty(values), fallback)
 }
 
 // isModel 判断类型 T 是否实现了 Model 接口。

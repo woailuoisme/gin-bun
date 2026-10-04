@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/aarondl/opt/omitnull"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 	govalidator "github.com/go-playground/validator/v10"
@@ -521,5 +522,71 @@ func TestValidatableInterface(t *testing.T) {
 		assert.Equal(t, http.StatusUnprocessableEntity, status)
 		assert.Equal(t, string(errs.CodeValidationFailed), resp.Code)
 		assert.Contains(t, resp.Errors, "endTime")
+	})
+}
+
+type testRoleType string
+
+const (
+	roleSuper testRoleType = "super"
+	roleGuest testRoleType = "guest"
+)
+
+type testPatchBody struct {
+	Name omitnull.Val[string]       `json:"name" validate:"omitempty,min=3,max=20"`
+	Age  omitnull.Val[int]          `json:"age" validate:"omitempty,min=1,max=120"`
+	Role omitnull.Val[testRoleType] `json:"role" validate:"omitempty,oneof=super guest"`
+}
+
+// TestOmitNullValidation 验证三态 omitnull 容器字段与验证器解包、标量规则联动的准确性。
+func TestOmitNullValidation(t *testing.T) {
+	require.NoError(t, validator.InitEngine())
+	validator.RegisterOmitNullTypes(omitnull.Val[testRoleType]{})
+
+	v, ok := binding.Validator.Engine().(*govalidator.Validate)
+	require.True(t, ok)
+
+	t.Run("全部字段未设置 (Unset) 时通过", func(t *testing.T) {
+		form := testPatchBody{}
+		assert.NoError(t, v.Struct(form))
+	})
+
+	t.Run("显式置空 (Null) 时通过 omitempty 规则", func(t *testing.T) {
+		form := testPatchBody{
+			Name: omitnull.FromPtr[string](nil),
+			Age:  omitnull.FromPtr[int](nil),
+		}
+		assert.NoError(t, v.Struct(form))
+	})
+
+	t.Run("包含合法有效值时校验通过", func(t *testing.T) {
+		form := testPatchBody{
+			Name: omitnull.From("alice"),
+			Age:  omitnull.From(25),
+			Role: omitnull.From(roleSuper),
+		}
+		assert.NoError(t, v.Struct(form))
+	})
+
+	t.Run("包含非法值时触发标量标签规则拦截", func(t *testing.T) {
+		form := testPatchBody{
+			Name: omitnull.From("al"), // < min=3
+			Age:  omitnull.From(200),  // > max=120
+			Role: omitnull.From(testRoleType("invalid_role")),
+		}
+		err := v.Struct(form)
+		require.Error(t, err)
+
+		valErr, ok := errors.AsType[govalidator.ValidationErrors](err)
+		require.True(t, ok)
+		assert.Len(t, valErr, 3)
+
+		tags := map[string]string{}
+		for _, fe := range valErr {
+			tags[fe.Field()] = fe.Tag()
+		}
+		assert.Equal(t, "min", tags["name"])
+		assert.Equal(t, "max", tags["age"])
+		assert.Equal(t, "oneof", tags["role"])
 	})
 }

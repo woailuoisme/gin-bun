@@ -419,7 +419,6 @@ func TestResilience_Budget(t *testing.T) {
 	assert.Equal(t, int32(2), attempts.Load())
 }
 
-//nolint:bodyclose // failsafehttp manages response body lifecycle on retried HTTP attempts
 func TestResilience_HTTPRoundTripper(t *testing.T) {
 	t.Parallel()
 
@@ -466,4 +465,173 @@ func TestResilience_SentinelErrors(t *testing.T) {
 	assert.Equal(t, retrypolicy.ErrExceeded, resilience.ErrRetriesExceeded)
 	assert.Equal(t, ratelimiter.ErrExceeded, resilience.ErrRateLimitExceeded)
 	assert.Equal(t, budget.ErrExceeded, resilience.ErrBudgetExceeded)
+}
+
+func TestResilience_NewResilientHTTPClient_Retry(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		val := attempts.Add(1)
+		if val < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("resilient-ok"))
+	}))
+	defer ts.Close()
+
+	client := resilience.NewResilientHTTPClient(resilience.ResilientTransportConfig{
+		MaxAttempts:  3,
+		InitialDelay: 5 * time.Millisecond,
+		MaxDelay:     20 * time.Millisecond,
+	})
+
+	resp, err := client.Get(ts.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "resilient-ok", string(body))
+	assert.Equal(t, int32(3), attempts.Load())
+}
+
+func TestResilience_NewResilientHTTPClient_CircuitBreaker(t *testing.T) {
+	t.Parallel()
+
+	var stateChanged atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	client := resilience.NewResilientHTTPClient(resilience.ResilientTransportConfig{
+		MaxAttempts:  1, // 不重试，直接驱动断路器
+		InitialDelay: 5 * time.Millisecond,
+		CircuitBreaker: &resilience.CircuitBreakerConfig{
+			FailureThreshold: 2,
+			Delay:            100 * time.Millisecond,
+			OnStateChanged: func(event circuitbreaker.StateChangedEvent) {
+				if event.NewState == circuitbreaker.OpenState {
+					stateChanged.Store(true)
+				}
+			},
+		},
+	})
+
+	// 第 1 次 500
+	resp1, err1 := client.Get(ts.URL)
+	if err1 == nil {
+		_ = resp1.Body.Close()
+	}
+
+	// 第 2 次 500，应触发断路器开启
+	resp2, err2 := client.Get(ts.URL)
+	if err2 == nil {
+		_ = resp2.Body.Close()
+	}
+
+	assert.True(t, stateChanged.Load(), "断路器在达到连续2次500失败后应自动开启")
+
+	// 第 3 次请求应被断路器直接拦截熔断
+	_, err3 := client.Get(ts.URL)
+	require.Error(t, err3)
+	assert.ErrorIs(t, err3, circuitbreaker.ErrOpen)
+}
+
+func TestResilience_NewResilientHTTPClient_Bulkhead(t *testing.T) {
+	t.Parallel()
+
+	blocker := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-blocker
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+	defer close(blocker)
+
+	client := resilience.NewResilientHTTPClient(resilience.ResilientTransportConfig{
+		MaxAttempts: 1,
+		Bulkhead: &resilience.BulkheadConfig{
+			MaxConcurrency: 1,
+			MaxWaitTime:    10 * time.Millisecond,
+		},
+	})
+
+	// 启动第一个请求占满并发槽
+	go func() {
+		resp, _ := client.Get(ts.URL)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	// 第二个请求在超时后应被隔离舱拦截
+	_, err := client.Get(ts.URL)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, bulkhead.ErrFull)
+}
+
+func TestResilience_NewResilientHTTPClient_RetryAfter_DateAndSeconds(t *testing.T) {
+	t.Parallel()
+
+	// 1. 验证 HTTP-date 格式超期时触发 AbortIf 快速熔断失败，不无谓阻塞
+	futureDate := time.Now().Add(10 * time.Minute).UTC().Format(http.TimeFormat)
+	tsDate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", futureDate)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer tsDate.Close()
+
+	client := resilience.NewResilientHTTPClient(resilience.ResilientTransportConfig{
+		MaxAttempts:  3,
+		InitialDelay: 5 * time.Millisecond,
+		MaxDelay:     20 * time.Millisecond,
+	})
+
+	start := time.Now()
+	respDate, err := client.Get(tsDate.URL)
+	require.NoError(t, err)
+	defer func() { _ = respDate.Body.Close() }()
+
+	// 应当在几毫秒内立即快速返回 429，而不是阻塞 10 分钟
+	assert.Equal(t, http.StatusTooManyRequests, respDate.StatusCode)
+	assert.Less(t, time.Since(start), 200*time.Millisecond)
+
+	// 2. 验证 HTTP-date 格式为过去时间（负延迟）时降级返回 0 并正常执行退避重试
+	attemptsPast := 0
+	pastDate := time.Now().Add(-10 * time.Minute).UTC().Format(http.TimeFormat)
+	tsPastDate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attemptsPast++
+		if attemptsPast == 1 {
+			w.Header().Set("Retry-After", pastDate)
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer tsPastDate.Close()
+
+	respPast, err := client.Get(tsPastDate.URL)
+	require.NoError(t, err)
+	defer func() { _ = respPast.Body.Close() }()
+	assert.Equal(t, http.StatusOK, respPast.StatusCode)
+	assert.Equal(t, 2, attemptsPast)
+
+	// 3. 验证整数秒格式（例如 120 秒）超过 MaxDelay 时触发快速中止
+	tsSeconds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer tsSeconds.Close()
+
+	respSec, err := client.Get(tsSeconds.URL)
+	require.NoError(t, err)
+	defer func() { _ = respSec.Body.Close() }()
+	assert.Equal(t, http.StatusTooManyRequests, respSec.StatusCode)
 }

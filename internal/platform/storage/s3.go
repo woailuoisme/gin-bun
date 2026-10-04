@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"bgin/internal/config"
 	"bgin/internal/platform/errs"
+	"bgin/internal/platform/resilience"
 )
 
 // defaultS3Region 是 minio 的签名要求与 S3 兼容实现的默认值不一致时的兜底：
@@ -58,15 +60,13 @@ func NewS3Disk(cfg config.S3StorageConfig) (Disk, error) {
 		return nil, errors.New("storage: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY cannot be empty")
 	}
 
-	region := cfg.Region
-	if region == "" {
-		region = defaultS3Region
-	}
+	region := cmp.Or(cfg.Region, defaultS3Region)
 
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
-		Secure: cfg.UseSSL,
-		Region: region,
+		Creds:     credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+		Secure:    cfg.UseSSL,
+		Region:    region,
+		Transport: resilience.NewResilientTransport(nil, resilience.ResilientTransportConfig{}),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("storage: failed to initialize S3 client (endpoint=%s): %w", cfg.Endpoint, err)
@@ -174,10 +174,7 @@ func (d *s3Disk) PutMultipart(ctx context.Context, key string, file *multipart.F
 	}
 	defer func() { _ = src.Close() }()
 
-	contentType := file.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
+	contentType := cmp.Or(file.Header.Get("Content-Type"), "application/octet-stream")
 
 	_, err = d.client.PutObject(ctx, d.bucket, keyOf(key), src, file.Size, minio.PutObjectOptions{
 		ContentType: contentType,
@@ -346,10 +343,7 @@ func (d *s3Disk) HealthCheck(ctx context.Context) error {
 
 // Driver 返回当前存储驱动名称。若服务地址包含 garage 则自动识别为 garage，缺省为 s3。
 func (d *s3Disk) Driver() string {
-	if strings.Contains(strings.ToLower(d.endpoint), "garage") {
-		return "garage"
-	}
-	return "s3"
+	return lo.Ternary(strings.Contains(strings.ToLower(d.endpoint), "garage"), "garage", "s3")
 }
 
 // Ping 实现 ready.Pinger 接口。

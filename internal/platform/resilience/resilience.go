@@ -18,6 +18,7 @@ import (
 	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
+	"github.com/samber/lo"
 )
 
 var (
@@ -145,21 +146,14 @@ func NewTimeout[R any](dur time.Duration) timeout.Timeout[R] {
 
 // NewRateLimiter 构建面向出站调用的流量整形与限速策略。
 func NewRateLimiter[R any](cfg RateLimiterConfig) ratelimiter.RateLimiter[R] {
-	period := cfg.Period
-	if period <= 0 {
-		period = time.Second
-	}
-	rate := cfg.MaxRate
-	if rate == 0 {
-		rate = 100
-	}
+	period := cmp.Or(cfg.Period, time.Second)
+	rate := cmp.Or(cfg.MaxRate, 100)
 
-	var builder ratelimiter.Builder[R]
-	if cfg.Smooth {
-		builder = ratelimiter.NewSmoothBuilder[R](rate, period)
-	} else {
-		builder = ratelimiter.NewBurstyBuilder[R](rate, period)
-	}
+	builder := lo.Ternary(
+		cfg.Smooth,
+		ratelimiter.NewSmoothBuilder[R](rate, period),
+		ratelimiter.NewBurstyBuilder[R](rate, period),
+	)
 
 	if cfg.MaxWaitTime > 0 {
 		builder = builder.WithMaxWaitTime(cfg.MaxWaitTime)
@@ -204,10 +198,7 @@ func NewBudget(cfg BudgetConfig) budget.Budget {
 
 // NewHTTPRoundTripper 将弹性策略挂载至原生 http.RoundTripper 传输层，供标准 http.Client 或 resty.Client 使用。
 func NewHTTPRoundTripper(inner http.RoundTripper, policies ...failsafe.Policy[*http.Response]) http.RoundTripper {
-	if inner == nil {
-		inner = http.DefaultTransport
-	}
-	return failsafehttp.NewRoundTripper(inner, policies...)
+	return failsafehttp.NewRoundTripper(cmp.Or(inner, http.DefaultTransport), policies...)
 }
 
 // NewExecutor 根据给定的弹性策略列表构建执行器。
@@ -231,9 +222,7 @@ func NewNetworkExecutor(maxAttempts int, initialDelay, maxDelay time.Duration) f
 
 // Run 遵循上下文并在执行器保护下运行无返回值的任务。
 func Run[R any](ctx context.Context, executor failsafe.Executor[R], fn func() error) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = cmp.Or(ctx, context.Background())
 	if executor == nil {
 		return fn()
 	}
@@ -243,9 +232,7 @@ func Run[R any](ctx context.Context, executor failsafe.Executor[R], fn func() er
 // RunWithContext 遵循上下文并在执行器保护下运行接收 context 的任务。
 // 闭包所接收的 Context 自动集成执行器层级的超时或对冲派生控制。
 func RunWithContext[R any](ctx context.Context, executor failsafe.Executor[R], fn func(context.Context) error) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = cmp.Or(ctx, context.Background())
 	if executor == nil {
 		return fn(ctx)
 	}
@@ -256,9 +243,7 @@ func RunWithContext[R any](ctx context.Context, executor failsafe.Executor[R], f
 
 // Get 遵循上下文并在执行器保护下运行有返回值的任务。
 func Get[T any](ctx context.Context, executor failsafe.Executor[T], fn func() (T, error)) (T, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = cmp.Or(ctx, context.Background())
 	if executor == nil {
 		return fn()
 	}
@@ -268,9 +253,7 @@ func Get[T any](ctx context.Context, executor failsafe.Executor[T], fn func() (T
 // GetWithContext 遵循上下文并在执行器保护下运行接收 context 的任务并返回值。
 // 闭包所接收的 Context 自动集成执行器层级的超时或对冲派生控制。
 func GetWithContext[T any](ctx context.Context, executor failsafe.Executor[T], fn func(context.Context) (T, error)) (T, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = cmp.Or(ctx, context.Background())
 	if executor == nil {
 		return fn(ctx)
 	}

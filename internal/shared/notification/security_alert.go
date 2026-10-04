@@ -1,6 +1,8 @@
 package notification
 
 import (
+	"cmp"
+
 	"bgin/internal/platform/mailer"
 	"bgin/internal/platform/notification"
 	"bgin/internal/platform/notification/contract"
@@ -53,9 +55,7 @@ func (n *SecurityAlertNotification) ToDatabase(_ any) map[string]any {
 func (n *SecurityAlertNotification) ToRealtime(notifiable any) notification.RealtimeMessage {
 	channel := "notifications"
 	if notif, ok := notifiable.(contract.Notifiable); ok {
-		if ch := notif.RouteNotificationFor("realtime"); ch != "" {
-			channel = ch
-		}
+		channel = cmp.Or(notif.RouteNotificationFor("realtime"), channel)
 	}
 	return notification.RealtimeMessage{
 		Channel: channel,

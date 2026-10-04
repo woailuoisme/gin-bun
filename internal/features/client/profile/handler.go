@@ -3,7 +3,6 @@ package profile
 import (
 	"github.com/aarondl/opt/omitnull"
 	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
 
 	"bgin/internal/platform/authentication"
 	"bgin/internal/platform/errs"
@@ -26,6 +25,15 @@ func NewHandler(userService *user.Service, mediaManager *media.Manager) *Handler
 	}
 }
 
+func (h *Handler) currentUserID(c *gin.Context) (string, bool) {
+	id, ok := authentication.FromContext(c.Request.Context())
+	if !ok {
+		_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
+		return "", false
+	}
+	return id.UserID, true
+}
+
 // GetProfile 处理 GET /v1/users/me。
 //
 // @Summary      读取本人档案
@@ -37,13 +45,12 @@ func NewHandler(userService *user.Service, mediaManager *media.Manager) *Handler
 // @x-order      1
 // @Router       /users/me [get]
 func (h *Handler) GetProfile(c *gin.Context) {
-	id, ok := authentication.FromContext(c.Request.Context())
+	userID, ok := h.currentUserID(c)
 	if !ok {
-		_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
 		return
 	}
 
-	profile, err := h.userService.GetProfile(c.Request.Context(), id.UserID)
+	profile, err := h.userService.GetProfile(c.Request.Context(), userID)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -64,9 +71,8 @@ func (h *Handler) GetProfile(c *gin.Context) {
 // @x-order      2
 // @Router       /users/me [patch]
 func (h *Handler) UpdateProfile(c *gin.Context) {
-	id, ok := authentication.FromContext(c.Request.Context())
+	userID, ok := h.currentUserID(c)
 	if !ok {
-		_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
 		return
 	}
 
@@ -75,23 +81,13 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
-	if err := binding.Validator.ValidateStruct(toSelfPatch(body)); err != nil {
-		_ = c.Error(err)
-		return
-	}
 
-	profile, err := h.userService.UpdateProfile(c.Request.Context(), id.UserID, body.fieldSet(), user.ScopeClient)
+	profile, err := h.userService.UpdateProfile(c.Request.Context(), userID, body.fieldSet(), user.ScopeClient)
 	if err != nil {
 		_ = c.Error(err)
 		return
 	}
 	response.OK(c, profile)
-}
-
-// toSelfPatch 把三态请求投影为可复用的校验结构体。
-func toSelfPatch(body UpdateProfileBody) *selfPatch {
-	patch := body.fieldSet().Patch()
-	return &patch
 }
 
 // UploadAvatar 处理 POST /v1/users/me/avatar。
@@ -109,9 +105,8 @@ func toSelfPatch(body UpdateProfileBody) *selfPatch {
 // @x-order      3
 // @Router       /users/me/avatar [post]
 func (h *Handler) UploadAvatar(c *gin.Context) {
-	id, ok := authentication.FromContext(c.Request.Context())
+	userID, ok := h.currentUserID(c)
 	if !ok {
-		_ = c.Error(errs.Unauthorized(errs.CodeAuthTokenInvalid, "Authentication is required"))
 		return
 	}
 
@@ -121,7 +116,7 @@ func (h *Handler) UploadAvatar(c *gin.Context) {
 		return
 	}
 
-	avatarURL, err := h.mediaManager.AttachAvatar(c.Request.Context(), id.UserID, body.Avatar)
+	avatarURL, err := h.mediaManager.AttachAvatar(c.Request.Context(), userID, body.Avatar)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -129,7 +124,7 @@ func (h *Handler) UploadAvatar(c *gin.Context) {
 
 	profile, err := h.userService.UpdateProfile(
 		c.Request.Context(),
-		id.UserID,
+		userID,
 		user.FieldSet{
 			Image: omitnull.From(avatarURL),
 		},

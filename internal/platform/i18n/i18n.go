@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/pelletier/go-toml/v2"
+	"github.com/samber/lo"
 
 	"bgin/internal/config"
 	"bgin/lang"
@@ -204,19 +205,13 @@ func (t *Translator) T(language, key string, vars ...map[string]string) string {
 		section, subKey = "", key
 	}
 
-	tpl := ""
-	if section != "" {
-		tpl = t.template(language, section, subKey)
-	} else {
-		tpl = t.findAnySection(language, subKey)
-	}
-
+	tpl := lo.Ternary(section != "", t.template(language, section, subKey), t.findAnySection(language, subKey))
 	if tpl == "" {
 		return ""
 	}
 
-	if len(vars) > 0 && vars[0] != nil {
-		return render(tpl, vars[0])
+	if v := lo.FirstOrEmpty(vars); v != nil {
+		return render(tpl, v)
 	}
 	return tpl
 }
@@ -241,8 +236,7 @@ func (t *Translator) FieldLabel(language, field string) string {
 	}
 
 	// 支持路径解构回退（例如 items.0.email 或 user.avatar 回退查找 email 或 avatar）
-	if idx := strings.LastIndex(field, "."); idx >= 0 && idx < len(field)-1 {
-		last := field[idx+1:]
+	if _, last, found := strings.CutLast(field, "."); found && last != "" {
 		if _, err := strconv.Atoi(last); err != nil {
 			return t.template(language, sectionFields, last)
 		}

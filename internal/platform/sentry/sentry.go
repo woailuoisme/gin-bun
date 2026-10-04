@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/getsentry/sentry-go"
+	"github.com/samber/lo"
 
 	"bgin/internal/config"
 )
@@ -30,13 +31,7 @@ func Init(cfg config.SentryConfig, appName, appEnv, appVersion string) (func(), 
 	}
 
 	env := cmp.Or(cfg.Environment, appEnv)
-	release := cfg.Release
-	if release == "" {
-		release = appName
-		if appVersion != "" {
-			release += "@" + appVersion
-		}
-	}
+	release := cmp.Or(cfg.Release, lo.Ternary(appVersion != "", appName+"@"+appVersion, appName))
 
 	tracesRate := min(max(cfg.TracesSampleRate, 0), 1)
 
@@ -172,10 +167,7 @@ func SetUser(ctx context.Context, id, email, username, ip string) {
 	if !IsInitialized() || ctx == nil {
 		return
 	}
-	hub := sentry.GetHubFromContext(ctx)
-	if hub == nil {
-		hub = sentry.CurrentHub()
-	}
+	hub := cmp.Or(sentry.GetHubFromContext(ctx), sentry.CurrentHub())
 	hub.ConfigureScope(func(scope *sentry.Scope) {
 		scope.SetUser(sentry.User{
 			ID:        id,
@@ -191,10 +183,7 @@ func SetTag(ctx context.Context, key, value string) {
 	if !IsInitialized() || ctx == nil || key == "" || value == "" {
 		return
 	}
-	hub := sentry.GetHubFromContext(ctx)
-	if hub == nil {
-		hub = sentry.CurrentHub()
-	}
+	hub := cmp.Or(sentry.GetHubFromContext(ctx), sentry.CurrentHub())
 	hub.ConfigureScope(func(scope *sentry.Scope) {
 		scope.SetTag(key, value)
 	})

@@ -90,9 +90,7 @@ func (p *Provider) ValidateCredentials(ctx context.Context, u *models.User, cred
 
 // RecordLogin 记录用户登录成功的时间与方式。
 func (p *Provider) RecordLogin(ctx context.Context, id string, method string) error {
-	user := new(models.User)
-	user.ID = id
-	return user.RecordLogin(ctx, p.db, method)
+	return (&models.User{ID: id}).RecordLogin(ctx, p.db, method)
 }
 
 // FindCredentialAccount 查找指定用户的本地凭据账户。

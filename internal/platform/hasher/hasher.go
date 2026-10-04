@@ -2,6 +2,7 @@
 package hasher
 
 import (
+	"cmp"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -10,6 +11,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/samber/lo"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -211,9 +213,9 @@ var _ PasswordHasher = (*BcryptHasher)(nil)
 
 // NewBcrypt 构造指定成本的 BcryptHasher，默认使用 bcrypt.DefaultCost (10)。
 func NewBcrypt(cost ...int) *BcryptHasher {
-	c := bcrypt.DefaultCost
-	if len(cost) > 0 && cost[0] >= bcrypt.MinCost && cost[0] <= bcrypt.MaxCost {
-		c = cost[0]
+	c := cmp.Or(lo.FirstOrEmpty(cost), bcrypt.DefaultCost)
+	if c < bcrypt.MinCost || c > bcrypt.MaxCost {
+		c = bcrypt.DefaultCost
 	}
 	return &BcryptHasher{cost: c}
 }

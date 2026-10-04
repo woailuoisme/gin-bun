@@ -16,12 +16,15 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
+	"github.com/aarondl/opt/omitnull"
 	"github.com/dustin/go-humanize"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 	govalidator "github.com/go-playground/validator/v10"
+	"github.com/samber/lo"
 
 	"bgin/internal/platform/errs"
 	"bgin/internal/platform/i18n"
@@ -81,13 +84,11 @@ func checkValidatable(obj any) error {
 	case reflect.Slice, reflect.Array:
 		for i := range val.Len() {
 			item := val.Index(i)
+			target := item.Interface()
 			if item.CanAddr() {
-				if err := checkValidatable(item.Addr().Interface()); err != nil {
-					return err
-				}
-				continue
+				target = item.Addr().Interface()
 			}
-			if err := checkValidatable(item.Interface()); err != nil {
+			if err := checkValidatable(target); err != nil {
 				return err
 			}
 		}
@@ -138,11 +139,49 @@ func RegisterRule(tag string, fn govalidator.Func, messageKey ...string) error {
 	registerMu.Lock()
 	defer registerMu.Unlock()
 
-	if len(messageKey) > 0 && messageKey[0] != "" {
-		customTagMessageKeys.Store(tag, messageKey[0])
+	if msgKey := lo.FirstOrEmpty(messageKey); msgKey != "" {
+		customTagMessageKeys.Store(tag, msgKey)
 	}
 	if v, ok := binding.Validator.Engine().(*govalidator.Validate); ok {
 		return v.RegisterValidation(tag, fn)
+	}
+	return nil
+}
+
+// RegisterCustomTypeFunc 为验证器引擎注册自定义类型的解包或值提取函数。
+func RegisterCustomTypeFunc(fn govalidator.CustomTypeFunc, types ...any) {
+	registerMu.Lock()
+	defer registerMu.Unlock()
+
+	if v, ok := binding.Validator.Engine().(*govalidator.Validate); ok {
+		v.RegisterCustomTypeFunc(fn, types...)
+	}
+}
+
+// RegisterOmitNullTypes 为指定具体类型的 omitnull.Val[T] 容器注册统一的三态解包函数。
+func RegisterOmitNullTypes(types ...any) {
+	RegisterCustomTypeFunc(UnpackOmitNull, types...)
+}
+
+// UnpackOmitNull 统一从 omitnull.Val[T] 容器提取具体值供验证器校验。
+// 若字段为缺省 (Unset) 或显式置空 (Null)，返回 nil（由 omitempty 标签跳过基础校验规则）；
+// 若包含具体有效值，则解包返回 T 驱动后续标量规则。
+func UnpackOmitNull(field reflect.Value) any {
+	if !field.IsValid() {
+		return nil
+	}
+	if field.Kind() == reflect.Pointer {
+		if field.IsNil() {
+			return nil
+		}
+		field = field.Elem()
+	}
+	m := field.MethodByName("Get")
+	if m.IsValid() {
+		results := m.Call(nil)
+		if len(results) == 2 && results[1].Bool() {
+			return results[0].Interface()
+		}
 	}
 	return nil
 }
@@ -161,6 +200,15 @@ func registerRules(v *govalidator.Validate) error {
 		}
 		return field.Name
 	})
+
+	v.RegisterCustomTypeFunc(UnpackOmitNull,
+		omitnull.Val[string]{},
+		omitnull.Val[bool]{},
+		omitnull.Val[int]{},
+		omitnull.Val[int64]{},
+		omitnull.Val[float64]{},
+		omitnull.Val[time.Time]{},
+	)
 
 	rules := []struct {
 		tag string
@@ -327,10 +375,8 @@ func validatePassword(field govalidator.FieldLevel) bool {
 		return true // 空值校验留给 required 规则
 	}
 	minLen := 8
-	if param := field.Param(); param != "" {
-		if n, err := strconv.Atoi(param); err == nil && n > 0 {
-			minLen = n
-		}
+	if n, err := strconv.Atoi(field.Param()); err == nil && n > 0 {
+		minLen = n
 	}
 	return len(str) >= minLen && hasLetterAndDigit(str)
 }

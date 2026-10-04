@@ -42,15 +42,8 @@ func RegisterChannels(r *platformRealtime.Registry, db bun.IDB) {
 				return errors.New("unauthorized: missing target user id")
 			}
 
-			if u.ID != "" && u.ID == targetID {
+			if (u.ID != "" && u.ID == targetID) || isAdmin(ctx, db, u.ID) {
 				return nil
-			}
-
-			// 若当前账号拥有管理员权限，亦允许订阅
-			if db != nil && u.ID != "" {
-				if user, err := models.FindUserByID(ctx, db, u.ID); err == nil && user != nil && user.Role == models.RoleAdmin {
-					return nil
-				}
 			}
 
 			return errors.New("unauthorized: permission denied for user private channel")
@@ -62,13 +55,10 @@ func RegisterChannels(r *platformRealtime.Registry, db bun.IDB) {
 			if u.ID == "" {
 				return errors.New("unauthorized: authentication required")
 			}
-
 			if db == nil {
 				return errors.New("unauthorized: authorization service unavailable")
 			}
-
-			user, err := models.FindUserByID(ctx, db, u.ID)
-			if err != nil || user == nil || user.Role != models.RoleAdmin {
+			if !isAdmin(ctx, db, u.ID) {
 				return errors.New("unauthorized: admin privileges required")
 			}
 			return nil
@@ -83,4 +73,13 @@ func RegisterChannels(r *platformRealtime.Registry, db bun.IDB) {
 			return nil
 		})
 	})
+}
+
+// isAdmin 检查指定用户是否具备系统管理员角色。
+func isAdmin(ctx context.Context, db bun.IDB, userID string) bool {
+	if db == nil || userID == "" {
+		return false
+	}
+	user, err := models.FindUserByID(ctx, db, userID)
+	return err == nil && user != nil && user.Role == models.RoleAdmin
 }

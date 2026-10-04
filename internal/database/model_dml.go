@@ -1,22 +1,28 @@
 package database
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"slices"
 	"time"
 
+	"github.com/samber/lo"
 	"github.com/uptrace/bun"
 )
 
+// targetDB 优先提取显式传入的数据库/事务连接，缺省时回退至 q.db。
+func (q *Query[T]) targetDB(dbs ...bun.IDB) bun.IDB {
+	if len(dbs) > 0 && dbs[0] != nil {
+		return dbs[0]
+	}
+	return q.db
+}
+
 // buildCounter 构建原子计数器增减更新查询。
 func (q *Query[T]) buildCounter(column, op string, delta int64, dbs ...bun.IDB) *bun.UpdateQuery {
-	targetDB := q.db
-	if len(dbs) > 0 && dbs[0] != nil {
-		targetDB = dbs[0]
-	}
-	upd := targetDB.NewUpdate().
+	upd := q.targetDB(dbs...).NewUpdate().
 		Model((*T)(nil)).
 		Set("? = ? "+op+" ?", bun.Ident(column), bun.Ident(column), delta)
 
@@ -48,19 +54,12 @@ func (q *Query[T]) Decrement(ctx context.Context, column string, amount ...int64
 }
 
 func extractDelta(amount []int64) int64 {
-	if len(amount) > 0 {
-		return amount[0]
-	}
-	return 1
+	return cmp.Or(lo.FirstOrEmpty(amount), 1)
 }
 
 // BuildTruncate 构建清空当前模型对应表的 DDL 查询。
 func (q *Query[T]) BuildTruncate(dbs ...bun.IDB) *bun.TruncateTableQuery {
-	targetDB := q.db
-	if len(dbs) > 0 && dbs[0] != nil {
-		targetDB = dbs[0]
-	}
-	return targetDB.NewTruncateTable().Model((*T)(nil))
+	return q.targetDB(dbs...).NewTruncateTable().Model((*T)(nil))
 }
 
 // Truncate 快速清空当前模型对应的数据库表（对标 Laravel truncate，自动透传上下文活跃事务）。
@@ -71,11 +70,7 @@ func (q *Query[T]) Truncate(ctx context.Context) error {
 
 // BuildInsert 构建当前模型的批量插入查询。
 func (q *Query[T]) BuildInsert(items []*T, dbs ...bun.IDB) *bun.InsertQuery {
-	targetDB := q.db
-	if len(dbs) > 0 && dbs[0] != nil {
-		targetDB = dbs[0]
-	}
-	return targetDB.NewInsert().Model(&items)
+	return q.targetDB(dbs...).NewInsert().Model(&items)
 }
 
 // BuildUpsert 构建当前模型的冲突更新查询（ON CONFLICT ... DO UPDATE）。
@@ -102,10 +97,7 @@ func (q *Query[T]) ChunkSize(size int) *Query[T] {
 
 // effectiveChunkSize 返回当前查询器生效的分块批次大小。
 func (q *Query[T]) effectiveChunkSize() int {
-	if q.chunkSize > 0 {
-		return q.chunkSize
-	}
-	return DefaultChunkSize
+	return cmp.Or(q.chunkSize, DefaultChunkSize)
 }
 
 // Create 仓储算子：将新实体持久化至数据库（自动透传事务连接）。

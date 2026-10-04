@@ -246,24 +246,21 @@ func (p *Path) Scan(src any) error {
 		*p = Path("")
 		return nil
 	}
+	var s string
 	switch v := src.(type) {
 	case string:
-		parsed, err := Parse(v)
-		if err != nil {
-			return err
-		}
-		*p = parsed
-		return nil
+		s = v
 	case []byte:
-		parsed, err := Parse(string(v))
-		if err != nil {
-			return err
-		}
-		*p = parsed
-		return nil
+		s = string(v)
 	default:
 		return fmt.Errorf("nestedset: cannot scan %T into Path", src)
 	}
+	parsed, err := Parse(s)
+	if err != nil {
+		return err
+	}
+	*p = parsed
+	return nil
 }
 
 // MarshalJSON 实现 json.Marshaler 接口，序列化为字符串。

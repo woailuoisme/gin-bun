@@ -2,10 +2,8 @@ package admin
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
 
 	"bgin/internal/platform/response"
-	"bgin/internal/shared/user"
 )
 
 // Handler 是管理端用户 CRUD 的 HTTP 适配层。
@@ -152,10 +150,6 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
-	if err := binding.Validator.ValidateStruct(toManagementPatch(body)); err != nil {
-		_ = c.Error(err)
-		return
-	}
 
 	updated, err := h.service.UpdateUser(c.Request.Context(), params.ID, body)
 	if err != nil {
@@ -189,15 +183,4 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 		return
 	}
 	response.NoContent(c)
-}
-
-// toManagementPatch 把管理端三态请求投影为可复用的校验结构体。
-func toManagementPatch(body UpdateUserBody) *managementPatch {
-	return &managementPatch{
-		ProfilePatch: body.fieldSet().Patch(),
-		Role:         user.ToPtr(body.Role),
-		Status:       user.ToPtr(body.Status),
-		BanReason:    user.ToPtr(body.BanReason),
-		BanExpires:   user.ToPtr(body.BanExpires),
-	}
 }

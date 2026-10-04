@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 )
 
 // Meta 是传统偏移分页列表响应的元信息。
@@ -90,10 +91,7 @@ const (
 
 // writeStream 统一设置 RFC 5987 文件名与内容类型后写出流，attachment / inline 仅处置方式不同。
 func writeStream(c *gin.Context, disposition, filename string, r io.Reader, size int64, contentType ...string) {
-	ct := "application/octet-stream"
-	if len(contentType) > 0 && contentType[0] != "" {
-		ct = contentType[0]
-	}
+	ct := cmp.Or(lo.FirstOrEmpty(contentType), "application/octet-stream")
 	c.Header("Content-Disposition", fmt.Sprintf("%s; filename=%q; filename*=UTF-8''%s",
 		disposition, asciiFallbackFilename(filename), url.PathEscape(filename)))
 	c.DataFromReader(http.StatusOK, size, ct, r, nil)

@@ -79,12 +79,12 @@ func (s *Service) UpdateAdminUser(ctx context.Context, userID string, patch Admi
 }
 
 // List 分页查询用户列表并返回符合条件的总记录数。
-func (s *Service) List(ctx context.Context, filter ListFilter, offset, limit int) ([]models.User, int, error) {
-	total, err := models.CountUsers(ctx, s.db, filter)
-	if err != nil {
-		return nil, 0, errs.Internal(err)
-	}
-	users, err := models.ListUsers(ctx, s.db, filter, offset, limit)
+// 内部深度整合泛型 Query[User].Paginate，当符合条件的总数为 0 时自动触发 O(1) 短路，免除二次实体检索。
+func (s *Service) List(ctx context.Context, filter ListFilter, page, pageSize int) ([]models.User, int, error) {
+	users, total, err := models.UserQueryFrom(ctx, s.db).
+		Scope(models.ScopeUserFilter(filter)).
+		Scope(models.ScopeUserSort(filter.Sort)).
+		Paginate(ctx, page, pageSize)
 	if err != nil {
 		return nil, 0, errs.Internal(err)
 	}
@@ -93,7 +93,12 @@ func (s *Service) List(ctx context.Context, filter ListFilter, offset, limit int
 
 // ListChunk 供流式导出等批量场景按块读取用户列表。
 func (s *Service) ListChunk(ctx context.Context, filter ListFilter, offset, limit int) ([]models.User, error) {
-	users, err := models.ListUsers(ctx, s.db, filter, offset, limit)
+	users, err := models.UserQueryFrom(ctx, s.db).
+		Scope(models.ScopeUserFilter(filter)).
+		Scope(models.ScopeUserSort(filter.Sort)).
+		Offset(offset).
+		Limit(limit).
+		Get(ctx)
 	if err != nil {
 		return nil, errs.Internal(err)
 	}

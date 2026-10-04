@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/samber/lo"
 	"github.com/samber/oops"
 
 	"bgin/internal/platform/authentication"
@@ -234,10 +235,7 @@ func RPC(r *Registry, method string, handler RPCHandler) {
 
 func resolveActor(ctx context.Context, user User) Authenticatable {
 	if id, ok := authentication.FromContext(ctx); ok {
-		defaultGuard := "client"
-		if id.Role == "admin" || id.Role == "super_admin" {
-			defaultGuard = "admin"
-		}
+		defaultGuard := lo.Ternary(id.Role == "admin" || id.Role == "super_admin", "admin", "client")
 		return &GenericUser{
 			ID:        id.UserID,
 			Role:      cmp.Or(user.Role, id.Role),

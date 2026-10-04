@@ -2,6 +2,7 @@ package sentry
 
 import (
 	"reflect"
+	"slices"
 
 	"github.com/getsentry/sentry-go"
 	"go.uber.org/zap/zapcore"
@@ -55,12 +56,9 @@ func (c *zapCore) Enabled(lvl zapcore.Level) bool {
 }
 
 func (c *zapCore) With(fields []zapcore.Field) zapcore.Core {
-	newFields := make([]zapcore.Field, 0, len(c.fields)+len(fields))
-	newFields = append(newFields, c.fields...)
-	newFields = append(newFields, fields...)
 	return &zapCore{
 		minLevel: c.minLevel,
-		fields:   newFields,
+		fields:   slices.Concat(c.fields, fields),
 	}
 }
 
@@ -76,9 +74,7 @@ func (c *zapCore) Write(ent zapcore.Entry, fields []zapcore.Field) error {
 		return nil
 	}
 
-	allFields := make([]zapcore.Field, 0, len(c.fields)+len(fields))
-	allFields = append(allFields, c.fields...)
-	allFields = append(allFields, fields...)
+	allFields := slices.Concat(c.fields, fields)
 	fieldsMap := fieldsToMap(allFields)
 
 	// Warn 级别转化为 Sentry 面包屑，不生成独立 Issue

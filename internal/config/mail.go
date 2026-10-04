@@ -37,10 +37,7 @@ type ResendConfig struct {
 // IsEnabled 报告是否启用真实邮件发送服务。
 // 当显式配置了 *Enabled 时遵循该值；未设置（如代码零值初始化）时默认视为启用 (true)。
 func (m MailConfig) IsEnabled() bool {
-	if m.Enabled != nil && !*m.Enabled {
-		return false
-	}
-	return true
+	return m.Enabled == nil || *m.Enabled
 }
 
 // Validate 检查邮件配置合法性。

@@ -281,7 +281,7 @@ func TestIdempotency_InFlightConflict(t *testing.T) {
 	r := setupTestRouter(store)
 
 	// 预先向 store 注入处于 "processing" 状态的记录，模拟前序并发请求仍在执行中
-	cacheKey := cache.Key("idempotency", "ip:192.0.2.1", "inflight-key-123")
+	cacheKey := cache.Key("idempotency", "user:usr_concurrent", "inflight-key-123")
 	processingRecord := `{"status":"processing","fingerprint":"any","created_at":123456789}`
 	err := store.Set(t.Context(), cacheKey, processingRecord, 30*time.Second)
 	require.NoError(t, err)
@@ -292,6 +292,7 @@ func TestIdempotency_InFlightConflict(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/heavy-task", bytes.NewBufferString(`{}`))
 	req.Header.Set("Idempotency-Key", "inflight-key-123")
+	req = req.WithContext(authentication.With(req.Context(), authentication.Identity{UserID: "usr_concurrent"}))
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -397,4 +398,58 @@ func TestIdempotency_IgnoreSafeMethods(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
+}
+
+// TestIdempotency_SessionScopeIsolation 验证匿名客户端携带 X-Session-ID 时按会话隔离。
+func TestIdempotency_SessionScopeIsolation(t *testing.T) {
+	store := newMemStore()
+	r := setupTestRouter(store)
+
+	r.POST("/checkout", func(c *gin.Context) {
+		c.JSON(http.StatusCreated, gin.H{"session": c.GetHeader("X-Session-ID")})
+	})
+
+	key := "shared-checkout-key"
+	body := `{"cart_id":"cart_999"}`
+
+	// 会话 A 请求
+	reqA := httptest.NewRequest(http.MethodPost, "/checkout", bytes.NewBufferString(body))
+	reqA.Header.Set("Content-Type", "application/json")
+	reqA.Header.Set("Idempotency-Key", key)
+	reqA.Header.Set("X-Session-ID", "sess_AAA")
+	wA := httptest.NewRecorder()
+	r.ServeHTTP(wA, reqA)
+	require.Equal(t, http.StatusCreated, wA.Code)
+	assert.Contains(t, wA.Body.String(), "sess_AAA")
+
+	// 会话 B 使用相同幂等键：必须隔离，不应回放会话 A 的结果
+	reqB := httptest.NewRequest(http.MethodPost, "/checkout", bytes.NewBufferString(body))
+	reqB.Header.Set("Content-Type", "application/json")
+	reqB.Header.Set("Idempotency-Key", key)
+	reqB.Header.Set("X-Session-ID", "sess_BBB")
+	wB := httptest.NewRecorder()
+	r.ServeHTTP(wB, reqB)
+	require.Equal(t, http.StatusCreated, wB.Code)
+	assert.Contains(t, wB.Body.String(), "sess_BBB")
+	assert.Empty(t, wB.Header().Get("Idempotent-Replayed"))
+}
+
+// TestIdempotency_MultipartSafe 验证 multipart/form-data 请求流式通过，正常完成且未因读取大体内存而崩溃。
+func TestIdempotency_MultipartSafe(t *testing.T) {
+	store := newMemStore()
+	r := setupTestRouter(store)
+
+	r.POST("/upload", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"uploaded": true})
+	})
+
+	multipartBody := "--boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\nContent-Type: text/plain\r\n\r\nhello world\r\n--boundary--\r\n"
+	req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewBufferString(multipartBody))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=boundary")
+	req.Header.Set("Idempotency-Key", "upload-key-001")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "true")
 }

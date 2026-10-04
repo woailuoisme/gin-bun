@@ -66,6 +66,7 @@ func TestMapBusinessError(t *testing.T) {
 		{"无权访问", errs.Forbidden("nope"), http.StatusForbidden, errs.CodeForbidden},
 		{"状态冲突", errs.Conflict("conflict"), http.StatusConflict, errs.CodeConflict},
 		{"限流", errs.RateLimited("slow down"), http.StatusTooManyRequests, errs.CodeRateLimited},
+		{"客户端主动断开", errs.ClientClosedRequest(context.Canceled), errs.StatusClientClosedRequest, errs.CodeClientClosedRequest},
 		{"内部错误", errs.Internal(errors.New("boom")), http.StatusInternalServerError, errs.CodeInternal},
 	}
 
@@ -126,6 +127,20 @@ func TestMapNoRows(t *testing.T) {
 		status, resp := errs.Map(err)
 		assert.Equal(t, http.StatusNotFound, status)
 		assert.Equal(t, string(errs.CodeNotFound), resp.Code)
+	}
+}
+
+// TestMapContextCanceled 校验 context.Canceled 与客户端主动取消映射为 499 CLIENT_CLOSED_REQUEST。
+func TestMapContextCanceled(t *testing.T) {
+	for _, err := range []error{
+		context.Canceled,
+		errs.ClientClosedRequest(context.Canceled),
+		oops.Code(string(errs.CodeContextCanceled)).Wrap(context.Canceled),
+	} {
+		status, resp := errs.Map(err)
+		assert.Equal(t, errs.StatusClientClosedRequest, status)
+		assert.Equal(t, string(errs.CodeClientClosedRequest), resp.Code)
+		assert.Equal(t, "Client closed request", resp.Message)
 	}
 }
 

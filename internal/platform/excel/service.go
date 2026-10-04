@@ -19,6 +19,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/samber/lo"
 	"github.com/samber/oops"
 	"github.com/xuri/excelize/v2"
 
@@ -530,12 +531,7 @@ func NewService(tempPath string, db *sql.DB) *Service {
 
 // RegisterExcel 注册并配置 Excel 服务到全局。
 func RegisterExcel(cfg *config.Config, db *sql.DB) (*Service, error) {
-	var tempPath string
-	if cfg != nil {
-		tempPath = cfg.Excel.TempPath
-	}
-
-	service := NewService(tempPath, db)
+	service := NewService(lo.Ternary(cfg != nil, cfg.Excel.TempPath, ""), db)
 	SetDefaultService(service)
 
 	return service, nil
@@ -546,10 +542,7 @@ func SetDefaultService(service *Service) {
 	defaultMu.Lock()
 	defer defaultMu.Unlock()
 
-	if service == nil {
-		service = NewService(defaultTempPath, nil)
-	}
-	defaultService = service
+	defaultService = cmp.Or(service, NewService(defaultTempPath, nil))
 }
 
 // DefaultService 获取全局默认的 Excel 服务实例。

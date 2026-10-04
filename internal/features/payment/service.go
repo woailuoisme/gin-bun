@@ -2,6 +2,7 @@ package payment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -55,7 +56,7 @@ func (d *defaultCallbackHandler) OnPaymentSuccess(ctx context.Context, result *p
 		zap.String("channel_trade_no", result.ChannelTradeNo),
 		zap.Int64("paid_amount", result.PaidAmount),
 	)
-	return oops.Code(string(errs.CodeInternal)).Errorf("payment callback handler is not configured")
+	return errs.Internal(errors.New("payment callback handler is not configured"))
 }
 
 func (d *defaultCallbackHandler) OnRefundSuccess(ctx context.Context, result *platformPayment.RefundResult) error {
@@ -66,7 +67,7 @@ func (d *defaultCallbackHandler) OnRefundSuccess(ctx context.Context, result *pl
 		zap.Int64("refund_amount", result.RefundAmount),
 		zap.String("status", string(result.Status)),
 	)
-	return oops.Code(string(errs.CodeInternal)).Errorf("payment callback handler is not configured")
+	return errs.Internal(errors.New("payment callback handler is not configured"))
 }
 
 // Service 负责协调支付回调的分布式幂等防重与业务事件分发。
@@ -269,21 +270,21 @@ func (s *Service) recordConsumed(ctx context.Context, key notificationKey) {
 	}
 }
 
+func (s *Service) baseURL() string {
+	if s == nil || s.cfg == nil {
+		return ""
+	}
+	return strings.TrimRight(s.cfg.App.URL, "/")
+}
+
 // FailureRedirectURL 返回支付失败后引导用户回到的订单结果页地址。
 func (s *Service) FailureRedirectURL() string {
-	if s == nil || s.cfg == nil {
-		return "/orders?status=failed"
-	}
-	return strings.TrimRight(s.cfg.App.URL, "/") + "/orders?status=failed"
+	return s.baseURL() + "/orders?status=failed"
 }
 
 // BuildAlipayReturnURL 构造支付宝同步跳转成功后的前端页面完整地址。
 func (s *Service) BuildAlipayReturnURL(outTradeNo string) string {
-	if s == nil || s.cfg == nil {
-		return fmt.Sprintf("/orders/%s?status=success", outTradeNo)
-	}
-	baseURL := strings.TrimRight(s.cfg.App.URL, "/")
-	return fmt.Sprintf("%s/orders/%s?status=success", baseURL, outTradeNo)
+	return fmt.Sprintf("%s/orders/%s?status=success", s.baseURL(), outTradeNo)
 }
 
 // extractTradeNo 提取用于并发排重的交易标识号。

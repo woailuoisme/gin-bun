@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -90,11 +91,10 @@ func extractRequestID(ctx context.Context) (string, bool) {
 	if ctx == nil {
 		return "", false
 	}
-	if v, ok := ctx.Value("request_id").(string); ok && v != "" {
-		return v, true
-	}
-	if v, ok := ctx.Value("X-Request-ID").(string); ok && v != "" {
-		return v, true
+	v1, _ := ctx.Value("request_id").(string)
+	v2, _ := ctx.Value("X-Request-ID").(string)
+	if id := cmp.Or(v1, v2); id != "" {
+		return id, true
 	}
 	return "", false
 }

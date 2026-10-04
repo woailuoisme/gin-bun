@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/samber/lo"
 )
 
 // 全局就绪状态与组件健康度常量。
@@ -40,10 +42,7 @@ func (r Result) IsReady() bool {
 
 // StatusCode 返回与评估结果匹配的标准 HTTP 状态码（就绪返回 200，未就绪返回 503）。
 func (r Result) StatusCode() int {
-	if r.Status == StatusNotReady {
-		return http.StatusServiceUnavailable
-	}
-	return http.StatusOK
+	return lo.Ternary(r.Status == StatusNotReady, http.StatusServiceUnavailable, http.StatusOK)
 }
 
 type resultReducer struct {
@@ -72,10 +71,7 @@ func (r *resultReducer) escalateOverall(critical bool) {
 
 // failureStatus 返回单项失败状态：关键项为 unreachable，非关键项为 degraded。
 func failureStatus(critical bool) string {
-	if critical {
-		return CheckUnreachable
-	}
-	return CheckDegraded
+	return lo.Ternary(critical, CheckUnreachable, CheckDegraded)
 }
 
 func (r *resultReducer) addChecked(check Check, err error, latency time.Duration) {
@@ -88,10 +84,7 @@ func (r *resultReducer) addChecked(check Check, err error, latency time.Duration
 		status = failureStatus(check.Critical)
 	}
 
-	latencyStr := ""
-	if latency > 0 {
-		latencyStr = latency.Round(time.Microsecond).String()
-	}
+	latencyStr := lo.Ternary(latency >= 0, latency.Round(time.Microsecond).String(), "")
 
 	r.results[check.Name] = ComponentStatus{
 		Status:   status,

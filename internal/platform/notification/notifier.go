@@ -88,11 +88,7 @@ func (n *Notifier) WithParallelTargets(limit int) *Notifier {
 func (n *Notifier) parallelLimit() int {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-
-	if n.parallelTargets <= 0 {
-		return defaultParallelTargets
-	}
-	return n.parallelTargets
+	return lo.Ternary(n.parallelTargets > 0, n.parallelTargets, defaultParallelTargets)
 }
 
 // Channel 按名称查找已注册的渠道。

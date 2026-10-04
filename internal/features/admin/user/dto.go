@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"strings"
 	"time"
 
 	"github.com/aarondl/opt/omitnull"
@@ -8,9 +9,17 @@ import (
 	"bgin/internal/database"
 	"bgin/internal/database/models"
 	"bgin/internal/platform/response"
+	"bgin/internal/platform/validator"
 	"bgin/internal/shared/enums"
 	"bgin/internal/shared/user"
 )
+
+func init() {
+	validator.RegisterOmitNullTypes(
+		omitnull.Val[Role]{},
+		omitnull.Val[Status]{},
+	)
+}
 
 // 分页默认值与上限，对应 api.md 6.1。
 const (
@@ -70,44 +79,53 @@ type CreateUserBody struct {
 // UpdateUserBody 是 PATCH /v1/admin/users/:id 的请求体。
 type UpdateUserBody struct {
 	// 用户展示昵称
-	Name omitnull.Val[string] `json:"name" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
+	Name omitnull.Val[string] `json:"name" validate:"omitempty,min=1,max=120" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
 	// 用户头像 URL
-	Image omitnull.Val[string] `json:"image" swaggertype:"string" extensions:"x-nullable" example:"https://example.com/avatar.png"`
+	Image omitnull.Val[string] `json:"image" validate:"omitempty,max=2048" swaggertype:"string" extensions:"x-nullable" example:"https://example.com/avatar.png"`
 	// 唯一登录用户名 (3-30位)
-	Username omitnull.Val[string] `json:"username" swaggertype:"string" extensions:"x-nullable" example:"alexmercer"`
+	Username omitnull.Val[string] `json:"username" validate:"omitempty,min=3,max=30,usernameslug,notreserved" swaggertype:"string" extensions:"x-nullable" example:"alexmercer"`
 	// 用户显示名称
-	DisplayUsername omitnull.Val[string] `json:"displayUsername" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
+	DisplayUsername omitnull.Val[string] `json:"displayUsername" validate:"omitempty,min=1,max=120" swaggertype:"string" extensions:"x-nullable" example:"Alex Mercer"`
 	// E.164 格式手机号
-	PhoneNumber omitnull.Val[string] `json:"phoneNumber" swaggertype:"string" extensions:"x-nullable" example:"+8613800138000"`
+	PhoneNumber omitnull.Val[string] `json:"phoneNumber" validate:"omitempty,e164" swaggertype:"string" extensions:"x-nullable" example:"+8613800138000"`
 	// 邮箱是否已验证
 	EmailVerified omitnull.Val[bool] `json:"emailVerified" swaggertype:"boolean" extensions:"x-nullable" example:"true"`
 	// 用户权限角色 (user: 普通用户, admin: 系统管理员)
-	Role omitnull.Val[Role] `json:"role" swaggertype:"string" extensions:"x-nullable" example:"admin" enums:"user,admin"`
+	Role omitnull.Val[Role] `json:"role" validate:"omitempty,oneof=user admin" swaggertype:"string" extensions:"x-nullable" example:"admin" enums:"user,admin"`
 	// 账号状态 (active: 正常活跃, inactive: 未激活, banned: 已封禁)
-	Status omitnull.Val[Status] `json:"status" swaggertype:"string" extensions:"x-nullable" example:"active" enums:"active,inactive,banned"`
+	Status omitnull.Val[Status] `json:"status" validate:"omitempty,oneof=active inactive banned" swaggertype:"string" extensions:"x-nullable" example:"active" enums:"active,inactive,banned"`
 	// 是否封禁
 	Banned omitnull.Val[bool] `json:"banned" swaggertype:"boolean" extensions:"x-nullable" example:"false"`
 	// 封禁原因
-	BanReason omitnull.Val[string] `json:"banReason" swaggertype:"string" extensions:"x-nullable" example:"违规发布广告"`
+	BanReason omitnull.Val[string] `json:"banReason" validate:"omitempty,max=500" swaggertype:"string" extensions:"x-nullable" example:"违规发布广告"`
 	// 封禁到期时间 (ISO 8601 UTC)
 	BanExpires omitnull.Val[time.Time] `json:"banExpires" swaggertype:"string" extensions:"x-nullable" example:"2026-10-01T00:00:00Z"`
 }
 
-// fieldSet 将请求中的档案字段投影为共享内核字段集。
-func (r UpdateUserBody) fieldSet() user.FieldSet {
-	return user.FieldSet{
-		Name:            r.Name,
-		Image:           r.Image,
-		Username:        r.Username,
-		DisplayUsername: r.DisplayUsername,
-		PhoneNumber:     r.PhoneNumber,
+// Validate 实现 Validatable 契约，阻断库层非空字段的显式置空。
+func (r UpdateUserBody) Validate() error {
+	if r.Name.IsNull() {
+		return user.FieldCannotBeNull("name")
 	}
+	if r.Role.IsNull() {
+		return user.FieldCannotBeNull("role")
+	}
+	if r.Status.IsNull() {
+		return user.FieldCannotBeNull("status")
+	}
+	return nil
 }
 
 // adminFieldSet 将请求中的档案与管理受控字段投影为共享内核管理字段集。
 func (r UpdateUserBody) adminFieldSet() user.AdminFieldSet {
 	return user.AdminFieldSet{
-		FieldSet:      r.fieldSet(),
+		FieldSet: user.FieldSet{
+			Name:            r.Name,
+			Image:           r.Image,
+			Username:        r.Username,
+			DisplayUsername: r.DisplayUsername,
+			PhoneNumber:     r.PhoneNumber,
+		},
 		EmailVerified: r.EmailVerified,
 		Role:          r.Role,
 		Status:        r.Status,
@@ -115,15 +133,6 @@ func (r UpdateUserBody) adminFieldSet() user.AdminFieldSet {
 		BanReason:     r.BanReason,
 		BanExpires:    r.BanExpires,
 	}
-}
-
-// managementPatch 是管理更新的校验投影。
-type managementPatch struct {
-	user.ProfilePatch
-	Role       *Role      `json:"role" validate:"omitempty,oneof=user admin"`
-	Status     *Status    `json:"status" validate:"omitempty,oneof=active inactive banned"`
-	BanReason  *string    `json:"banReason" validate:"omitempty,max=500"`
-	BanExpires *time.Time `json:"banExpires"`
 }
 
 // --- 查询参数 QueryParams ---
@@ -142,6 +151,16 @@ type ListUsersQueryParams struct {
 	Status Status `form:"status" json:"status" example:"active" enums:"active,inactive,banned" validate:"omitempty,oneof=active inactive banned"`
 	// 按权限角色过滤 (user: 普通用户, admin: 系统管理员)
 	Role Role `form:"role" json:"role" example:"user" enums:"user,admin" validate:"omitempty,oneof=user admin"`
+}
+
+// ToFilter 将 HTTP 查询参数投影为底层仓储过滤条件，内聚修剪与排序归一化规则。
+func (r ListUsersQueryParams) ToFilter() models.UserListFilter {
+	return models.UserListFilter{
+		Search: strings.TrimSpace(r.Search),
+		Status: enums.Status(strings.TrimSpace(string(r.Status))),
+		Role:   enums.Role(strings.TrimSpace(string(r.Role))),
+		Sort:   user.NormaliseSort(r.Sort),
+	}
 }
 
 // --- 响应资源 Resource ---

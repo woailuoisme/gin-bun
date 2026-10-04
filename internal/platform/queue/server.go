@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/samber/lo"
 	"go.uber.org/zap"
 
 	"bgin/internal/config"
@@ -107,10 +108,7 @@ func (c *Client) newScheduler(cfg *config.Config) (*asynq.Scheduler, error) {
 		return nil, errors.New("queue: client is nil")
 	}
 
-	loc := time.UTC
-	if cfg != nil {
-		loc = cfg.App.Location()
-	}
+	loc := lo.Ternary(cfg != nil, cfg.App.Location(), time.UTC)
 
 	scheduler := asynq.NewScheduler(c.redisOpt, &asynq.SchedulerOpts{
 		Location: loc,

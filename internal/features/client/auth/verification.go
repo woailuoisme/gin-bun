@@ -92,6 +92,11 @@ func (v *verifier) store(ctx context.Context, purpose, email, code string, ttl t
 	return nil
 }
 
+var (
+	errOTPExpired = errs.New(errs.CodeAuthOTPExpired, "The verification code has expired")
+	errOTPInvalid = errs.New(errs.CodeAuthOTPInvalid, "The verification code is incorrect")
+)
+
 // consume 核销一枚凭据。区分"已过期"与"不正确"，并累计失败次数以防暴力破解。
 func (v *verifier) consume(ctx context.Context, purpose, email, code string) error {
 	identifier := verificationIdentifier(purpose, email)
@@ -103,7 +108,7 @@ func (v *verifier) consume(ctx context.Context, purpose, email, code string) err
 	record, err := models.FindVerification(ctx, v.db, identifier)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return errs.New(errs.CodeAuthOTPExpired, "The verification code has expired")
+			return errOTPExpired
 		}
 		return errs.Internal(err)
 	}
@@ -112,11 +117,11 @@ func (v *verifier) consume(ctx context.Context, purpose, email, code string) err
 		if err := models.DeleteVerification(ctx, v.db, record.ID); err != nil {
 			logger.FromContext(ctx).Warn("failed to clean up expired credential", zap.Error(err))
 		}
-		return errs.New(errs.CodeAuthOTPExpired, "The verification code has expired")
+		return errOTPExpired
 	}
 
 	if subtle.ConstantTimeCompare([]byte(record.Value), []byte(v.digest(identifier, code))) != 1 {
-		return errs.New(errs.CodeAuthOTPInvalid, "The verification code is incorrect")
+		return errOTPInvalid
 	}
 
 	// 核销是原子的：WHERE 里带上刚读到的摘要，只有真正删掉那一行的调用算成功。
@@ -126,7 +131,7 @@ func (v *verifier) consume(ctx context.Context, purpose, email, code string) err
 		return errs.Internal(err)
 	}
 	if !consumed {
-		return errs.New(errs.CodeAuthOTPExpired, "The verification code has expired")
+		return errOTPExpired
 	}
 
 	if _, err := v.cache.Delete(ctx, cache.Key("auth", "otp-attempts", identifier)); err != nil {

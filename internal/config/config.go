@@ -33,11 +33,6 @@ type Config struct {
 
 // Validate 依次执行各模块的语义与有效性校验。
 func (c *Config) Validate() error {
-	return c.validate()
-}
-
-// validate 依次执行各模块的语义与有效性校验。
-func (c *Config) validate() error {
 	validators := []func() error{
 		c.validateApp,
 		c.validateServer,

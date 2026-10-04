@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/samber/lo"
+
 	"bgin/internal/platform/errs"
 )
 
@@ -94,10 +96,7 @@ func (m *MemoryMailer) SentMessages() []Message {
 func (m *MemoryMailer) LastMessage() (Message, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if len(m.messages) == 0 {
-		return Message{}, false
-	}
-	return m.messages[len(m.messages)-1], true
+	return lo.Last(m.messages)
 }
 
 // Count 获取已发送邮件的总数。
@@ -127,10 +126,10 @@ func (m *MemoryMailer) AssertSent(tb testing.TB, expectedCount int) {
 func (m *MemoryMailer) AssertSentTo(tb testing.TB, recipient string) {
 	tb.Helper()
 	msgs := m.SentMessages()
-	for _, msg := range msgs {
-		if msg.To == recipient || slices.Contains(msg.Cc, recipient) || slices.Contains(msg.Bcc, recipient) {
-			return
-		}
+	found := slices.ContainsFunc(msgs, func(msg Message) bool {
+		return msg.To == recipient || slices.Contains(msg.Cc, recipient) || slices.Contains(msg.Bcc, recipient)
+	})
+	if !found {
+		tb.Fatalf("mailer: expected email sent to %q, but none was found", recipient)
 	}
-	tb.Fatalf("mailer: expected email sent to %q, but none was found", recipient)
 }

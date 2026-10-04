@@ -317,6 +317,7 @@ Location: /{version}/tasks/<taskId>
 | `IDEMPOTENCY_CONFLICT`      |  409   | 同一幂等键的请求正在处理中，请稍后重试               |
 | `IDEMPOTENCY_MISMATCH`      |  422   | 同一幂等键重复提交但载荷不一致                       |
 | `GATEWAY_TIMEOUT`           |  504   | 请求处理超时（上游数据库或外部依赖未在时限内响应）   |
+| `CLIENT_CLOSED_REQUEST`     |  499   | 客户端在服务端响应完成前主动终止了连接（如关闭网页或切断网络） |
 | `SERVICE_UNAVAILABLE`       |  503   | 外部依赖暂不可用或服务暂未启用                       |
 | `INTERNAL_SERVER_ERROR`     |  500   | 未捕获的服务器内部异常                               |
 | `AUTH_INVALID_CREDENTIALS`  |  401   | 邮箱/用户名或口令不正确（账号不存在返回同一码，防枚举） |

@@ -41,9 +41,8 @@ type Service struct {
 // buildCheck 统一为基础组件装配具备 Driver 与 Enabled 自动感知能力的探测规范。
 // defaultDriver 传空串表示不指定默认驱动名（由探测实现自行声明）。
 func buildCheck(name string, pinger Pinger, critical bool, defaultDriver string) ready.Check {
-	opts := []ready.CheckOption{
-		ready.WithCritical(critical),
-	}
+	opts := make([]ready.CheckOption, 0, 4)
+	opts = append(opts, ready.WithCritical(critical))
 	if defaultDriver != "" {
 		opts = append(opts, ready.WithDriver(defaultDriver))
 	}

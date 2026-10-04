@@ -1,6 +1,7 @@
 package payment
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -86,9 +87,7 @@ var _ Gateway = (*Manager)(nil)
 
 // NewManager 依据配置构造支付管理器，并在启动期校验渠道凭据。
 func NewManager(cfg *config.Config, logger *zap.Logger) (*Manager, error) {
-	if logger == nil {
-		logger = zap.NewNop()
-	}
+	logger = cmp.Or(logger, zap.NewNop())
 	manager := &Manager{
 		providers:   make(map[string]Provider),
 		sceneOwners: make(map[string]Provider),

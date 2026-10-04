@@ -16,10 +16,11 @@ const maxBodyBytes = 1 << 20
 // defaultUploadBodyBytes multipart 上传请求的兜底上限（32 MiB，与 gin 的默认内存阈值一致）。
 const defaultUploadBodyBytes = 32 << 20
 
-// CacheBody 【全局中间件】将请求体读取并缓存至上下文（gin.BodyBytesKey），避免下游多道读取流 EOF。
+// CacheBody 【全局中间件】将普通请求体读取并缓存至上下文（gin.BodyBytesKey），避免下游多道读取流 EOF。
+// 对 multipart/form-data 及流式大请求自动旁路放行，杜绝在 Go 堆上无休止分配大字节切片。
 func (m *Middleware) CacheBody() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if c.Request.Body == nil {
+		if c.Request.Body == nil || c.Request.ContentLength == 0 {
 			c.Next()
 			return
 		}
@@ -28,9 +29,30 @@ func (m *Middleware) CacheBody() gin.HandlerFunc {
 			return
 		}
 
-		bodyBytes, err := io.ReadAll(c.Request.Body)
+		// 流式或大文件上传直接旁路，保留底层流交给专有解析器
+		contentType := c.ContentType()
+		if strings.HasPrefix(contentType, "multipart/") || contentType == "application/octet-stream" {
+			c.Next()
+			return
+		}
+
+		limit := cmp.Or(m.maxBody, maxBodyBytes)
+		if c.Request.ContentLength > limit {
+			c.Next()
+			return
+		}
+
+		// 防御性限制读取长度，防止无 Content-Length 的恶意 Chunked 流耗尽内存
+		bodyBytes, err := io.ReadAll(io.LimitReader(c.Request.Body, limit+1))
 		if err != nil {
 			abortWithError(c, err)
+			return
+		}
+
+		if int64(len(bodyBytes)) > limit {
+			// 超出普通请求体上限：还原 body，交给下游 BodyLimit 中间件统一抛出 413
+			c.Request.Body = io.NopCloser(io.MultiReader(bytes.NewReader(bodyBytes), c.Request.Body))
+			c.Next()
 			return
 		}
 

@@ -85,10 +85,14 @@ func NewSystemActivities(disk storage.Disk) *SystemActivities {
 	return &SystemActivities{disk: disk}
 }
 
+func isRootOrWorkingDir(dir string) bool {
+	return dir == "." || dir == "/" || dir == "\\" || dir == filepath.VolumeName(dir)+string(filepath.Separator)
+}
+
 // validateCleanDirectory 校验并规范化待清理目录，拒绝根目录或当前工作目录。
 func validateCleanDirectory(rawDir string) (string, error) {
 	cleanDir := filepath.Clean(cmp.Or(strings.TrimSpace(rawDir), ".cache/excel"))
-	if cleanDir == "/" || cleanDir == "." || cleanDir == "\\" || cleanDir == filepath.VolumeName(cleanDir)+string(filepath.Separator) {
+	if isRootOrWorkingDir(cleanDir) {
 		return "", errors.New("system: refusing to clean root or working directory")
 	}
 

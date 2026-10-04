@@ -20,8 +20,7 @@ func CountUsersForSearch(ctx context.Context, db bun.IDB) (int64, error) {
 	if db == nil {
 		return 0, errors.New("invalid bun database instance provided for user count")
 	}
-	count, err := db.NewSelect().Model((*models.User)(nil)).Count(ctx)
-	return count, err
+	return db.NewSelect().Model((*models.User)(nil)).Count(ctx)
 }
 
 // RegisterUserIndexer 向全局检索注册表注册 User 模型的导入器与元数据。
@@ -34,9 +33,7 @@ func ImportUsersForSearch(ctx context.Context, db bun.IDB, batchSize int, handle
 	if db == nil {
 		return 0, errors.New("invalid bun database instance provided for search import")
 	}
-	if batchSize <= 0 {
-		batchSize = defaultBatchSize
-	}
+	batchSize = lo.Ternary(batchSize <= 0, defaultBatchSize, batchSize)
 
 	count, err := CountUsersForSearch(ctx, db)
 	if err != nil || count == 0 {

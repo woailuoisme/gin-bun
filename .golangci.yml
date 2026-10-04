@@ -75,6 +75,10 @@ linters:
       - linters:
           - forbidigo
         path: ^(cmd/|internal/console/|tests/)
+      # failsafe-go 弹性传输层泛型策略 Builder[*http.Response] 规避 bodyclose 误报
+      - linters:
+          - bodyclose
+        path: ^(internal/platform/resilience/|tests/platform/resilience_test\.go)
 
   settings:
     forbidigo:

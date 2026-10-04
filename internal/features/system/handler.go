@@ -30,7 +30,7 @@ func NewHandler(service *Service, logger *zap.Logger) *Handler {
 
 // Index 处理 GET / 根路径请求。
 func (h *Handler) Index(c *gin.Context) {
-	response.OK(c, HealthResource{Status: StatusOK})
+	h.Liveness(c)
 }
 
 // Liveness 处理 GET /livez 存活探针请求。

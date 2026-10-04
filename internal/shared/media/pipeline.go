@@ -424,17 +424,13 @@ func (p *PipelineImpl) getDisk(_ ...string) storage.Disk {
 // detectMimeType 结合魔数头嗅探与扩展名推导文件的真实 MIME 类型。
 func detectMimeType(filename string, content []byte) string {
 	if len(content) > 0 {
-		mtype := mimetype.Detect(content)
-		detected := mtype.String()
-		if detected != "" && detected != defaultOctetStreamMime {
+		if detected := mimetype.Detect(content).String(); detected != "" && detected != defaultOctetStreamMime {
 			return detected
 		}
 	}
 
-	ext := filepath.Ext(filename)
-	if ext != "" {
-		byExt := mime.TypeByExtension(ext)
-		if byExt != "" {
+	if ext := filepath.Ext(filename); ext != "" {
+		if byExt := mime.TypeByExtension(ext); byExt != "" {
 			return byExt
 		}
 	}

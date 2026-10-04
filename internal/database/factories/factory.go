@@ -79,10 +79,7 @@ func (f *Factory[T]) clone() *Factory[T] {
 // Count 设置批量生成的数量，返回工厂副本。
 func (f *Factory[T]) Count(count int) *Factory[T] {
 	cp := f.clone()
-	if count < 1 {
-		count = 1
-	}
-	cp.count = count
+	cp.count = max(count, 1)
 	return cp
 }
 

@@ -134,12 +134,9 @@ var sensitiveKeyFragments = []string{
 
 func isSensitiveKey(k string) bool {
 	lower := strings.ToLower(k)
-	for _, frag := range sensitiveKeyFragments {
-		if strings.Contains(lower, frag) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(sensitiveKeyFragments, func(frag string) bool {
+		return strings.Contains(lower, frag)
+	})
 }
 
 func sanitizeValue(v any) any {
@@ -222,10 +219,17 @@ func Map(err error) (int, Response) {
 		return http.StatusGatewayTimeout, Response{Code: string(CodeGatewayTimeout), Message: msgGatewayTimeout}
 	}
 
+	if errors.Is(err, context.Canceled) {
+		return StatusClientClosedRequest, Response{Code: string(CodeClientClosedRequest), Message: msgClientClosedRequest}
+	}
+
 	// 识别已在 statuses 登记过的 oops 错误。
 	// 未主动声明对外文案时按状态码兜底，避免 4xx 也回一句"意外错误"。
 	if oopsErr, ok := oops.AsOops(err); ok {
 		code := Code(fmt.Sprintf("%v", oopsErr.Code()))
+		if code == CodeContextCanceled {
+			code = CodeClientClosedRequest
+		}
 		if status, registered := statuses[code]; registered {
 			return status, Response{
 				Code:    string(code),

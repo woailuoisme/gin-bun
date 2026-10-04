@@ -1,6 +1,7 @@
 package database
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -18,20 +19,14 @@ const (
 )
 
 func normalizePagination(page, pageSize int) (int, int) {
-	if page < 1 {
-		page = 1
-	}
-	return page, normalizeLimit(pageSize)
+	return max(page, 1), normalizeLimit(pageSize)
 }
 
 func normalizeLimit(limit int) int {
 	if limit < 1 {
 		return defaultPageSize
 	}
-	if limit > maxPageSize {
-		return maxPageSize
-	}
-	return limit
+	return min(limit, maxPageSize)
 }
 
 // Paginate 执行分页查询，返回分页结果切片与总条数。
@@ -188,10 +183,7 @@ func (q *Query[T]) resolvePaginationChunkSize(size int) int {
 	if size > 0 {
 		return size
 	}
-	if q.chunkSize > 0 {
-		return q.chunkSize
-	}
-	return 100
+	return cmp.Or(q.chunkSize, 100)
 }
 
 // Chunk 以固定大小的游标批量流式加载数据并执行回调闭包，彻底规避全量数据加载导致内存溢出。

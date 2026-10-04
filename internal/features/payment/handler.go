@@ -56,8 +56,7 @@ func (h *Handler) HandleNotification(c *gin.Context) {
 	}
 
 	if h.gateway == nil {
-		ack := platformPayment.FailureAck(channel)
-		c.Data(http.StatusOK, ack.ContentType, []byte(ack.Body))
+		replyAck(c, platformPayment.FailureAck(channel))
 		return
 	}
 
@@ -70,8 +69,7 @@ func (h *Handler) HandleNotification(c *gin.Context) {
 			zap.String("app_key", pathParams.App),
 		)
 
-		ack := platformPayment.FailureAck(channel)
-		c.Data(http.StatusOK, ack.ContentType, []byte(ack.Body))
+		replyAck(c, platformPayment.FailureAck(channel))
 		return
 	}
 
@@ -82,7 +80,7 @@ func (h *Handler) HandleNotification(c *gin.Context) {
 	}
 
 	// 渠道统一按渠道协议返回 200 及对应报文内容。
-	c.Data(http.StatusOK, ack.ContentType, []byte(ack.Body))
+	replyAck(c, ack)
 }
 
 // HandleAlipayReturn 接收支付宝前端客户端同步重定向跳转 (return_url)。
@@ -116,12 +114,9 @@ func (h *Handler) HandleAlipayReturn(c *gin.Context) {
 	var queryParams AlipayReturnQueryParams
 	_ = c.ShouldBindQuery(&queryParams)
 
-	outTradeNo := ""
-	if notification != nil && notification.Payment != nil {
+	outTradeNo := queryParams.OutTradeNo
+	if notification != nil && notification.Payment != nil && notification.Payment.OutTradeNo != "" {
 		outTradeNo = notification.Payment.OutTradeNo
-	}
-	if outTradeNo == "" {
-		outTradeNo = queryParams.OutTradeNo
 	}
 
 	redirectURL := h.service.BuildAlipayReturnURL(outTradeNo)
@@ -131,4 +126,9 @@ func (h *Handler) HandleAlipayReturn(c *gin.Context) {
 	)
 
 	c.Redirect(http.StatusFound, redirectURL)
+}
+
+// replyAck 将渠道应答报文写回 HTTP 响应。
+func replyAck(c *gin.Context, ack platformPayment.NotificationAck) {
+	c.Data(http.StatusOK, ack.ContentType, []byte(ack.Body))
 }
