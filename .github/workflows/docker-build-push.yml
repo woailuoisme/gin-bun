@@ -10,6 +10,14 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: '编译目标架构 (Platforms)'
+        type: choice
+        options:
+          - linux/amd64
+          - linux/amd64,linux/arm64
+        default: linux/amd64
 
 env:
   REGISTRY: ghcr.io
@@ -27,7 +35,8 @@ jobs:
       - name: 检出代码仓库
         uses: actions/checkout@v4
 
-      - name: 设置 QEMU (支持多架构跨平台编译)
+      - name: 设置 QEMU (仅在包含跨架构时按需启用)
+        if: contains(inputs.platforms, 'arm64')
         uses: docker/setup-qemu-action@v3
 
       - name: 设置 Docker Buildx
@@ -58,8 +67,8 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          # PR 仅做构建与多架构验证，非 PR 事件（push 到 main、v* 标签或手动触发）执行推送
+          platforms: ${{ inputs.platforms || 'linux/amd64' }}
+          # PR 仅做构建验证，非 PR 事件（push 到 main、v* 标签或手动触发）执行推送
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
