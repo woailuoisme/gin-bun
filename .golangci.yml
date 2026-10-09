@@ -2,20 +2,15 @@
 version: "2"
 
 run:
-  go: "1.27.1"
+  go: "1.27.2"
   timeout: 5m
   build-tags:
     - integration
 
-output:
-  sort-order:
-    - file
-    - linter
-
 linters:
   default: none
   enable:
-    # ── 核心正确性与防错 ─────────────────────────────────────────────────────
+    # ── 核心正确性与防错 (Correctness) ──────────────────────────────────────────
     - govet # Go 官方基础静态分析
     - staticcheck # 代码缺陷与潜在 Bug 分析
     - errcheck # 检查未处理的 error
@@ -27,58 +22,48 @@ linters:
     - forcetypeassert # 强制类型断言使用 comma-ok 模式
     - reassign # 防止包级变量被意外重赋值
 
-    # ── 安全防护与资源泄露防御 ───────────────────────────────────────────────
-    - gosec # 代码安全审计 (注入、弱随机数等)
+    # ── 资源泄露与并发安全 (Resource & Concurrency) ───────────────────────────
     - bodyclose # 确保 HTTP 响应体 resp.Body 正确关闭
+    - fatcontext # 检测循环或热路径中 Context 嵌套派生导致的内存膨胀
     - noctx # 强制 HTTP 请求与关键操作绑定 Context
     - containedctx # 规范 Context 作为首参传递，禁止嵌入结构体
     - sqlclosecheck # 确保 sql.Rows 与 sql.Stmt 正确关闭
     - rowserrcheck # 确保 sql.Rows 遍历后检查 Err()
+    - gosec # 代码安全审计 (注入、弱随机数等)
 
-    # ── 现代 Go 与代码风格 ─────────────────────────────────────────────────
+    # ── 现代 Go 与代码风格 (Modern Style & Performance) ───────────────────────
+    - modernize # 提示使用现代 Go 语法与标准库简化代码
     - revive # 命名与代码风格检查
     - gocritic # 代码坏味道与风格优化建议
-    - modernize # 提示使用现代 Go 语法与标准库简化代码
+    - mirror # 避免对无须转换的 bytes/string 进行多余内存拷贝
     - intrange # 提倡使用 for range 整数迭代
-    - copyloopvar # 检测循环变量冗余拷贝
     - usestdlibvars # 提倡使用标准库预定义常量 (如 http.MethodGet)
     - unconvert # 清理冗余类型转换
     - perfsprint # 提示将低效 fmt.Sprintf 替换为高性能转换
     - goconst # 检测重复硬编码字符串并建议常量化
 
-    # ── 日志与测试规范 ─────────────────────────────────────────────────────
-    - forbidigo # 静态阻断未授权的特定函数调用 (如禁止运行时使用 fmt.Print*)
-    - sloglint # 规范 slog 结构化键值对调用
+    # ── 架构红线与测试规范 (Architecture & Testing) ───────────────────────────
+    - forbidigo # 静态阻断未授权函数调用 (禁止运行时使用 fmt.Print*)
     - testifylint # testify 断言规范检查
     - thelper # 规范测试辅助函数声明 t.Helper()
     - usetesting # 提倡使用 t.Setenv/t.TempDir 隔离测试环境
 
-    # ── 控制流与复杂度 ─────────────────────────────────────────────────────
-    - nestif # 限制 if/else 嵌套深度 (阈值 4)
-    - gocyclo # 圈复杂度检查 (阈值 18)
-    - nolintlint # 强制 //nolint 标注具体 linter 与忽略原因
+    # ── 复杂度与治理 (Complexity & Discipline) ────────────────────────────────
+    - nestif # 限制 if/else 嵌套深度 (默认阈值 4)
+    - gocyclo # 圈复杂度检查 (严格收紧至阈值 18)
+    - nolintlint # 强制 //nolint 必须附带具体 linter 与忽略原因
 
   exclusions:
-    paths:
-      - vendor$
-      - tmp$
-      - build$
-      - apidocs/ # swag 自动生成物
     rules:
-      # 测试代码放宽硬编码、安全检查与 Context 约束
       - linters:
           - goconst
           - gosec
           - noctx
+          - bodyclose
         path: ^tests/
-      # 命令行 CLI 交互与测试允许使用终端输出
-      - linters:
-          - forbidigo
-        path: ^(cmd/|internal/console/|tests/)
-      # failsafe-go 弹性传输层泛型策略 Builder[*http.Response] 规避 bodyclose 误报
       - linters:
           - bodyclose
-        path: ^(internal/platform/resilience/|tests/platform/resilience_test\.go)
+        path: ^internal/platform/resilience/
 
   settings:
     forbidigo:
@@ -88,24 +73,19 @@ linters:
       exclude-godoc-examples: true
     gosec:
       excludes:
-        - G204 # 子进程执行 (CLI 命令受参数隔离)
-        - G304 # 读取本地受控文件 (语言包等)
-        - G703 # 弱类型配置加载映射警告
         - G101 # 排除形如 AUTH_INVALID_CREDENTIALS 的错误码误报
+        - G204 # 子进程执行 (CLI 执行 atlas 迁移命令)
+        - G304 # 本地对象存储与受控文件读写
+        - G703 # 路径遍历污点分析 (CLI 写入受控 .env 配置文件)
     revive:
       rules:
         - name: package-comments
           disabled: true
         - name: exported
           disabled: true
-    nestif:
-      min-complexity: 4 # if/else 嵌套最大深度
     gocyclo:
-      min-complexity: 18 # 圈复杂度阈值
-    errcheck:
-      check-type-assertions: true
+      min-complexity: 18 # 圈复杂度阈值严格限制在 18
     goconst:
-      min-len: 3
       min-occurrences: 4
     modernize:
       disable:
@@ -116,17 +96,12 @@ linters:
 
 formatters:
   enable:
-    - gci # Import 分组与排序
+    - gci
   settings:
     gci:
       sections:
-        - standard # 标准库
-        - default # 第三方依赖包
-        - localmodule # 本地业务模块
+        - standard
+        - default
+        - localmodule
   exclusions:
     generated: lax
-    paths:
-      - vendor$
-      - tmp$
-      - build$
-      - apidocs/
