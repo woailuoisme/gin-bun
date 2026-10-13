@@ -12,7 +12,7 @@ require (
 	github.com/adhocore/gronx v1.20.5
 	github.com/alexliesenfeld/health v0.8.1
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
-	github.com/brianvoe/gofakeit/v7 v7.17.1
+	github.com/brianvoe/gofakeit/v7 v7.18.0
 	github.com/casbin/casbin/v3 v3.11.0
 	github.com/centrifugal/gocent/v3 v3.4.0
 	github.com/charmbracelet/x/term v0.2.2
@@ -34,7 +34,7 @@ require (
 	github.com/johnfercher/maroto/v2 v2.4.3
 	github.com/lionsoul2014/ip2region/binding/golang v0.0.0-20261008081544-02f04aa559ac
 	github.com/meilisearch/meilisearch-go v0.36.3
-	github.com/minio/minio-go/v7 v7.3.0
+	github.com/minio/minio-go/v7 v7.4.1
 	github.com/paulmach/orb v0.13.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/pgvector/pgvector-go v0.4.1
